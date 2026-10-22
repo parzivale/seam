@@ -14,7 +14,7 @@
 //!   cancellation mid-write never leaves a half-written store.
 //!
 //! ```text
-//! cargo run -p seam --example custom_ops --features std,test,fs,env
+//! cargo run -p seam-rs --example custom_ops --features std,test,fs,env
 //! ```
 
 use std::collections::BTreeMap;

@@ -6,7 +6,7 @@
 //! where the secret number is reproducible and stdin is scripted.
 //!
 //! ```text
-//! cargo run -p seam --example guess --features std,test,io-std,random
+//! cargo run -p seam-rs --example guess --features std,test,io-std,random
 //! ```
 
 use std::cmp::Ordering;

@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! backup <source> <destination> [keep]
-//! cargo run -p seam --example backup --features std,test,fs,env,time,io-std -- src /tmp/backups 3
+//! cargo run -p seam-rs --example backup --features std,test,fs,env,time,io-std -- src /tmp/backups 3
 //! ```
 //!
 //! Each run copies `source` into `destination/<unix seconds>/`, writes a

@@ -16,10 +16,10 @@
 //!
 //! ```toml
 //! [dependencies]
-//! seam = { version = "0.1", features = ["fs", "io-std", "std"] }
+//! seam = { package = "seam-rs", version = "0.1", features = ["fs", "io-std", "std"] }
 //!
 //! [dev-dependencies]
-//! seam = { version = "0.1", features = ["test"] }
+//! seam = { package = "seam-rs", version = "0.1", features = ["test"] }
 //! ```
 //!
 //! ```
@@ -128,8 +128,8 @@
 //! # Examples
 //!
 //! Each example is a real program whose tests run its core in the
-//! simulation. Run one with `cargo run -p seam --example <name> --features
-//! full,std,tokio,rt,test`, and test them all with `cargo test -p seam
+//! simulation. Run one with `cargo run -p seam-rs --example <name> --features
+//! full,std,tokio,rt,test`, and test them all with `cargo test -p seam-rs
 //! --examples --features full,std,tokio,rt,test`.
 //!
 //! - `guess`: a number guessing game. Randomness and stdio, with seeded,
@@ -174,15 +174,15 @@
 //! ```toml
 //! # The library holding the core: operations only.
 //! [dependencies]
-//! seam = { version = "0.1", features = ["fs", "time"] }
+//! seam = { package = "seam-rs", version = "0.1", features = ["fs", "time"] }
 //!
 //! # The binary: also picks the real backend...
 //! [dependencies]
-//! seam = { version = "0.1", features = ["fs", "time", "std"] }
+//! seam = { package = "seam-rs", version = "0.1", features = ["fs", "time", "std"] }
 //!
 //! # ...and its tests pick the simulation.
 //! [dev-dependencies]
-//! seam = { version = "0.1", features = ["test"] }
+//! seam = { package = "seam-rs", version = "0.1", features = ["test"] }
 //! ```
 #![no_std]
 

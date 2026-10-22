@@ -2,6 +2,15 @@
 
 Sans-effect programming for Rust.
 
+```toml
+[dependencies]
+seam = { package = "seam-rs", version = "0.1", features = ["fs", "std"] }
+```
+
+The crates are published as `seam-rs`, `seam-rs-core`, `seam-rs-std`,
+`seam-rs-tokio` and `seam-rs-test`; in code they are still `seam`,
+`seam_core`, and so on.
+
 Sans-IO pulls I/O out of protocol logic. `seam` pulls out **every** effect:
 I/O, time, randomness, shared state. The core of your program is written
 against capability bounds and can be unit tested, or run, with no effects at
@@ -26,11 +35,11 @@ fn jitter<C: Perform<RandomU64> + Perform<Sleep>>(c: &mut C) {
 
 | Crate | What it is |
 |---|---|
-| [`seam-core`](crates/seam-core) | The traits (`Operation`, `Query`, `Inspect`, `Perform`, `Provide`/`Acquire` and their async forms, `block_on`), the operation and acquisition types, and a `prelude`. `no_std`. |
-| [`seam-std`](crates/seam-std) | The std backend: a `Std` root capability and newtype handles (`File`, `TcpStream`, ...) that expose no std I/O traits. |
-| [`seam-tokio`](crates/seam-tokio) | The Tokio backend: a `Tokio` root capability implementing the async and `Send` capability traits. |
-| [`seam-test`](crates/seam-test) | The pure test backend: a `Sim` world with a virtual clock, seeded randomness, in-memory filesystem and network, scripted commands and captured stdio. Its only real effect is allocation. |
-| [`seam`](crates/seam) | Re-exports everything, behind feature flags. `no_std` by default. |
+| [`seam-core`](crates/seam-core) (`seam-rs-core`) | The traits (`Operation`, `Query`, `Inspect`, `Perform`, `Provide`/`Acquire` and their async forms, `block_on`), the operation and acquisition types, and a `prelude`. `no_std`. |
+| [`seam-std`](crates/seam-std) (`seam-rs-std`) | The std backend: a `Std` root capability and newtype handles (`File`, `TcpStream`, ...) that expose no std I/O traits. |
+| [`seam-tokio`](crates/seam-tokio) (`seam-rs-tokio`) | The Tokio backend: a `Tokio` root capability implementing the async and `Send` capability traits. |
+| [`seam-test`](crates/seam-test) (`seam-rs-test`) | The pure test backend: a `Sim` world with a virtual clock, seeded randomness, in-memory filesystem and network, scripted commands and captured stdio. Its only real effect is allocation. |
+| [`seam`](crates/seam) (`seam-rs`) | Re-exports everything, behind feature flags. `no_std` by default. |
 
 ## Features
 
@@ -150,8 +159,8 @@ tests that run its core in the simulation:
 | [`custom_ops`](crates/seam/examples/custom_ops.rs) | defining your own operations; building a capability out of other capabilities; atomic writes in a scope |
 
 ```text
-cargo run  -p seam --example guess --features full,std,tokio,rt,test
-cargo test -p seam --examples --features full,std,tokio,rt,test
+cargo run  -p seam-rs --example guess --features full,std,tokio,rt,test
+cargo test -p seam-rs --examples --features full,std,tokio,rt,test
 ```
 
 ## Design

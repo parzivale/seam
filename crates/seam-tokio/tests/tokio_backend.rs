@@ -110,8 +110,9 @@ async fn sync_ops_lift_and_time_advances() {
 }
 
 #[test]
-fn block_on_hands_out_the_root() {
-    let n = seam_tokio::block_on(|mut tokio| async move {
+fn block_on_runs_a_future() {
+    let n = seam_tokio::block_on(async {
+        let mut tokio = Tokio::new();
         tokio.perform_send(Sleep(Duration::from_millis(1))).await;
         7
     });

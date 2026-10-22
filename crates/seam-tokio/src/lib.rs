@@ -44,7 +44,8 @@
 //! }
 //!
 //! fn main() -> io::Result<()> {
-//!     seam_tokio::block_on(|mut tokio| async move {
+//!     seam_tokio::block_on(async {
+//!         let mut tokio = seam_tokio::Tokio::new();
 //!         heartbeat::<_, seam_tokio::net::TcpStream>(&mut tokio, "localhost").await
 //!     })
 //! }
@@ -52,8 +53,9 @@
 //! ```
 //!
 //! Every operation must run inside a Tokio runtime. With the `rt` feature,
-//! `seam_tokio::block_on` starts one and hands the core the root capability;
-//! or create `Tokio::new()` inside a runtime you already have.
+//! `seam_tokio::block_on` starts one and runs a future on it; create
+//! `Tokio::new()` (or a root with it as a part) inside, as inside any
+//! runtime you already have.
 //!
 //! # Tasks
 //!

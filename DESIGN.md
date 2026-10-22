@@ -274,7 +274,7 @@ with generation counters (runtime detection of stale handles).
   the first poll. With `std`, a pending future parks the thread until woken,
   so a misuse with an externally woken future sleeps instead of spinning.
   Without `std` it re-polls in a spin loop. Futures from a real runtime need
-  that runtime: `seam_tokio::block_on` starts a Tokio one.
+  that runtime: `seam_tokio::block_on` starts a Tokio one and runs a future on it.
 - Because the sync lift is a blanket impl, there is no second blanket from
   `AsyncInspect` to `AsyncPerform`. Native async query implementations
   implement both (`seam-tokio` does this with a macro).

@@ -126,10 +126,10 @@ fn main() -> io::Result<()> {
     use seam::tokio::net::{TcpListener, TcpStream};
     use seam::tokio::task::JoinHandle;
 
-    seam::tokio::block_on_multi_thread(|tokio| async move {
+    seam::tokio::block_on_multi_thread(async {
         let mut root = seam::root! {
             std: seam::stdlib::Std::new() => [seam::kinds::Env],
-            tokio: tokio => [seam::kinds::Net, seam::kinds::Stdio],
+            tokio: seam::tokio::Tokio::new() => [seam::kinds::Net, seam::kinds::Stdio],
         };
         let addr = listen_addr(&root)?;
         serve::<_, TcpListener, TcpStream, JoinHandle<io::Result<()>>>(&mut root, addr).await

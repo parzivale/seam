@@ -7,9 +7,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use seam_core::future::SendPerform;
-use seam_core::ops::task::{Abort, BoxFuture, IsFinished, Join, JoinError, Spawn, YieldNow};
+use seam_core::ops::task::{
+    Abort, BoxFuture, Detach, IsFinished, Join, JoinError, Spawn, YieldNow,
+};
 use seam_core::ops::time::Sleep;
-use seam_core::{Inspect, Scoped};
+use seam_core::{AsyncScoped, Inspect};
 use seam_tokio::Tokio;
 use seam_tokio::task::JoinHandle;
 
@@ -99,25 +101,74 @@ async fn panics_and_aborts_are_reported() {
     );
 }
 
-#[tokio::test]
-async fn a_scope_that_panics_aborts_its_task() {
-    let mut tokio = Tokio::new();
+/// A task that sets a flag after 50 ms, unless it is aborted first.
+async fn flag_later(tokio: &mut Tokio) -> (JoinHandle<()>, Arc<AtomicBool>) {
     let ran = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&ran);
-    let task: JoinHandle<()> = tokio
+    let task = tokio
         .perform_send(Spawn::new(async move {
             tokio::time::sleep(Duration::from_millis(50)).await;
             flag.store(true, Ordering::SeqCst);
         }))
         .await;
+    (task, ran)
+}
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        task.scope(|_| panic!("the work using the task failed"));
-    }));
-    assert!(result.is_err());
+async fn settle() {
     tokio::time::sleep(Duration::from_millis(100)).await;
+}
+
+#[tokio::test]
+async fn dropping_a_handle_aborts_its_task() {
+    let mut tokio = Tokio::new();
+    let (task, ran) = flag_later(&mut tokio).await;
+    drop(task);
+    settle().await;
+    assert!(!ran.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn detached_tasks_outlive_their_handle() {
+    let mut tokio = Tokio::new();
+    let (mut task, ran) = flag_later(&mut tokio).await;
+    task.perform_send(Detach).await;
+    drop(task);
+    settle().await;
+    assert!(ran.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn closing_a_scope_waits_for_the_task() {
+    let mut tokio = Tokio::new();
+    let (task, ran) = flag_later(&mut tokio).await;
+    task.scope_async(async |_| Ok::<_, JoinError>(()))
+        .await
+        .unwrap();
+    assert!(ran.load(Ordering::SeqCst), "close joined the task");
+
+    let panicking: JoinHandle<()> = tokio
+        .perform_send(Spawn::new(async { panic!("boom") }))
+        .await;
+    let closed = panicking
+        .scope_async(async |_| Ok::<_, JoinError>(()))
+        .await;
+    assert_eq!(closed, Err(JoinError::Panicked));
+}
+
+/// Cancelling the code that holds a task, here with a timeout, aborts it.
+#[tokio::test]
+async fn cancelling_a_scope_aborts_its_task() {
+    let mut tokio = Tokio::new();
+    let (task, ran) = flag_later(&mut tokio).await;
+    let scoped = task.scope_async(async |_| {
+        std::future::pending::<()>().await;
+        Ok::<_, JoinError>(())
+    });
     assert!(
-        !ran.load(Ordering::SeqCst),
-        "abandoning the handle aborted the task"
+        tokio::time::timeout(Duration::from_millis(10), scoped)
+            .await
+            .is_err()
     );
+    settle().await;
+    assert!(!ran.load(Ordering::SeqCst));
 }

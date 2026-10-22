@@ -41,7 +41,9 @@
 //! that expose no std I/O traits and no way to get the std value back, so
 //! every effect on them also goes through [`Perform`](seam_core::Perform)
 //! or [`Inspect`](seam_core::Inspect). They implement
-//! [`Finalize`](seam_core::Finalize): `close` flushes and syncs.
+//! [`Finalize`](seam_core::Finalize) for use in scopes: closing a file
+//! flushes and syncs it, closing a stream shuts it down, and
+//! `fs::AtomicFile` renames itself into place; errors are returned.
 //!
 //! # Async
 //!

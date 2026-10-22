@@ -1,11 +1,11 @@
 //! Filesystem operations, and the [`File`] handle.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use seam_core::ops::fs::{
-    CopyFile, CreateDir, FileInfo, FileKind, Metadata, Open, ReadDir, ReadFile, ReadToString,
-    RemoveDir, RemoveFile, Rename, WriteFile,
+    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Open, ReadDir, ReadFile,
+    ReadToString, RemoveDir, RemoveFile, Rename, WriteFile,
 };
 use seam_core::{Finalize, Inspect, Perform};
 
@@ -13,19 +13,108 @@ use crate::Std;
 
 /// An open file. Read and write it with the `io` operations.
 ///
-/// [`Finalize::close`] flushes and syncs it to disk; [`Finalize::abandon`]
-/// drops it without syncing.
+/// [`Finalize::close`] flushes and syncs it to disk, returning any error;
+/// abandoning or dropping it closes it without syncing.
 #[derive(Debug)]
-pub struct File(std::fs::File);
+pub struct File(std::fs::File, Writable);
 
 crate::io_ops!(File);
 
 impl Finalize for File {
-    fn close(mut self) {
-        // `close` has no error channel. A core that must observe sync
-        // failures should perform `Flush` itself before the scope ends.
-        let _ = io::Write::flush(&mut self.0);
-        let _ = self.0.sync_all();
+    type Error = io::Error;
+
+    fn close(mut self) -> io::Result<()> {
+        if !self.1.0 {
+            return Ok(());
+        }
+        io::Write::flush(&mut self.0)?;
+        self.0.sync_all()
+    }
+}
+
+/// Whether a [`File`] was opened for writing. Only those are synced on
+/// close; some platforms refuse to sync a read-only handle.
+#[derive(Debug, Clone, Copy)]
+struct Writable(bool);
+
+/// A file that replaces its target when closed. See
+/// [`CreateAtomic`].
+///
+/// Writes go to a temporary file in the same directory. [`Finalize::close`]
+/// syncs it and renames it over the target. Abandoning or dropping it
+/// deletes the temporary file.
+#[derive(Debug)]
+pub struct AtomicFile(std::fs::File, Pending);
+
+crate::io_ops!(AtomicFile);
+
+/// The temporary file of an [`AtomicFile`], deleted on drop unless it was
+/// renamed into place. Declared after the `File` in `AtomicFile`, so the
+/// file is closed before it is deleted.
+#[derive(Debug)]
+struct Pending {
+    temp: Option<PathBuf>,
+    target: PathBuf,
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        if let Some(temp) = self.temp.take() {
+            let _ = std::fs::remove_file(temp);
+        }
+    }
+}
+
+impl Finalize for AtomicFile {
+    type Error = io::Error;
+
+    fn close(mut self) -> io::Result<()> {
+        io::Write::flush(&mut self.0)?;
+        self.0.sync_all()?;
+        let temp = self
+            .1
+            .temp
+            .as_ref()
+            .expect("the temporary file exists until close");
+        std::fs::rename(temp, &self.1.target)?;
+        self.1.temp = None;
+        sync_parent(&self.1.target);
+        Ok(())
+    }
+}
+
+/// Makes a rename durable by syncing the directory that holds it. Best
+/// effort: not every platform can open a directory for syncing.
+fn sync_parent(path: &Path) {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        if let Ok(dir) = std::fs::File::open(dir) {
+            let _ = dir.sync_all();
+        }
+    }
+}
+
+/// A fresh temporary path beside `target`.
+fn temp_path(target: &Path) -> PathBuf {
+    use std::hash::{BuildHasher, Hasher, RandomState};
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let salt = RandomState::new().build_hasher().finish();
+    target.with_file_name(format!(".{name}.{salt:016x}.tmp"))
+}
+
+impl Perform<CreateAtomic<AtomicFile>> for Std {
+    fn perform(&mut self, op: CreateAtomic<AtomicFile>) -> io::Result<AtomicFile> {
+        let temp = temp_path(&op.path);
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        Ok(AtomicFile(
+            file,
+            Pending {
+                temp: Some(temp),
+                target: op.path,
+            },
+        ))
     }
 }
 
@@ -110,7 +199,7 @@ impl Perform<Open<File>> for Std {
             .create(o.create)
             .create_new(o.create_new)
             .open(op.path)
-            .map(File)
+            .map(|f| File(f, Writable(o.write || o.append)))
     }
 }
 

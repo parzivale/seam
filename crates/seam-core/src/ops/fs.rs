@@ -124,6 +124,70 @@ pub struct Open<F> {
     handle: PhantomData<fn() -> F>,
 }
 
+/// Create a file that atomically replaces `path` when it is closed,
+/// producing a handle of type `F`.
+///
+/// Writes go to a temporary file beside `path`. Closing the handle (through
+/// [`Scoped`](crate::Scoped) or [`AsyncScoped`](crate::AsyncScoped)) syncs
+/// it and renames it over `path` in one step, so readers see either the old
+/// contents or the new, never a mix. Abandoning or dropping the handle,
+/// including when a panic unwinds or a future is cancelled, deletes the
+/// temporary file and leaves `path` untouched.
+///
+/// ```
+/// use std::io;
+/// use seam_core::prelude::*;
+/// use seam_core::ops::fs::CreateAtomic;
+/// use seam_core::ops::io::WriteAll;
+///
+/// /// Saves settings. A crash or error halfway leaves the old file intact.
+/// fn save<C, F>(c: &mut C, settings: &[(&str, &str)]) -> io::Result<()>
+/// where
+///     C: Perform<CreateAtomic<F>>,
+///     F: Finalize<Error = io::Error> + for<'a> Perform<WriteAll<'a>>,
+/// {
+///     c.perform(CreateAtomic::new("settings.conf"))?.scope(|file| {
+///         for (key, value) in settings {
+///             file.perform(WriteAll(format!("{key} = {value}\n").as_bytes()))?;
+///         }
+///         Ok(())
+///     })
+/// }
+/// ```
+pub struct CreateAtomic<F> {
+    /// The file to replace.
+    pub path: PathBuf,
+    handle: PhantomData<fn() -> F>,
+}
+
+impl<F> CreateAtomic<F> {
+    /// Describes atomically replacing `path`.
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            handle: PhantomData,
+        }
+    }
+}
+
+impl<F> Clone for CreateAtomic<F> {
+    fn clone(&self) -> Self {
+        Self::new(self.path.clone())
+    }
+}
+
+impl<F> core::fmt::Debug for CreateAtomic<F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CreateAtomic")
+            .field("path", &self.path)
+            .finish()
+    }
+}
+
+impl<F> crate::Operation for CreateAtomic<F> {
+    type Outcome = io::Result<F>;
+}
+
 /// How to open a file. Mirrors `std::fs::OpenOptions`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(missing_docs)]

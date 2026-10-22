@@ -23,7 +23,7 @@ use seam_core::ops::random::RandomU64;
 use seam_core::ops::signal::CtrlC;
 use seam_core::ops::stdio::{Print, ReadLine};
 use seam_core::ops::time::{Now, Sleep, WallClock};
-use seam_core::{Inspect, Perform, Scoped};
+use seam_core::{Finalize, Inspect, Perform, Scoped};
 use seam_test::fs::File;
 use seam_test::net::{TcpListener, TcpStream, UdpSocket};
 use seam_test::{Invocation, Sim, catch_exit};
@@ -66,7 +66,7 @@ fn clocks_are_virtual() {
 fn append_log<C, F>(c: &mut C, dir: &Path, line: &str, max: u64) -> io::Result<()>
 where
     C: Perform<Open<F>> + Inspect<Metadata> + Perform<Rename> + Perform<CreateDir>,
-    F: Scoped + for<'a> Perform<WriteAll<'a>>,
+    F: Finalize<Error = io::Error> + for<'a> Perform<WriteAll<'a>>,
 {
     c.perform(CreateDir::all(dir))?;
     let log = dir.join("app.log");
@@ -338,4 +338,97 @@ fn async_send_core() {
     assert_eq!(sim.file("/tmp/done").unwrap(), b"ok");
     let waited = sim.inspect(Now).since_epoch();
     assert!(waited >= Duration::from_millis(150) && waited < Duration::from_millis(190));
+}
+
+mod atomic {
+    use seam_core::AsyncScoped;
+    use seam_core::ops::fs::CreateAtomic;
+    use seam_test::fs::AtomicFile;
+
+    use super::*;
+
+    fn sim() -> Sim {
+        let mut sim = Sim::new();
+        sim.add_file("/etc/app.conf", "old");
+        sim
+    }
+
+    fn listing(sim: &Sim) -> Vec<PathBuf> {
+        sim.inspect(ReadDir::new("/etc")).unwrap()
+    }
+
+    #[test]
+    fn the_temporary_file_is_visible_until_close() {
+        let mut sim = sim();
+        let mut f: AtomicFile = sim.perform(CreateAtomic::new("/etc/app.conf")).unwrap();
+        f.perform(WriteAll(b"new")).unwrap();
+        assert_eq!(
+            listing(&sim),
+            [
+                PathBuf::from("/etc/.app.conf.seam-0.tmp"),
+                PathBuf::from("/etc/app.conf")
+            ]
+        );
+        assert_eq!(sim.file("/etc/app.conf").unwrap(), b"old");
+        f.close().unwrap();
+        assert_eq!(listing(&sim), [PathBuf::from("/etc/app.conf")]);
+        assert_eq!(sim.file("/etc/app.conf").unwrap(), b"new");
+    }
+
+    #[test]
+    fn errors_and_panics_roll_back() {
+        let mut sim = sim();
+        let f: AtomicFile = sim.perform(CreateAtomic::new("/etc/app.conf")).unwrap();
+        let err = f.scope(|f| {
+            f.perform(WriteAll(b"half"))?;
+            Err::<(), _>(io::Error::other("validation failed"))
+        });
+        assert!(err.is_err());
+
+        let f: AtomicFile = sim.perform(CreateAtomic::new("/etc/app.conf")).unwrap();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            f.scope(|f| -> io::Result<()> {
+                f.perform(WriteAll(b"half"))?;
+                panic!("crash")
+            })
+        }));
+        assert!(panicked.is_err());
+
+        assert_eq!(sim.file("/etc/app.conf").unwrap(), b"old");
+        assert_eq!(listing(&sim), [PathBuf::from("/etc/app.conf")]);
+    }
+
+    /// Dropping the scope's future at an `.await` is a rollback.
+    #[test]
+    fn cancellation_rolls_back() {
+        struct Suspend(bool);
+        impl std::future::Future for Suspend {
+            type Output = ();
+            fn poll(
+                mut self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<()> {
+                if std::mem::replace(&mut self.0, true) {
+                    return std::task::Poll::Ready(());
+                }
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }
+
+        let mut sim = sim();
+        let f: AtomicFile = sim.perform(CreateAtomic::new("/etc/app.conf")).unwrap();
+        {
+            let fut = f.scope_async(async |f| {
+                f.perform_send(WriteAll(b"half")).await?;
+                Suspend(false).await;
+                io::Result::Ok(())
+            });
+            let mut fut = std::pin::pin!(fut);
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(fut.as_mut().poll(&mut cx).is_pending());
+        }
+        assert_eq!(sim.file("/etc/app.conf").unwrap(), b"old");
+        assert_eq!(listing(&sim), [PathBuf::from("/etc/app.conf")]);
+    }
 }

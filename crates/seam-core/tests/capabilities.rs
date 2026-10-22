@@ -1,11 +1,13 @@
 //! Integration tests run as a downstream crate, so they also check that the
 //! blanket impls leave room for user implementations.
 
-use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Mutex;
 
 use seam_core::future::{AsyncPerform, SendPerform, block_on};
-use seam_core::{Finalize, Inspect, Operation, Perform, Push, Query, Rejected, Scoped};
+use seam_core::{
+    AsyncScoped, Finalize, Inspect, Operation, Perform, Push, Query, Rejected, Scoped,
+};
 
 struct Get;
 impl Operation for Get {
@@ -138,33 +140,146 @@ fn block_on_parks_until_woken() {
     thread.join().unwrap();
 }
 
-struct Tracked<'a>(&'a Cell<&'static str>);
+/// Records what happened to it. `close` fails if `fail_close` is set.
+struct Tracked<'a> {
+    state: &'a Mutex<&'static str>,
+    fail_close: bool,
+}
 
-impl Finalize for Tracked<'_> {
-    fn close(self) {
-        self.0.set("closed");
-    }
-    fn abandon(self) {
-        self.0.set("abandoned");
+#[derive(Debug, PartialEq)]
+enum Failure {
+    Close,
+    Work,
+}
+
+impl<'a> Tracked<'a> {
+    fn new(state: &'a Mutex<&'static str>) -> Self {
+        Self {
+            state,
+            fail_close: false,
+        }
     }
 }
 
+impl Finalize for Tracked<'_> {
+    type Error = Failure;
+
+    fn close(self) -> Result<(), Failure> {
+        *self.state.lock().unwrap() = "closed";
+        if self.fail_close {
+            Err(Failure::Close)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn abandon(self) {
+        *self.state.lock().unwrap() = "abandoned";
+    }
+}
+
+fn state(m: &Mutex<&'static str>) -> &'static str {
+    *m.lock().unwrap()
+}
+
 #[test]
-fn scope_closes_on_return() {
-    let state = Cell::new("open");
-    let out = Tracked(&state).scope(|_| 3);
-    assert_eq!(out, 3);
-    assert_eq!(state.get(), "closed");
+fn scope_closes_on_ok() {
+    let s = Mutex::new("open");
+    assert_eq!(Tracked::new(&s).scope(|_| Ok::<_, Failure>(3)), Ok(3));
+    assert_eq!(state(&s), "closed");
+}
+
+#[test]
+fn scope_abandons_on_err() {
+    let s = Mutex::new("open");
+    assert_eq!(
+        Tracked::new(&s).scope(|_| Err::<(), _>(Failure::Work)),
+        Err(Failure::Work)
+    );
+    assert_eq!(state(&s), "abandoned");
 }
 
 #[test]
 fn scope_abandons_on_panic() {
-    let state = Cell::new("open");
+    let s = Mutex::new("open");
     let result = catch_unwind(AssertUnwindSafe(|| {
-        Tracked(&state).scope(|_| panic!("boom"))
+        Tracked::new(&s).scope(|_| -> Result<(), Failure> { panic!("boom") })
     }));
     assert!(result.is_err());
-    assert_eq!(state.get(), "abandoned");
+    assert_eq!(state(&s), "abandoned");
+}
+
+#[test]
+fn scope_returns_close_errors() {
+    let s = Mutex::new("open");
+    let t = Tracked {
+        state: &s,
+        fail_close: true,
+    };
+    assert_eq!(t.scope(|_| Ok::<_, Failure>(())), Err(Failure::Close));
+}
+
+/// Pending once, then ready: a stand-in for any `.await` that suspends.
+#[derive(Default)]
+struct Suspend(bool);
+
+impl Future for Suspend {
+    type Output = ();
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        if std::mem::replace(&mut self.0, true) {
+            std::task::Poll::Ready(())
+        } else {
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        }
+    }
+}
+
+#[test]
+fn async_scope_closes_on_ok_and_abandons_on_err() {
+    let s = Mutex::new("open");
+    let out = block_on(Tracked::new(&s).scope_async(async |_| {
+        Suspend::default().await;
+        Ok::<_, Failure>(1)
+    }));
+    assert_eq!((out, state(&s)), (Ok(1), "closed"));
+
+    let out = block_on(Tracked::new(&s).scope_async(async |_| Err::<(), _>(Failure::Work)));
+    assert_eq!((out, state(&s)), (Err(Failure::Work), "abandoned"));
+}
+
+/// Dropping the scope's future while the closure is suspended abandons the
+/// resource: cancellation is a rollback, never a commit.
+#[test]
+fn async_scope_abandons_on_cancellation() {
+    let s = Mutex::new("open");
+    {
+        let fut = Tracked::new(&s).scope_async(async |_| {
+            Suspend::default().await;
+            Ok::<_, Failure>(())
+        });
+        let mut fut = std::pin::pin!(fut);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(fut.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(state(&s), "open");
+    } // cancelled here
+    assert_eq!(state(&s), "abandoned");
+}
+
+/// The async scope's future is `Send` when the resource is, so it can run in
+/// a task on a multithreaded runtime.
+#[test]
+fn async_scope_is_send() {
+    fn assert_send<F: Future + Send>(f: F) -> F {
+        f
+    }
+    let s = Mutex::new("open");
+    let fut = assert_send(Tracked::new(&s).scope_async(async |_| Ok::<_, Failure>(())));
+    std::thread::scope(|scope| scope.spawn(move || block_on(fut)).join().unwrap()).unwrap();
+    assert_eq!(state(&s), "closed");
 }
 
 /// A sink that caps how many items the core may emit.

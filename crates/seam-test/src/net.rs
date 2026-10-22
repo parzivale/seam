@@ -442,14 +442,27 @@ impl Inspect<PeerAddr> for UdpSocket {
     }
 }
 
+/// Shuts down the write half, so the peer sees end of input.
 impl Finalize for TcpStream {
-    fn close(self) {}
+    type Error = io::Error;
+
+    fn close(mut self) -> io::Result<()> {
+        self.perform(Shutdown(How::Write))
+    }
 }
 
 impl Finalize for TcpListener {
-    fn close(self) {}
+    type Error = io::Error;
+
+    fn close(self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 impl Finalize for UdpSocket {
-    fn close(self) {}
+    type Error = io::Error;
+
+    fn close(self) -> io::Result<()> {
+        Ok(())
+    }
 }

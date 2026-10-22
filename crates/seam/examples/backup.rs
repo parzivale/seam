@@ -5,28 +5,37 @@
 //! cargo run -p seam --example backup --features std,test,fs,env,time,io-std -- src /tmp/backups 3
 //! ```
 //!
-//! Each run copies `source` into `destination/<unix seconds>/` and deletes
-//! the oldest snapshots beyond `keep` (default 5).
+//! Each run copies `source` into `destination/<unix seconds>/`, writes a
+//! `MANIFEST` listing what it copied, and deletes the oldest snapshots
+//! beyond `keep` (default 5). Snapshots left without a manifest by a run
+//! that died partway are removed.
 //!
 //! The core needs many capabilities, so it names them once with a bundling
-//! trait, [`BackupEnv`], instead of repeating a long `where` clause on every
-//! function.
+//! trait, `BackupEnv`, instead of repeating a long `where` clause on every
+//! function. The manifest is written through `CreateAtomic` in a scope, which
+//! is what makes "has a manifest" mean "is complete".
 
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use seam::ops::env::Args;
-use seam::ops::fs::{CopyFile, CreateDir, Metadata, ReadDir, RemoveDir};
+use seam::ops::fs::{CopyFile, CreateAtomic, CreateDir, Metadata, ReadDir, RemoveDir};
+use seam::ops::io::WriteAll;
 use seam::ops::stdio::Print;
 use seam::ops::time::WallClock;
 use seam::prelude::*;
 
+/// Marks a snapshot as complete. Written last, atomically.
+const MANIFEST: &str = "MANIFEST";
+
 /// Everything the backup tool may do. Reading this trait is an audit of the
 /// program: it can read its arguments and the clock, list, stat, create,
-/// copy and delete files, and print. It cannot touch the network, run
-/// commands, or read environment variables.
-trait BackupEnv:
+/// copy and delete files, write files atomically, and print. It cannot touch
+/// the network, run commands, or read environment variables.
+///
+/// `F` is the backend's atomic file type; it is inferred from the backend.
+trait BackupEnv<F: AtomicWrite>:
     Inspect<Args>
     + Inspect<WallClock>
     + Inspect<ReadDir>
@@ -34,11 +43,12 @@ trait BackupEnv:
     + Perform<CreateDir>
     + Perform<CopyFile>
     + Perform<RemoveDir>
+    + Perform<CreateAtomic<F>>
     + for<'a> Perform<Print<'a>>
 {
 }
 
-impl<T> BackupEnv for T where
+impl<T, F: AtomicWrite> BackupEnv<F> for T where
     T: Inspect<Args>
         + Inspect<WallClock>
         + Inspect<ReadDir>
@@ -46,12 +56,17 @@ impl<T> BackupEnv for T where
         + Perform<CreateDir>
         + Perform<CopyFile>
         + Perform<RemoveDir>
+        + Perform<CreateAtomic<F>>
         + for<'a> Perform<Print<'a>>
 {
 }
 
+/// A file that can be written and then committed, or rolled back.
+trait AtomicWrite: Finalize<Error = io::Error> + for<'a> Perform<WriteAll<'a>> {}
+impl<F: Finalize<Error = io::Error> + for<'a> Perform<WriteAll<'a>>> AtomicWrite for F {}
+
 /// Parses the arguments and runs one backup.
-fn run(env: &mut impl BackupEnv) -> io::Result<()> {
+fn run<F: AtomicWrite>(env: &mut impl BackupEnv<F>) -> io::Result<()> {
     let args = env.inspect(Args);
     let usage = || {
         io::Error::new(
@@ -76,8 +91,13 @@ fn run(env: &mut impl BackupEnv) -> io::Result<()> {
 }
 
 /// Copies `source` into a new snapshot under `dest`, then prunes old ones.
-fn backup(
-    env: &mut impl BackupEnv,
+///
+/// A snapshot counts only once its manifest exists. The manifest is written
+/// last, through an atomic file in a scope, so it exists completely or not
+/// at all: a run that crashes, fails or is killed partway leaves a snapshot
+/// with no manifest, which the next run removes.
+fn backup<F: AtomicWrite>(
+    env: &mut impl BackupEnv<F>,
     source: &Path,
     dest: &Path,
     keep: usize,
@@ -95,32 +115,60 @@ fn backup(
     // Zero-padded, so that sorting names sorts snapshots by time.
     let snapshot = dest.join(format!("{:020}", now.as_secs()));
     env.perform(CreateDir::all(&snapshot))?;
-    copy_tree(env, source, &snapshot)?;
+    let mut copied = Vec::new();
+    copy_tree(env, source, &snapshot, Path::new(""), &mut copied)?;
 
-    let mut snapshots = env.inspect(ReadDir::new(dest))?;
-    snapshots.sort();
-    let excess = snapshots.len().saturating_sub(keep);
-    for old in &snapshots[..excess] {
+    env.perform(CreateAtomic::new(snapshot.join(MANIFEST)))?
+        .scope(|manifest| {
+            for (path, bytes) in &copied {
+                let line = format!("{bytes}\t{}\n", path.display());
+                manifest.perform(WriteAll(line.as_bytes()))?;
+            }
+            Ok::<_, io::Error>(())
+        })?;
+
+    let mut complete = Vec::new();
+    for dir in env.inspect(ReadDir::new(dest))? {
+        if env.inspect(Metadata::new(dir.join(MANIFEST))).is_ok() {
+            complete.push(dir);
+        } else {
+            env.perform(RemoveDir::all(&dir))?;
+            say(env, &format!("removed incomplete {}\n", dir.display()))?;
+        }
+    }
+    complete.sort();
+    let excess = complete.len().saturating_sub(keep);
+    for old in &complete[..excess] {
         env.perform(RemoveDir::all(old))?;
         say(env, &format!("pruned {}\n", old.display()))?;
     }
     Ok(snapshot)
 }
 
-fn copy_tree(env: &mut impl BackupEnv, from: &Path, to: &Path) -> io::Result<()> {
+/// Copies the tree under `from` to `to`, recording each file's path
+/// (relative to the snapshot) and size.
+fn copy_tree<F: AtomicWrite>(
+    env: &mut impl BackupEnv<F>,
+    from: &Path,
+    to: &Path,
+    rel: &Path,
+    copied: &mut Vec<(PathBuf, u64)>,
+) -> io::Result<()> {
     for entry in env.inspect(ReadDir::new(from))? {
-        let target = to.join(entry.file_name().expect("directory entries have names"));
+        let name = entry.file_name().expect("directory entries have names");
+        let target = to.join(name);
         if env.inspect(Metadata::new(&entry))?.is_dir() {
             env.perform(CreateDir::new(&target))?;
-            copy_tree(env, &entry, &target)?;
+            copy_tree(env, &entry, &target, &rel.join(name), copied)?;
         } else {
-            env.perform(CopyFile::new(&entry, &target))?;
+            let bytes = env.perform(CopyFile::new(&entry, &target))?;
+            copied.push((rel.join(name), bytes));
         }
     }
     Ok(())
 }
 
-fn say(env: &mut impl BackupEnv, text: &str) -> io::Result<()> {
+fn say<F: AtomicWrite>(env: &mut impl BackupEnv<F>, text: &str) -> io::Result<()> {
     env.perform(Print(text.as_bytes()))
 }
 
@@ -146,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn copies_the_whole_tree() {
+    fn copies_the_whole_tree_and_writes_a_manifest() {
         let mut sim = world();
         run(&mut sim).unwrap();
         let snap = "/backups/00000000000000001000";
@@ -155,7 +203,26 @@ mod tests {
             sim.file(format!("{snap}/ideas/seam.md")).unwrap(),
             b"sans-effect"
         );
+        assert_eq!(
+            String::from_utf8(sim.file(format!("{snap}/MANIFEST")).unwrap()).unwrap(),
+            "11\tideas/seam.md\n8\ttodo.txt\n"
+        );
         assert_eq!(sim.stdout(), format!("snapshot {snap}\n").as_bytes());
+    }
+
+    /// A run that died before writing its manifest left a partial snapshot
+    /// behind. The next run removes it, and it never counted toward `keep`.
+    #[test]
+    fn removes_snapshots_from_crashed_runs() {
+        let mut sim = world();
+        sim.add_file("/backups/00000000000000000500/todo.txt", "half a cop");
+        run(&mut sim).unwrap();
+        assert!(!sim.exists("/backups/00000000000000000500"));
+        assert!(sim.exists("/backups/00000000000000001000/MANIFEST"));
+        assert!(
+            String::from_utf8_lossy(sim.stdout())
+                .contains("removed incomplete /backups/00000000000000000500")
+        );
     }
 
     #[test]

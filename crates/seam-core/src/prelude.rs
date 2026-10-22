@@ -6,7 +6,7 @@
 //!
 //! This brings in the capability traits ([`Inspect`], [`Perform`] and their
 //! async and `Send` forms), the traits for defining operations
-//! ([`Operation`], [`Query`]), resource cleanup ([`Finalize`], [`Scoped`]),
+//! ([`Operation`], [`Query`]), resource cleanup ([`Finalize`], [`Scoped`] and their async forms),
 //! the [`Push`] sink operation, and [`block_on`].
 //!
 //! Operation types are not included: import the ones a core uses from
@@ -14,4 +14,7 @@
 //! can do.
 
 pub use crate::future::{AsyncInspect, AsyncPerform, SendInspect, SendPerform, block_on};
-pub use crate::{Finalize, Inspect, Operation, Perform, Push, Query, Rejected, Scoped};
+pub use crate::{
+    AsyncFinalize, AsyncScoped, Finalize, Inspect, Operation, Perform, Push, Query, Rejected,
+    Scoped,
+};

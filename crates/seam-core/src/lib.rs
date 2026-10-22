@@ -80,8 +80,8 @@
 //!   randomness, the environment, processes, stdio and signals, behind
 //!   feature flags.
 //! - [`future`]: async capabilities, and [`block_on`](future::block_on).
-//! - [`Finalize`] and [`Scoped`]: resources that are closed on success and
-//!   abandoned on panic.
+//! - [`finalize`]: resources that commit on success and roll back on error,
+//!   panic or cancellation ([`Scoped`], [`AsyncScoped`]).
 //! - [`Push`]: a sink operation for counting or capping what a core emits.
 //! - [`prelude`]: all the traits in one import.
 //!
@@ -100,7 +100,7 @@ extern crate alloc;
 extern crate std;
 
 mod capability;
-mod finalize;
+pub mod finalize;
 pub mod future;
 mod operation;
 pub mod ops;
@@ -108,6 +108,6 @@ pub mod prelude;
 mod push;
 
 pub use capability::{Inspect, Perform};
-pub use finalize::{Finalize, Scoped};
+pub use finalize::{AsyncFinalize, AsyncScoped, Finalize, Scoped};
 pub use operation::{Operation, Query};
 pub use push::{Push, Rejected};

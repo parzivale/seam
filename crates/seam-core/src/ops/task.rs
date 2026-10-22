@@ -1,8 +1,11 @@
 //! Spawning and joining concurrent tasks.
 //!
 //! [`Spawn`] hands a future to the backend's executor and produces a handle
-//! of the backend's type `H`. [`Join`], [`Abort`] and [`IsFinished`] are
-//! performed on that handle. [`YieldNow`] lets other tasks run.
+//! of the backend's type `H`. [`Join`], [`Abort`], [`Detach`] and
+//! [`IsFinished`] are performed on that handle. [`YieldNow`] lets other
+//! tasks run.
+//!
+//! Dropping a handle aborts its task unless it was detached.
 //!
 //! # Naming the future
 //!
@@ -71,7 +74,12 @@ use core::marker::PhantomData;
 
 /// Start running a future concurrently, producing a handle of type `H`.
 ///
-/// Dropping the handle detaches the task: it keeps running.
+/// Dropping the handle aborts the task, so a task never outlives the code
+/// that spawned it by accident: cancelling a parent cancels its children.
+/// Perform [`Detach`] on the handle to let the task run on its own.
+///
+/// Handles implement [`AsyncFinalize`](crate::AsyncFinalize): in a scope,
+/// closing waits for the task to finish, and abandoning aborts it.
 pub struct Spawn<F, H> {
     /// The task.
     pub future: F,
@@ -91,6 +99,11 @@ pub struct Join<T> {
 /// [`JoinError::Cancelled`] unless the task had already finished.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Abort;
+
+/// Let a task keep running after its handle is dropped. Performed on the
+/// handle; afterwards the handle can still be joined.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Detach;
 
 /// Whether a task has finished. Performed on the handle.
 #[derive(Debug, Clone, Copy, Default)]
@@ -188,6 +201,7 @@ impl<T> crate::Operation for Join<T> {
 
 operations! {
     Abort => ();
+    Detach => ();
     #[query] IsFinished => bool;
     YieldNow => ();
 }

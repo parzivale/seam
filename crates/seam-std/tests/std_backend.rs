@@ -9,7 +9,7 @@ use seam_core::ops::io::{Flush, Read, ReadToEnd, WriteAll};
 use seam_core::ops::net::{Accept, LocalAddr, TcpBind, TcpConnect};
 use seam_core::ops::random::FillRandom;
 use seam_core::ops::time::Now;
-use seam_core::{Inspect, Perform, Scoped};
+use seam_core::{Finalize, Inspect, Perform, Scoped};
 use seam_std::Std;
 use seam_std::fs::File;
 use seam_std::net::{TcpListener, TcpStream};
@@ -28,7 +28,10 @@ fn copy_through_handle<C, F>(
 ) -> io::Result<()>
 where
     C: Perform<Open<F>>,
-    F: Scoped + for<'a> Perform<ReadToEnd<'a>> + for<'a> Perform<WriteAll<'a>> + Perform<Flush>,
+    F: Finalize<Error = io::Error>
+        + for<'a> Perform<ReadToEnd<'a>>
+        + for<'a> Perform<WriteAll<'a>>
+        + Perform<Flush>,
 {
     let mut bytes = Vec::new();
     c.perform(Open::read(from))?
@@ -85,4 +88,60 @@ fn clocks_and_randomness() {
     std.perform(FillRandom(&mut b));
     assert_ne!(a, b);
     assert!(std.inspect(Now) >= t0);
+}
+
+mod atomic {
+    use seam_core::ops::fs::{CreateAtomic, ReadDir, ReadFile, RemoveDir, WriteFile};
+    use seam_std::fs::AtomicFile;
+
+    use super::*;
+
+    fn replace(std: &mut Std, path: &std::path::Path, fail: bool) -> io::Result<()> {
+        std.perform(CreateAtomic::<AtomicFile>::new(path))?
+            .scope(|f| {
+                f.perform(WriteAll(b"new"))?;
+                if fail {
+                    return Err(io::Error::other("failed halfway"));
+                }
+                Ok(())
+            })
+    }
+
+    #[test]
+    fn commits_on_ok_and_rolls_back_otherwise() -> io::Result<()> {
+        let mut std = Std::new();
+        let dir = scratch_dir(&std, "atomic");
+        std.perform(CreateDir::all(&dir))?;
+        let path = dir.join("settings.conf");
+        std.perform(WriteFile::new(&path, "old"))?;
+
+        assert!(replace(&mut std, &path, true).is_err());
+        assert_eq!(std.inspect(ReadFile::new(&path))?, b"old");
+
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut std = Std::new();
+            let _ = std
+                .perform(CreateAtomic::<AtomicFile>::new(&path))
+                .unwrap()
+                .scope(|f| {
+                    f.perform(WriteAll(b"new")).unwrap();
+                    panic!("crash halfway")
+                }) as io::Result<()>;
+        }));
+        assert!(panicked.is_err());
+        assert_eq!(std.inspect(ReadFile::new(&path))?, b"old");
+        assert_eq!(
+            std.inspect(ReadDir::new(&dir))?,
+            std::slice::from_ref(&path),
+            "no temporary files left"
+        );
+
+        replace(&mut std, &path, false)?;
+        assert_eq!(std.inspect(ReadFile::new(&path))?, b"new");
+        assert_eq!(
+            std.inspect(ReadDir::new(&dir))?,
+            std::slice::from_ref(&path)
+        );
+        std.perform(RemoveDir::all(&dir))
+    }
 }

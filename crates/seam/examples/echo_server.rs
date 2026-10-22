@@ -5,7 +5,9 @@
 //! ```
 //!
 //! The server spawns a task per connection, through the `Spawn` operation,
-//! on Tokio's multithreaded runtime. The per-connection logic is an async
+//! on Tokio's multithreaded runtime, and detaches it. Each connection's
+//! stream is used inside a scope, so it is shut down cleanly when the echo
+//! succeeds. The per-connection logic is an async
 //! core with `Send` bounds, and the same function is tested against the
 //! in-memory network in `seam::test`, with no sockets and no runtime.
 
@@ -17,7 +19,7 @@ use seam::ops::env::Args;
 use seam::ops::io::{Read, WriteAll};
 use seam::ops::net::{Accept, LocalAddr, TcpBind};
 use seam::ops::stdio::Print;
-use seam::ops::task::Spawn;
+use seam::ops::task::{Detach, Spawn};
 use seam::prelude::*;
 
 /// Echoes everything it reads until the peer closes its end. Returns the
@@ -38,14 +40,30 @@ where
     }
 }
 
+/// Echoes one connection inside a scope: if the echo succeeds the stream is
+/// closed cleanly (the peer sees end of input); if it fails, or the task is
+/// aborted, the stream is just dropped.
+async fn handle_stream<S>(stream: S) -> io::Result<u64>
+where
+    S: for<'a> SendPerform<Read<'a>>
+        + for<'a> SendPerform<WriteAll<'a>>
+        + AsyncFinalize<Error = io::Error>
+        + Send,
+{
+    stream.scope_async(async |s| echo(s).await).await
+}
+
 /// One connection's task: echo, then log how it went. It owns a clone of
 /// the root capability, since a spawned task cannot borrow the server's.
-async fn connection<C, S>(mut c: C, mut stream: S, peer: SocketAddr)
+async fn connection<C, S>(mut c: C, stream: S, peer: SocketAddr)
 where
     C: for<'a> SendPerform<Print<'a>> + Send,
-    S: for<'a> SendPerform<Read<'a>> + for<'a> SendPerform<WriteAll<'a>> + Send,
+    S: for<'a> SendPerform<Read<'a>>
+        + for<'a> SendPerform<WriteAll<'a>>
+        + AsyncFinalize<Error = io::Error>
+        + Send,
 {
-    let line = match echo(&mut stream).await {
+    let line = match handle_stream(stream).await {
         Ok(n) => format!("{peer}: echoed {n} bytes\n"),
         Err(e) => format!("{peer}: {e}\n"),
     };
@@ -67,7 +85,7 @@ where
     L: SendPerform<Accept<S>> + Inspect<LocalAddr> + Send,
     F: Fn(C, S, SocketAddr) -> Fut + Send,
     Fut: Future<Output = ()> + Send,
-    H: Send,
+    H: SendPerform<Detach> + Send,
 {
     let mut listener = c.perform_send(TcpBind::new(addr)).await?;
     let local = listener.inspect(LocalAddr)?;
@@ -75,10 +93,11 @@ where
         .await?;
     loop {
         let (stream, peer) = listener.perform_send(Accept::new()).await?;
-        // Dropping the handle detaches the task.
-        let _task = c
+        let mut task = c
             .perform_send(Spawn::new(handle(c.clone(), stream, peer)))
             .await;
+        // Dropping a handle aborts its task, so let this one run on.
+        task.perform_send(Detach).await;
     }
 }
 
@@ -125,12 +144,15 @@ mod tests {
         client.perform(WriteAll(b"seam")).unwrap();
         client.perform(Shutdown(How::Write)).unwrap();
 
-        let (mut server, _) = listener.perform(Accept::<TcpStream>::new()).unwrap();
-        assert_eq!(block_on(echo(&mut server)).unwrap(), 11);
+        let (server, _) = listener.perform(Accept::<TcpStream>::new()).unwrap();
+        assert_eq!(block_on(handle_stream(server)).unwrap(), 11);
 
         let mut reply = Vec::new();
         client.perform(ReadToEnd(&mut reply)).unwrap();
         assert_eq!(reply, b"hello, seam");
+        // The scope closed the server's end cleanly: end of input, not an
+        // error.
+        assert_eq!(client.perform(seam::ops::io::Read(&mut [0; 8])).unwrap(), 0);
     }
 
     #[test]

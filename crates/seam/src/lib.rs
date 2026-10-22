@@ -85,9 +85,16 @@
 //!
 //! # Resources
 //!
-//! Handles that must be committed on success and discarded on failure
-//! implement [`Finalize`]. [`Scoped::scope`] lends one to a closure, then
-//! closes it, or abandons it if the closure panics.
+//! Handles with something to commit implement [`Finalize`] (or
+//! [`AsyncFinalize`]). [`Scoped::scope`] and [`AsyncScoped::scope_async`]
+//! lend one to a closure: if it returns `Ok`, the handle is closed and any
+//! close error is returned; if it returns `Err`, panics, or (async) is
+//! cancelled, the handle is abandoned. Dropping a handle always counts as
+//! abandoning it, so cancellation never commits half a result.
+//!
+//! The clearest case is `ops::fs::CreateAtomic`: a file that replaces its
+//! target only when its scope succeeds, used by the `backup` and
+//! `custom_ops` examples.
 //!
 //! # Keeping a core honest
 //!

@@ -3,10 +3,10 @@
 use std::io;
 use std::net::SocketAddr;
 
-use seam_core::Inspect;
 use seam_core::ops::net::{
     Accept, LocalAddr, PeerAddr, RecvFrom, Resolve, SendTo, Shutdown, TcpBind, TcpConnect, UdpBind,
 };
+use seam_core::{AsyncFinalize, Inspect};
 
 use crate::Tokio;
 
@@ -23,6 +23,31 @@ pub struct TcpListener(tokio::net::TcpListener);
 pub struct UdpSocket(tokio::net::UdpSocket);
 
 io_ops!(TcpStream);
+
+impl AsyncFinalize for TcpStream {
+    type Error = io::Error;
+
+    /// Flushes and shuts down the write half, so the peer sees end of input.
+    async fn close_async(mut self) -> io::Result<()> {
+        tokio::io::AsyncWriteExt::shutdown(&mut self.0).await
+    }
+}
+
+impl AsyncFinalize for TcpListener {
+    type Error = io::Error;
+
+    async fn close_async(self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl AsyncFinalize for UdpSocket {
+    type Error = io::Error;
+
+    async fn close_async(self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 async_op!(inspect [] Tokio, Resolve, |_s, op| {
     Ok(tokio::net::lookup_host((op.host.as_str(), op.port)).await?.collect())

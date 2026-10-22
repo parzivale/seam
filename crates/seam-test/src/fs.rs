@@ -1,4 +1,4 @@
-//! The in-memory filesystem, and the [`File`] handle.
+//! The in-memory filesystem, and the [`File`] and [`AtomicFile`] handles.
 //!
 //! Relative paths are resolved against the simulated current directory.
 //! `..` steps out of a directory only if it exists, as on a real system.
@@ -14,8 +14,8 @@ use std::time::SystemTime;
 use std::vec::Vec;
 
 use seam_core::ops::fs::{
-    CopyFile, CreateDir, FileInfo, FileKind, Metadata, Open, ReadDir, ReadFile, ReadToString,
-    RemoveDir, RemoveFile, Rename, WriteFile,
+    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Open, ReadDir, ReadFile,
+    ReadToString, RemoveDir, RemoveFile, Rename, WriteFile,
 };
 use seam_core::ops::io::{Flush, Read, ReadToEnd, Write, WriteAll};
 use seam_core::{Finalize, Inspect, Perform};
@@ -42,6 +42,8 @@ struct Inode {
 pub(crate) struct Fs {
     nodes: BTreeMap<Key, Node>,
     inodes: Vec<Inode>,
+    /// Numbers temporary files, so their names are deterministic.
+    next_temp: u64,
 }
 
 impl Default for Fs {
@@ -52,6 +54,7 @@ impl Default for Fs {
         Self {
             nodes: BTreeMap::from([(Key::new(), root)]),
             inodes: Vec::new(),
+            next_temp: 0,
         }
     }
 }
@@ -542,6 +545,113 @@ impl Perform<Flush> for File {
     }
 }
 
+/// Writes land immediately, so closing has nothing left to do.
 impl Finalize for File {
-    fn close(self) {}
+    type Error = io::Error;
+
+    fn close(self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A file that replaces its target when closed. See [`CreateAtomic`].
+///
+/// While it is open, its contents live in a temporary file beside the
+/// target, visible in the simulated filesystem as `.<name>.seam-<n>.tmp`.
+/// Closing renames it over the target; abandoning or dropping it removes
+/// the temporary file.
+#[derive(Debug)]
+pub struct AtomicFile {
+    file: File,
+    temp: Key,
+    target: Key,
+    committed: bool,
+}
+
+impl Perform<CreateAtomic<AtomicFile>> for Sim {
+    fn perform(&mut self, op: CreateAtomic<AtomicFile>) -> io::Result<AtomicFile> {
+        let (temp, target, inode) = self.fs_op(&op.path, |w, target| {
+            let Some(name) = target.last() else {
+                return Err(error(ErrorKind::IsADirectory, "is a directory"));
+            };
+            if let Some(Node::Dir { .. }) = w.fs.nodes.get(&target) {
+                return Err(error(ErrorKind::IsADirectory, "is a directory"));
+            }
+            let mut temp = parent(&target).to_vec();
+            let n = w.fs.next_temp;
+            w.fs.next_temp += 1;
+            let mut temp_name = OsString::from(".");
+            temp_name.push(name);
+            temp_name.push(std::format!(".seam-{n}.tmp"));
+            temp.push(temp_name);
+            let now = w.wall;
+            let inode = w.fs.write(&temp, Vec::new(), now)?;
+            Ok((temp, target, inode))
+        })?;
+        let file = File {
+            world: self.world.clone(),
+            inode,
+            pos: 0,
+            read: false,
+            write: true,
+            append: false,
+        };
+        Ok(AtomicFile {
+            file,
+            temp,
+            target,
+            committed: false,
+        })
+    }
+}
+
+impl Finalize for AtomicFile {
+    type Error = io::Error;
+
+    fn close(mut self) -> io::Result<()> {
+        let mut world = self.file.world.lock();
+        let now = world.wall;
+        let fs = &mut world.fs;
+        if fs.nodes.get(&self.temp) != Some(&Node::File(self.file.inode)) {
+            return Err(error(ErrorKind::NotFound, "the temporary file was removed"));
+        }
+        fs.require_dir(parent(&self.target))?;
+        if let Some(Node::Dir { .. }) = fs.nodes.get(&self.target) {
+            return Err(error(ErrorKind::IsADirectory, "is a directory"));
+        }
+        let node = fs.nodes.remove(&self.temp).expect("checked above");
+        fs.nodes.insert(self.target.clone(), node);
+        fs.touch_parent(&self.target, now);
+        drop(world);
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for AtomicFile {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let mut world = self.file.world.lock();
+        if world.fs.nodes.get(&self.temp) == Some(&Node::File(self.file.inode)) {
+            world.fs.nodes.remove(&self.temp);
+        }
+    }
+}
+
+macro_rules! delegate_io {
+    ($($op:ty => $out:ty),*) => {$(
+        impl Perform<$op> for AtomicFile {
+            fn perform(&mut self, op: $op) -> $out {
+                self.file.perform(op)
+            }
+        }
+    )*};
+}
+
+delegate_io! {
+    Write<'_> => io::Result<usize>,
+    WriteAll<'_> => io::Result<()>,
+    Flush => io::Result<()>
 }

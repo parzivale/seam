@@ -94,3 +94,43 @@ fn block_on_hands_out_the_root() {
     });
     assert_eq!(n, 7);
 }
+
+/// Cancelling a scope that is writing an atomic file leaves the old file
+/// and no temporary file behind.
+#[tokio::test]
+async fn atomic_file_survives_cancellation() -> io::Result<()> {
+    use seam_core::AsyncScoped;
+    use seam_core::ops::fs::{CreateAtomic, ReadDir};
+    use seam_tokio::fs::AtomicFile;
+
+    let mut tokio = Tokio::new();
+    let mut dir = std::env::temp_dir();
+    dir.push(format!("seam-tokio-atomic-{}", std::process::id()));
+    tokio.perform_send(CreateDir::all(dir.clone())).await?;
+    let path = dir.join("state.json");
+    tokio.perform_send(WriteFile::new(&path, "old")).await?;
+
+    let file: AtomicFile = tokio.perform_send(CreateAtomic::new(&path)).await?;
+    let scoped = file.scope_async(async |f| {
+        f.perform_send(WriteAll(b"new, but never finished")).await?;
+        std::future::pending::<()>().await;
+        io::Result::Ok(())
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), scoped)
+            .await
+            .is_err()
+    );
+    assert_eq!(tokio.inspect_send(ReadFile::new(&path)).await?, b"old");
+    assert_eq!(
+        tokio.inspect_send(ReadDir::new(&dir)).await?,
+        std::slice::from_ref(&path)
+    );
+
+    let file: AtomicFile = tokio.perform_send(CreateAtomic::new(&path)).await?;
+    file.scope_async(async |f| f.perform_send(WriteAll(b"new")).await)
+        .await?;
+    assert_eq!(tokio.inspect_send(ReadFile::new(&path)).await?, b"new");
+    assert_eq!(tokio.inspect_send(ReadDir::new(&dir)).await?, [path]);
+    tokio.perform_send(RemoveDir::all(dir)).await
+}

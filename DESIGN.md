@@ -53,7 +53,8 @@ feature, so a core written against them runs on any backend:
 - `stdio`: `Print`, `EPrint`, `ReadLine`
 - `signal`: `CtrlC`
 - `task` (feature `rt`, no_std): `Spawn<F, H>`, and `Join<T>`, `Abort`,
-  `IsFinished` on the handle; `YieldNow`. A bound must name the spawned
+  `IsFinished` and `Detach` on the handle; `YieldNow`. Dropping a handle
+  aborts its task unless detached. A bound must name the spawned
   future's type, so a core either takes the task as a function argument
   (the type is inferred at the call site, no allocation) or spawns a
   `BoxFuture` (feature `alloc`). Tasks are `'static`, so they get their own
@@ -127,16 +128,38 @@ with `templates/clippy.toml`, with an allow on that module alone.
 
 ```rust
 pub trait Finalize: Sized {
-    fn close(self);      // normal completion: flush, sync, commit
-    fn abandon(self) {}  // unwinding: discard, do not sync
+    type Error;
+    fn close(self) -> Result<(), Self::Error>; // commit: flush, sync, rename, shut down
+    fn abandon(self) {}                         // roll back; must equal dropping
 }
-pub trait Scoped: Finalize { fn scope<R>(self, f: impl FnOnce(&mut Self) -> R) -> R; }
-impl<T: Finalize> Scoped for T { /* drop guard: abandon on panic, close on return */ }
+pub trait AsyncFinalize: Sized {               // every Send Finalize is one
+    type Error;
+    fn close_async(self) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    fn abandon_async(self) {}
+}
+
+resource.scope(|r| -> Result<R, E> { .. })              // Scoped
+resource.scope_async(async |r| -> Result<R, E> { .. })  // AsyncScoped
 ```
 
-`Scoped` has a single blanket impl, so implementors cannot override it and
-skip cleanup. `close` has no error channel; a core that must see sync errors
-performs `Flush` itself before the scope ends.
+A scope commits only on success: `Ok` closes the resource and returns any
+close error (through `E: From<Self::Error>`); `Err`, a panic, or dropping the
+async scope's future abandons it. `Scoped` and `AsyncScoped` each have a
+single blanket impl, so implementors cannot override them and skip cleanup.
+
+**Drop means abandon.** A resource's `Drop` must leave things as `abandon`
+would; only `close` commits. That is what makes scopes cancellation-safe: a
+future can be dropped at any `.await`, including halfway through
+`close_async`, and whatever it held is dropped, which never commits half a
+result. It is also why seam's task handles abort their task on drop (Tokio's
+detach), with an explicit `Detach` operation.
+
+Resources: files (close flushes and syncs; read-only files skip the sync),
+TCP streams (close shuts down cleanly), task handles (close waits for the
+task), and `fs::CreateAtomic`'s atomic files, which write to a temporary
+file and rename it over the target only on close. All three backends
+implement them, and `Sim` makes the temporary file visible so tests can
+check it is cleaned up.
 
 For long-lived state in hand-written state machines, the plan is raw IDs
 with generation counters (runtime detection of stale handles).
@@ -175,8 +198,7 @@ module's imports, like its bounds, show what it can do.
   escape hatches. `allocator_api` is still unstable (checked on 1.99.1), so
   this waits.
 - **`Pin<Box<_>>` sink variant** for writers that are not `Unpin`.
-- **A `Resource` trait** for code generic over resources, and Tokio-side
-  `Finalize` (closing a Tokio file needs an async close).
+- **A `Resource` trait** for code generic over resources.
 - **Child process handles** (only run-to-completion today).
 
 ## Open questions

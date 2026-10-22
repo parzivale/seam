@@ -6,10 +6,12 @@
 //! and gives it two implementations:
 //!
 //! - `Memory`, a plain in-memory map, for unit tests of the core.
-//! - `FileStore<C>`, which keeps the store in a file. It is a capability
+//! - `FileStore<C, F>`, which keeps the store in a file. It is a capability
 //!   built from other capabilities: it needs only `ReadToString` and
-//!   `WriteFile` from whatever `C` it wraps, so it runs on the real
-//!   filesystem in `main` and on the simulated one in tests.
+//!   `CreateAtomic` from whatever `C` it wraps, so it runs on the real
+//!   filesystem in `main` and on the simulated one in tests. Every write
+//!   goes through an atomic file in a scope, so a crash, an error or a
+//!   cancellation mid-write never leaves a half-written store.
 //!
 //! ```text
 //! cargo run -p seam --example custom_ops --features std,test,fs,env
@@ -17,10 +19,12 @@
 
 use std::collections::BTreeMap;
 use std::io;
+use std::marker::PhantomData;
 use std::path::PathBuf;
 
 use seam::ops::env::TempDir;
-use seam::ops::fs::{ReadToString, WriteFile};
+use seam::ops::fs::{CreateAtomic, ReadToString};
+use seam::ops::io::WriteAll;
 use seam::prelude::*;
 
 /// The store's operations.
@@ -81,13 +85,24 @@ impl Perform<Put> for Memory {
 }
 
 /// A store kept in a file of `key\tvalue` lines, on top of any filesystem
-/// capability `C`.
-struct FileStore<C> {
+/// capability `C` whose atomic files are of type `F`.
+struct FileStore<C, F> {
     fs: C,
     path: PathBuf,
+    atomic: PhantomData<fn() -> F>,
 }
 
-impl<C: Inspect<ReadToString>> FileStore<C> {
+impl<C, F> FileStore<C, F> {
+    fn new(fs: C, path: impl Into<PathBuf>) -> Self {
+        Self {
+            fs,
+            path: path.into(),
+            atomic: PhantomData,
+        }
+    }
+}
+
+impl<C: Inspect<ReadToString>, F> FileStore<C, F> {
     fn load(&self) -> io::Result<BTreeMap<String, String>> {
         match self.fs.inspect(ReadToString::new(&self.path)) {
             Ok(text) => Ok(text
@@ -101,25 +116,37 @@ impl<C: Inspect<ReadToString>> FileStore<C> {
     }
 }
 
-impl<C: Inspect<ReadToString>> Inspect<Get> for FileStore<C> {
+impl<C: Inspect<ReadToString>, F> Inspect<Get> for FileStore<C, F> {
     fn inspect(&self, op: Get) -> io::Result<Option<String>> {
         Ok(self.load()?.remove(&op.0))
     }
 }
 
-impl<C: Inspect<ReadToString> + Perform<WriteFile>> Perform<Put> for FileStore<C> {
+impl<C, F> Perform<Put> for FileStore<C, F>
+where
+    C: Inspect<ReadToString> + Perform<CreateAtomic<F>>,
+    F: Finalize<Error = io::Error> + for<'a> Perform<WriteAll<'a>>,
+{
+    /// Rewrites the whole file, atomically: the scope renames the new file
+    /// into place only if every line was written.
     fn perform(&mut self, op: Put) -> io::Result<()> {
         let mut map = self.load()?;
         map.insert(op.0, op.1);
-        let text: String = map.iter().map(|(k, v)| format!("{k}\t{v}\n")).collect();
-        self.fs.perform(WriteFile::new(&self.path, text))
+        self.fs
+            .perform(CreateAtomic::new(&self.path))?
+            .scope(|file| {
+                for (k, v) in &map {
+                    file.perform(WriteAll(format!("{k}\t{v}\n").as_bytes()))?;
+                }
+                Ok(())
+            })
     }
 }
 
 fn main() -> io::Result<()> {
     let std = seam::stdlib::Std::new();
     let path = std.inspect(TempDir).join("seam-custom-ops.tsv");
-    let mut store = FileStore { fs: std, path };
+    let mut store = FileStore::<_, seam::stdlib::fs::AtomicFile>::new(std, path);
     let n = visit(&mut store, "home")?;
     // `main` is the edge, so it may print directly.
     println!(
@@ -131,7 +158,9 @@ fn main() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use seam::ops::fs::ReadDir;
     use seam::test::Sim;
+    use seam::test::fs::AtomicFile;
 
     use super::*;
 
@@ -149,14 +178,16 @@ mod tests {
 
     #[test]
     fn in_a_simulated_file() {
-        let mut store = FileStore {
-            fs: Sim::new(),
-            path: "/tmp/kv.tsv".into(),
-        };
+        let mut store = FileStore::<_, AtomicFile>::new(Sim::new(), "/tmp/kv.tsv");
         counts_visits(&mut store);
         assert_eq!(
             store.fs.file("/tmp/kv.tsv").unwrap(),
             b"visits:about\t1\nvisits:home\t2\n"
+        );
+        // The temporary file behind each atomic write is gone.
+        assert_eq!(
+            store.fs.inspect(ReadDir::new("/tmp")).unwrap(),
+            [PathBuf::from("/tmp/kv.tsv")]
         );
     }
 
@@ -164,10 +195,7 @@ mod tests {
     fn corrupt_store_is_an_error() {
         let mut sim = Sim::new();
         sim.add_file("/tmp/kv.tsv", "visits:home\tmany\n");
-        let mut store = FileStore {
-            fs: sim,
-            path: "/tmp/kv.tsv".into(),
-        };
+        let mut store = FileStore::<_, AtomicFile>::new(sim, "/tmp/kv.tsv");
         assert_eq!(
             visit(&mut store, "home").unwrap_err().kind(),
             io::ErrorKind::InvalidData

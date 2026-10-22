@@ -47,15 +47,19 @@
 //! # Tasks
 //!
 //! With `rt`, `Tokio` performs `Spawn` (see `seam_core::ops::task`),
-//! producing a `task::JoinHandle` on which the core performs `Join`, `Abort`
-//! and `IsFinished`. Spawned futures must be `Send + 'static`, as with
-//! `tokio::spawn`.
+//! producing a `task::JoinHandle` on which the core performs `Join`, `Abort`,
+//! `Detach` and `IsFinished`. Spawned futures must be `Send + 'static`, as
+//! with `tokio::spawn`. Unlike Tokio's own handle, dropping it aborts the
+//! task unless it was detached.
 //!
 //! # Handles
 //!
 //! As in `seam-std`, files and sockets are newtypes that expose no Tokio I/O
-//! traits. Tokio files write in the background, so perform
-//! `Flush` before dropping one.
+//! traits. They implement `AsyncFinalize`, for use with
+//! `AsyncScoped::scope_async`: closing a file flushes and syncs it, closing
+//! a stream shuts it down, closing a task handle waits for the task, and
+//! `fs::AtomicFile` renames itself into place. A scope that fails, panics or
+//! is cancelled abandons them instead.
 //!
 //! # Features
 //!

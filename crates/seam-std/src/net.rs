@@ -12,8 +12,8 @@ use crate::Std;
 
 /// A connected TCP stream. Read and write it with the `io` operations.
 ///
-/// [`Finalize::close`] shuts down both directions; [`Finalize::abandon`]
-/// drops it.
+/// [`Finalize::close`] shuts down both directions cleanly; abandoning or
+/// dropping it just closes the socket.
 #[derive(Debug)]
 pub struct TcpStream(std::net::TcpStream);
 
@@ -28,18 +28,29 @@ pub struct UdpSocket(std::net::UdpSocket);
 crate::io_ops!(TcpStream);
 
 impl Finalize for TcpStream {
-    fn close(self) {
-        let _ = io::Write::flush(&mut &self.0);
-        let _ = self.0.shutdown(std::net::Shutdown::Both);
+    type Error = io::Error;
+
+    /// Flushes and shuts down both directions.
+    fn close(self) -> io::Result<()> {
+        io::Write::flush(&mut &self.0)?;
+        self.0.shutdown(std::net::Shutdown::Both)
     }
 }
 
 impl Finalize for TcpListener {
-    fn close(self) {}
+    type Error = io::Error;
+
+    fn close(self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 impl Finalize for UdpSocket {
-    fn close(self) {}
+    type Error = io::Error;
+
+    fn close(self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 impl Inspect<Resolve> for Std {

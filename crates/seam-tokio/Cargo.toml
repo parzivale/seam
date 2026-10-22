@@ -1,0 +1,42 @@
+[package]
+name = "seam-tokio"
+description = "Tokio backend for seam: async implementations of seam operations over Tokio."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+seam-core = { workspace = true, features = ["std"] }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "fs", "net", "time", "io-util"] }
+
+# Feature names follow Tokio's. Each one turns on the Tokio feature of the
+# same name and the matching seam-core operation types.
+[features]
+default = []
+full = ["fs", "net", "time", "process", "io-std", "signal", "rt", "rt-multi-thread", "env", "random"]
+
+rt = ["tokio/rt"]
+rt-multi-thread = ["rt", "tokio/rt-multi-thread"]
+io-util = ["tokio/io-util"]
+fs = ["tokio/fs", "io-util", "seam-core/fs"]
+net = ["tokio/net", "io-util", "seam-core/net"]
+time = ["tokio/time", "seam-core/time"]
+process = ["tokio/process", "seam-core/process"]
+io-std = ["tokio/io-std", "io-util", "rt", "seam-core/io-std"]
+signal = ["tokio/signal", "seam-core/signal"]
+test-util = ["tokio/test-util"]
+
+# Not in Tokio: these run synchronously and lift to async for free.
+env = ["seam-core/env"]
+random = ["seam-core/random"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+workspace = true

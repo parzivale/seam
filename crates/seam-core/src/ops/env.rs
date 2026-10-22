@@ -1,0 +1,39 @@
+//! The process environment.
+
+use std::ffi::OsString;
+use std::io;
+use std::path::PathBuf;
+use std::vec::Vec;
+
+/// Read an environment variable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Var {
+    /// The variable's name.
+    pub name: OsString,
+}
+
+/// Read the command-line arguments, including the program name.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Args;
+
+/// Read the current working directory.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CurrentDir;
+
+/// Read the temporary-files directory.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TempDir;
+
+impl Var {
+    /// Describes reading the variable `name`.
+    pub fn new(name: impl Into<OsString>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+operations! {
+    #[query] Var => Option<OsString>;
+    #[query] Args => Vec<OsString>;
+    #[query] CurrentDir => io::Result<PathBuf>;
+    #[query] TempDir => PathBuf;
+}

@@ -1,11 +1,52 @@
 [package]
 name = "seam"
-description = "Sans-effect capability traits: hoist every effect out of the core."
+description = "Sans-effect programming: hoist every effect out of the core, behind capability traits."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[dependencies]
+seam-core = { workspace = true }
+seam-std = { workspace = true, optional = true }
+seam-tokio = { workspace = true, optional = true }
+
+# `seam` is no_std by default: only the traits, `Push` and the no_std
+# operation types. std is pulled in when you enable a capability whose
+# operation types need it, or a backend.
+[features]
+default = []
+
+# Backends.
+std = ["seam-core/std", "dep:seam-std"]
+tokio = ["std", "dep:seam-tokio"]
+
+# Capability groups over std. Each enables the operation types and, for
+# whichever backends are on, their implementations.
+fs = ["std", "seam-core/fs", "seam-std?/fs", "seam-tokio?/fs"]
+net = ["std", "seam-core/net", "seam-std?/net", "seam-tokio?/net"]
+process = ["std", "seam-core/process", "seam-std?/process", "seam-tokio?/process"]
+env = ["std", "seam-core/env", "seam-std?/env", "seam-tokio?/env"]
+io-std = ["std", "seam-core/io-std", "seam-std?/io-std", "seam-tokio?/io-std"]
+signal = ["tokio", "seam-core/signal", "seam-tokio/signal"]
+# Usable without std: `Sleep`, `RandomU64`, `FillRandom`.
+time = ["seam-core/time", "seam-std?/time", "seam-tokio?/time"]
+random = ["seam-core/random", "seam-std?/random", "seam-tokio?/random"]
+
+# Tokio runtime features, named as in Tokio.
+rt = ["tokio", "seam-tokio/rt"]
+rt-multi-thread = ["rt", "seam-tokio/rt-multi-thread"]
+test-util = ["tokio", "seam-tokio/test-util"]
+
+full = [
+    "std", "tokio",
+    "fs", "net", "process", "env", "io-std", "signal", "time", "random",
+    "rt", "rt-multi-thread",
+]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [lints]
 workspace = true

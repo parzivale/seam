@@ -1,0 +1,36 @@
+[package]
+name = "seam-core"
+description = "Sans-effect capability traits and operation types. no_std."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Operation types whose outcomes need std (io::Error, Path, Instant, ...).
+std = []
+
+# Capability groups. Groups whose operation types need std turn it on.
+fs = ["std", "io"]
+net = ["std", "io"]
+process = ["std"]
+env = ["std"]
+io-std = ["std"]
+signal = ["std"]
+# `time` and `random` are usable without std. With `std`, `time` also
+# gains `Now` and `WallClock`.
+time = []
+random = []
+
+# Handle-level read/write/flush operations. Pulled in by `fs` and `net`.
+io = ["std"]
+
+full = ["fs", "net", "process", "env", "io-std", "signal", "time", "random"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+workspace = true

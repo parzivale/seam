@@ -1,6 +1,6 @@
 [package]
 name = "seam-std"
-description = "std functionality (fs, net, time, env, process, random) as seam operations."
+description = "std backend for seam: real implementations of seam operations over std."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,21 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-seam = { path = "../seam" }
+seam-core = { workspace = true, features = ["std"] }
+
+[features]
+default = []
+fs = ["seam-core/fs"]
+net = ["seam-core/net"]
+time = ["seam-core/time"]
+env = ["seam-core/env"]
+process = ["seam-core/process"]
+random = ["seam-core/random"]
+io-std = ["seam-core/io-std"]
+full = ["fs", "net", "time", "env", "process", "random", "io-std"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [lints]
 workspace = true

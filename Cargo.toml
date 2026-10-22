@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/seam", "crates/seam-std"]
+members = ["crates/seam", "crates/seam-core", "crates/seam-std", "crates/seam-tokio"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,9 +9,12 @@ rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/parzivale/seam"
 
-[workspace.lints.rust]
-unsafe_op_in_unsafe_fn = "deny"
-missing_docs = "warn"
+[workspace.dependencies]
+seam-core = { path = "crates/seam-core", version = "0.1.0", default-features = false }
+seam-std = { path = "crates/seam-std", version = "0.1.0", default-features = false }
+seam-tokio = { path = "crates/seam-tokio", version = "0.1.0", default-features = false }
+tokio = { version = "1.54", default-features = false }
 
-[workspace.lints.clippy]
-undocumented_unsafe_blocks = "warn"
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

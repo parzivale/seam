@@ -29,6 +29,7 @@ fn jitter<C: Perform<RandomU64> + Perform<Sleep>>(c: &mut C) {
 | [`seam-core`](crates/seam-core) | The traits (`Operation`, `Query`, `Inspect`, `Perform`, `Finalize`, `Scoped`, async variants, `block_on`) and the operation types. `no_std`. |
 | [`seam-std`](crates/seam-std) | The std backend: a `Std` root capability and newtype handles (`File`, `TcpStream`, ...) that expose no std I/O traits. |
 | [`seam-tokio`](crates/seam-tokio) | The Tokio backend: a `Tokio` root capability implementing the async and `Send` capability traits. |
+| [`seam-test`](crates/seam-test) | The pure test backend: a `Sim` world with a virtual clock, seeded randomness, in-memory filesystem and network, scripted commands and captured stdio. Its only real effect is allocation. |
 | [`seam`](crates/seam) | Re-exports everything, behind feature flags. `no_std` by default. |
 
 ## Features
@@ -41,12 +42,34 @@ fn jitter<C: Perform<RandomU64> + Perform<Sleep>>(c: &mut C) {
 | `fs`, `net`, `process`, `env`, `io-std` | Those operation types. Pulls in std and the std backend. |
 | `std` | The std backend, `seam::stdlib`. |
 | `tokio` | The Tokio backend, `seam::tokio`. |
-| `signal`, `rt`, `rt-multi-thread`, `test-util` | Tokio-only, named as in Tokio. |
+| `test` | The pure test backend, `seam::test`. No std on its own. |
+| `signal` | `CtrlC`, on the Tokio and test backends. |
+| `rt`, `rt-multi-thread`, `test-util` | Tokio-only, named as in Tokio. |
 | `full` | Everything. |
 
 A backend implements exactly the capability groups that are enabled, so
 `features = ["tokio", "net", "time"]` gives you Tokio-backed networking and
 clocks and nothing else.
+
+## Testing a core
+
+`seam-test`'s `Sim` stands in for a real backend. Set up the world, run the
+core, assert on what it left behind:
+
+```rust
+use seam::Perform;
+use seam::ops::fs::WriteFile;
+use seam::test::Sim;
+
+let mut sim = Sim::with_seed(7);
+sim.add_dir("/data");
+sim.perform(WriteFile::new("/data/out", "ok")).unwrap(); // your core here
+assert_eq!(sim.file("/data/out").unwrap(), b"ok");
+```
+
+Nothing in the simulation waits: `Sleep` advances the virtual clock, and an
+operation that would block (an empty socket, no pending connection) fails
+with `WouldBlock`. The same seed and calls always give the same results.
 
 ## Keeping the core honest
 

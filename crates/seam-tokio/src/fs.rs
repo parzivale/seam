@@ -1,8 +1,8 @@
 //! Filesystem operations, and the [`File`] handle.
 
 use seam_core::ops::fs::{
-    CopyFile, CreateDir, Metadata, Open, ReadDir, ReadFile, ReadToString, RemoveDir, RemoveFile,
-    Rename, WriteFile,
+    CopyFile, CreateDir, FileInfo, FileKind, Metadata, Open, ReadDir, ReadFile, ReadToString,
+    RemoveDir, RemoveFile, Rename, WriteFile,
 };
 
 use crate::Tokio;
@@ -18,7 +18,7 @@ io_ops!(File);
 
 async_op!(inspect [] Tokio, ReadFile, |_s, op| tokio::fs::read(op.path).await);
 async_op!(inspect [] Tokio, ReadToString, |_s, op| tokio::fs::read_to_string(op.path).await);
-async_op!(inspect [] Tokio, Metadata, |_s, op| tokio::fs::metadata(op.path).await);
+async_op!(inspect [] Tokio, Metadata, |_s, op| tokio::fs::metadata(op.path).await.map(file_info));
 async_op!(inspect [] Tokio, ReadDir, |_s, op| {
     let mut dir = tokio::fs::read_dir(op.path).await?;
     let mut paths = Vec::new();
@@ -59,3 +59,22 @@ async_op!(perform [] Tokio, Open<File>, |_s, op| {
         .await
         .map(File)
 });
+
+fn file_info(m: std::fs::Metadata) -> FileInfo {
+    let t = m.file_type();
+    let kind = if t.is_file() {
+        FileKind::File
+    } else if t.is_dir() {
+        FileKind::Dir
+    } else if t.is_symlink() {
+        FileKind::Symlink
+    } else {
+        FileKind::Other
+    };
+    FileInfo {
+        kind,
+        len: m.len(),
+        readonly: m.permissions().readonly(),
+        modified: m.modified().ok(),
+    }
+}

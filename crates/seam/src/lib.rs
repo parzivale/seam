@@ -47,7 +47,9 @@
 //! | `fs`, `net`, `process`, `env`, `io-std` | operation types (pulls in std) |
 //! | `std` | the std backend, [`stdlib`] |
 //! | `tokio` | the Tokio backend, [`tokio`] |
-//! | `signal`, `rt`, `rt-multi-thread`, `test-util` | Tokio-only, as in Tokio |
+//! | `test` | the pure test backend, [`test`](mod@test): a simulated world |
+//! | `signal` | `CtrlC` (Tokio and test backends) |
+//! | `rt`, `rt-multi-thread`, `test-util` | Tokio-only, as in Tokio |
 //! | `full` | everything |
 //!
 //! A backend implements exactly the capability features that are enabled.
@@ -58,6 +60,11 @@ pub use seam_core::*;
 /// The std backend.
 #[cfg(feature = "std")]
 pub use seam_std as stdlib;
+
+/// The pure test backend: a simulated world whose only real effect is
+/// allocation.
+#[cfg(feature = "test")]
+pub use seam_test as test;
 
 /// The Tokio backend.
 #[cfg(feature = "tokio")]

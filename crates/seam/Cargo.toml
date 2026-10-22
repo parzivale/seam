@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 seam-core = { workspace = true }
 seam-std = { workspace = true, optional = true }
+seam-test = { workspace = true, optional = true }
 seam-tokio = { workspace = true, optional = true }
 
 # `seam` is no_std by default: only the traits, `Push` and the no_std
@@ -21,18 +22,21 @@ default = []
 # Backends.
 std = ["seam-core/std", "dep:seam-std"]
 tokio = ["std", "dep:seam-tokio"]
+# The pure test backend. Adds no std on its own.
+test = ["dep:seam-test"]
 
-# Capability groups over std. Each enables the operation types and, for
-# whichever backends are on, their implementations.
-fs = ["std", "seam-core/fs", "seam-std?/fs", "seam-tokio?/fs"]
-net = ["std", "seam-core/net", "seam-std?/net", "seam-tokio?/net"]
-process = ["std", "seam-core/process", "seam-std?/process", "seam-tokio?/process"]
-env = ["std", "seam-core/env", "seam-std?/env", "seam-tokio?/env"]
-io-std = ["std", "seam-core/io-std", "seam-std?/io-std", "seam-tokio?/io-std"]
-signal = ["tokio", "seam-core/signal", "seam-tokio/signal"]
+# Capability groups. Each enables the operation types and, for whichever
+# backends are on, their implementations. Those whose types need std turn
+# on the std backend.
+fs = ["std", "seam-core/fs", "seam-std?/fs", "seam-tokio?/fs", "seam-test?/fs"]
+net = ["std", "seam-core/net", "seam-std?/net", "seam-tokio?/net", "seam-test?/net"]
+process = ["std", "seam-core/process", "seam-std?/process", "seam-tokio?/process", "seam-test?/process"]
+env = ["std", "seam-core/env", "seam-std?/env", "seam-tokio?/env", "seam-test?/env"]
+io-std = ["std", "seam-core/io-std", "seam-std?/io-std", "seam-tokio?/io-std", "seam-test?/io-std"]
+signal = ["std", "seam-core/signal", "seam-tokio?/signal", "seam-test?/signal"]
 # Usable without std: `Sleep`, `RandomU64`, `FillRandom`.
-time = ["seam-core/time", "seam-std?/time", "seam-tokio?/time"]
-random = ["seam-core/random", "seam-std?/random", "seam-tokio?/random"]
+time = ["seam-core/time", "seam-std?/time", "seam-tokio?/time", "seam-test?/time"]
+random = ["seam-core/random", "seam-std?/random", "seam-tokio?/random", "seam-test?/random"]
 
 # Tokio runtime features, named as in Tokio.
 rt = ["tokio", "seam-tokio/rt"]
@@ -40,7 +44,7 @@ rt-multi-thread = ["rt", "seam-tokio/rt-multi-thread"]
 test-util = ["tokio", "seam-tokio/test-util"]
 
 full = [
-    "std", "tokio",
+    "std", "tokio", "test",
     "fs", "net", "process", "env", "io-std", "signal", "time", "random",
     "rt", "rt-multi-thread",
 ]

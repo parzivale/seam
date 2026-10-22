@@ -3,7 +3,6 @@
 //! Handle operations on an open file are in [`io`](super::io).
 
 use core::marker::PhantomData;
-use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::string::String;
@@ -32,7 +31,7 @@ pub struct WriteFile {
     pub contents: Vec<u8>,
 }
 
-/// Look up a path's metadata, following symlinks.
+/// Look up a path's metadata, following symlinks. Produces a [`FileInfo`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Metadata {
     /// The path to look up.
@@ -110,6 +109,47 @@ pub struct OpenOptions {
     pub truncate: bool,
     pub create: bool,
     pub create_new: bool,
+}
+
+/// What [`Metadata`] reports about a path.
+///
+/// A seam type rather than `std::fs::Metadata`, which cannot be constructed
+/// outside std, so that test backends can produce one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileInfo {
+    /// What the path is.
+    pub kind: FileKind,
+    /// The size in bytes.
+    pub len: u64,
+    /// Whether the permissions forbid writing.
+    pub readonly: bool,
+    /// The last modification time, if the platform records one.
+    pub modified: Option<std::time::SystemTime>,
+}
+
+/// The kind of thing a path names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FileKind {
+    /// A regular file.
+    File,
+    /// A directory.
+    Dir,
+    /// A symbolic link.
+    Symlink,
+    /// Anything else: a socket, a device, a FIFO.
+    Other,
+}
+
+impl FileInfo {
+    /// Whether this is a regular file.
+    pub fn is_file(&self) -> bool {
+        self.kind == FileKind::File
+    }
+
+    /// Whether this is a directory.
+    pub fn is_dir(&self) -> bool {
+        self.kind == FileKind::Dir
+    }
 }
 
 macro_rules! path_ops {
@@ -255,7 +295,7 @@ impl<F> core::fmt::Debug for Open<F> {
 operations! {
     #[query] ReadFile => io::Result<Vec<u8>>;
     #[query] ReadToString => io::Result<String>;
-    #[query] Metadata => io::Result<fs::Metadata>;
+    #[query] Metadata => io::Result<FileInfo>;
     #[query] ReadDir => io::Result<Vec<PathBuf>>;
     WriteFile => io::Result<()>;
     CreateDir => io::Result<()>;

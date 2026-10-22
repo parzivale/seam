@@ -1,0 +1,32 @@
+[package]
+name = "seam-test"
+description = "A pure test backend for seam: a simulated world whose only real effect is allocation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+seam-core = { workspace = true }
+
+[features]
+default = []
+# Usable without std (and without allocation).
+time = ["seam-core/time"]
+random = ["seam-core/random"]
+# Need std types (io::Error, PathBuf, ...), but still perform no real effects.
+std = ["seam-core/std"]
+fs = ["std", "seam-core/fs"]
+net = ["std", "seam-core/net"]
+env = ["std", "seam-core/env"]
+process = ["std", "seam-core/process"]
+io-std = ["std", "seam-core/io-std"]
+signal = ["std", "seam-core/signal"]
+full = ["time", "random", "fs", "net", "env", "process", "io-std", "signal"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+workspace = true

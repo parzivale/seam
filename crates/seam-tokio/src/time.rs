@@ -1,14 +1,18 @@
-use std::time::{Instant, SystemTime};
+use std::sync::OnceLock;
+use std::time::SystemTime;
 
 use seam_core::Inspect;
-use seam_core::ops::time::{Now, Sleep, WallClock};
+use seam_core::ops::time::{Instant, Now, Sleep, WallClock};
 
 use crate::Tokio;
+
+/// The clock's epoch: the first time anything in this process read it.
+static EPOCH: OnceLock<tokio::time::Instant> = OnceLock::new();
 
 // Tokio's clock, so that paused time (`test-util`) is respected.
 impl Inspect<Now> for Tokio {
     fn inspect(&self, _: Now) -> Instant {
-        tokio::time::Instant::now().into_std()
+        Instant::from_epoch(EPOCH.get_or_init(tokio::time::Instant::now).elapsed())
     }
 }
 

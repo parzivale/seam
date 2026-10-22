@@ -1,0 +1,177 @@
+//! A pure test backend for seam.
+//!
+//! [`Sim`] is a simulated world. It implements the same operations as the
+//! real backends, but the clock is virtual, randomness is a seeded PRNG,
+//! the filesystem and network live in memory, commands are scripted and
+//! stdio is captured. Its only real effect is allocation. The crate is
+//! linted with seam's own `clippy.toml`, which bans the std effect APIs.
+//!
+//! Everything is deterministic: the same seed and the same calls give the
+//! same results, in the same order.
+//!
+//! ```
+//! # #[cfg(all(feature = "time", feature = "random"))] {
+//! use core::time::Duration;
+//! use seam_core::{Inspect, Perform};
+//! use seam_core::ops::random::RandomU64;
+//! use seam_core::ops::time::{Now, Sleep};
+//! use seam_test::Sim;
+//!
+//! fn backoff<C: Perform<RandomU64> + Perform<Sleep>>(c: &mut C) {
+//!     let ms = 100 + c.perform(RandomU64) % 100;
+//!     c.perform(Sleep(Duration::from_millis(ms)));
+//! }
+//!
+//! let mut sim = Sim::with_seed(7);
+//! backoff(&mut sim); // returns at once: the clock is virtual
+//! let waited = sim.inspect(Now).since_epoch();
+//! assert!(waited >= Duration::from_millis(100));
+//! assert_eq!(Sim::with_seed(7).run(backoff).inspect(Now).since_epoch(), waited);
+//! # }
+//! ```
+//!
+//! # Blocking operations
+//!
+//! Nothing in the simulation waits. An operation that would block on a real
+//! system (reading an empty socket, accepting with no pending connection,
+//! waiting for Ctrl-C that was never raised) fails with
+//! [`ErrorKind::WouldBlock`](std::io::ErrorKind::WouldBlock) instead.
+//! `Sleep` advances the virtual clock and returns.
+//!
+//! # Features
+//!
+//! `time` and `random` work without std. `fs`, `net`, `env`, `process`,
+//! `io-std` and `signal` need std's types, but still make no system calls
+//! of their own. `full` turns on everything.
+#![no_std]
+
+#[cfg(feature = "std")]
+extern crate std;
+
+#[cfg(feature = "env")]
+mod env;
+#[cfg(feature = "fs")]
+pub mod fs;
+#[cfg(feature = "net")]
+pub mod net;
+#[cfg(feature = "process")]
+mod process;
+#[cfg(feature = "random")]
+mod random;
+#[cfg(feature = "signal")]
+mod signal;
+#[cfg(feature = "io-std")]
+mod stdio;
+#[cfg(feature = "time")]
+mod time;
+#[cfg(any(
+    feature = "fs",
+    feature = "net",
+    all(feature = "time", feature = "std")
+))]
+mod world;
+
+#[cfg(feature = "process")]
+pub use process::{Exited, Invocation, catch_exit};
+
+/// A simulated world: the root capability of the test backend.
+///
+/// Create one per test. Set up the world it starts in (files, variables,
+/// scripted commands, stdin), hand it to the core in place of a real
+/// backend, then assert on what the core left behind.
+pub struct Sim {
+    #[cfg(feature = "time")]
+    clock: core::time::Duration,
+    #[cfg(feature = "random")]
+    rng: random::SplitMix64,
+    #[cfg(feature = "env")]
+    env: env::Env,
+    #[cfg(any(feature = "fs", feature = "env"))]
+    cwd: std::path::PathBuf,
+    #[cfg(any(
+        feature = "fs",
+        feature = "net",
+        all(feature = "time", feature = "std")
+    ))]
+    world: world::Shared,
+    #[cfg(feature = "process")]
+    process: process::Processes,
+    #[cfg(feature = "io-std")]
+    stdio: stdio::Stdio,
+    #[cfg(feature = "signal")]
+    ctrl_c: u32,
+}
+
+impl Sim {
+    /// A fresh world with seed 0.
+    ///
+    /// The clock reads [`Instant::EPOCH`](seam_core::ops::time::Instant),
+    /// the wall clock reads the Unix epoch, the current directory is `/`, and
+    /// the filesystem holds an empty `/` and `/tmp`.
+    pub fn new() -> Self {
+        Self::with_seed(0)
+    }
+
+    /// A fresh world whose random numbers come from `seed`.
+    pub fn with_seed(seed: u64) -> Self {
+        #[cfg(not(feature = "random"))]
+        let _ = seed;
+        #[allow(unused_mut)]
+        let mut sim = Self {
+            #[cfg(feature = "time")]
+            clock: core::time::Duration::ZERO,
+            #[cfg(feature = "random")]
+            rng: random::SplitMix64(seed),
+            #[cfg(feature = "env")]
+            env: env::Env::default(),
+            #[cfg(any(feature = "fs", feature = "env"))]
+            cwd: std::path::PathBuf::from("/"),
+            #[cfg(any(
+                feature = "fs",
+                feature = "net",
+                all(feature = "time", feature = "std")
+            ))]
+            world: world::Shared::default(),
+            #[cfg(feature = "process")]
+            process: process::Processes::default(),
+            #[cfg(feature = "io-std")]
+            stdio: stdio::Stdio::default(),
+            #[cfg(feature = "signal")]
+            ctrl_c: 0,
+        };
+        #[cfg(feature = "fs")]
+        sim.add_dir("/tmp");
+        sim
+    }
+
+    /// Runs `core` against this world and returns the world, for chaining
+    /// assertions.
+    pub fn run(mut self, core: impl FnOnce(&mut Self)) -> Self {
+        core(&mut self);
+        self
+    }
+}
+
+impl Default for Sim {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl core::fmt::Debug for Sim {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Sim").finish_non_exhaustive()
+    }
+}
+
+/// Builds an `io::Error` with a message that names the simulation.
+#[cfg(any(
+    feature = "fs",
+    feature = "net",
+    feature = "process",
+    feature = "io-std",
+    feature = "signal"
+))]
+fn error(kind: std::io::ErrorKind, msg: &'static str) -> std::io::Error {
+    std::io::Error::new(kind, msg)
+}

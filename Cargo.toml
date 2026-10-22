@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/seam", "crates/seam-core", "crates/seam-std", "crates/seam-tokio"]
+members = ["crates/seam", "crates/seam-core", "crates/seam-std", "crates/seam-test", "crates/seam-tokio"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,7 @@ repository = "https://github.com/parzivale/seam"
 [workspace.dependencies]
 seam-core = { path = "crates/seam-core", version = "0.1.0", default-features = false }
 seam-std = { path = "crates/seam-std", version = "0.1.0", default-features = false }
+seam-test = { path = "crates/seam-test", version = "0.1.0", default-features = false }
 seam-tokio = { path = "crates/seam-tokio", version = "0.1.0", default-features = false }
 tokio = { version = "1.54", default-features = false }
 

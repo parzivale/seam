@@ -65,6 +65,7 @@ version = "0.1.0"
 dependencies = [
  "seam-core",
  "seam-std",
+ "seam-test",
  "seam-tokio",
 ]
 
@@ -74,6 +75,13 @@ version = "0.1.0"
 
 [[package]]
 name = "seam-std"
+version = "0.1.0"
+dependencies = [
+ "seam-core",
+]
+
+[[package]]
+name = "seam-test"
 version = "0.1.0"
 dependencies = [
  "seam-core",

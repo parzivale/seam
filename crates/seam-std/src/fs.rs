@@ -4,8 +4,8 @@ use std::io;
 use std::path::PathBuf;
 
 use seam_core::ops::fs::{
-    CopyFile, CreateDir, Metadata, Open, ReadDir, ReadFile, ReadToString, RemoveDir, RemoveFile,
-    Rename, WriteFile,
+    CopyFile, CreateDir, FileInfo, FileKind, Metadata, Open, ReadDir, ReadFile, ReadToString,
+    RemoveDir, RemoveFile, Rename, WriteFile,
 };
 use seam_core::{Finalize, Inspect, Perform};
 
@@ -42,8 +42,8 @@ impl Inspect<ReadToString> for Std {
 }
 
 impl Inspect<Metadata> for Std {
-    fn inspect(&self, op: Metadata) -> io::Result<std::fs::Metadata> {
-        std::fs::metadata(op.path)
+    fn inspect(&self, op: Metadata) -> io::Result<FileInfo> {
+        std::fs::metadata(op.path).map(file_info)
     }
 }
 
@@ -111,5 +111,24 @@ impl Perform<Open<File>> for Std {
             .create_new(o.create_new)
             .open(op.path)
             .map(File)
+    }
+}
+
+fn file_info(m: std::fs::Metadata) -> FileInfo {
+    let t = m.file_type();
+    let kind = if t.is_file() {
+        FileKind::File
+    } else if t.is_dir() {
+        FileKind::Dir
+    } else if t.is_symlink() {
+        FileKind::Symlink
+    } else {
+        FileKind::Other
+    };
+    FileInfo {
+        kind,
+        len: m.len(),
+        readonly: m.permissions().readonly(),
+        modified: m.modified().ok(),
     }
 }

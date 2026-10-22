@@ -1,15 +1,18 @@
 use std::convert::Infallible;
 use std::io;
-use std::process::Output;
 
 use seam_core::Perform;
-use seam_core::ops::process::{Exit, RunCommand};
+use seam_core::ops::process::{Exit, Output, RunCommand};
 
 use crate::Std;
 
 impl Perform<RunCommand> for Std {
     fn perform(&mut self, mut op: RunCommand) -> io::Result<Output> {
-        op.0.output()
+        op.0.output().map(|o| Output {
+            code: o.status.code(),
+            stdout: o.stdout,
+            stderr: o.stderr,
+        })
     }
 }
 

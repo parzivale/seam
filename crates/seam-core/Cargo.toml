@@ -20,7 +20,7 @@ env = ["std"]
 io-std = ["std"]
 signal = ["std"]
 # `time` and `random` are usable without std. With `std`, `time` also
-# gains `Now` and `WallClock`.
+# gains `WallClock`.
 time = []
 random = []
 

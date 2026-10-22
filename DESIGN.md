@@ -46,12 +46,18 @@ feature, so a core written against them runs on any backend:
 - `net`: `Resolve` (DNS is an effect), `TcpConnect<S>`, `TcpBind<L>`,
   `Accept<S>`, `UdpBind<U>`, `SendTo`, `RecvFrom`, `Shutdown`; `LocalAddr`
   and `PeerAddr` queries
-- `time`: `Sleep` (no_std); `Now`, `WallClock` (std)
+- `time`: `Sleep`, `Now` (no_std); `WallClock` (std)
 - `env`: `Var`, `Args`, `CurrentDir`, `TempDir` (all queries)
 - `process`: `RunCommand`, `Exit` (outcome `Infallible`)
 - `random`: `RandomU64`, `FillRandom` (no_std)
 - `stdio`: `Print`, `EPrint`, `ReadLine`
 - `signal`: `CtrlC`
+
+Outcome types must be constructible without the OS, or a test backend could
+not produce them. So `Now` returns seam's own `time::Instant` (a duration
+since a backend-chosen epoch) instead of `std::time::Instant`, `Metadata`
+returns `fs::FileInfo` instead of `std::fs::Metadata`, and `RunCommand`
+returns `process::Output` instead of `std::process::Output`.
 
 Operations that create a resource are generic over the backend's handle
 type (`Open<F>`), since each backend has its own. Bounds name the handle as a
@@ -74,6 +80,37 @@ Feature flags: `seam-std` has `fs`, `net`, `time`, `env`, `process`,
 synchronously. Tokio's `sync`, `macros` and `parking_lot` are not mirrored:
 there is nothing for seam to wrap yet, and `#[tokio::main]` cannot be
 re-exported without exposing Tokio itself.
+
+## Test backend
+
+`seam-test` provides `Sim`, a simulated world implementing every operation
+group with no real effects other than allocation:
+
+- **time**: a virtual monotonic clock and wall clock (starting at the Unix
+  epoch). `Sleep` advances both and returns at once.
+- **random**: SplitMix64 from a seed. Same seed, same sequence.
+- **fs**: an in-memory tree of inodes. Errors match a real system
+  (`NotFound`, `IsADirectory`, `NotADirectory`, `DirectoryNotEmpty`, ...),
+  `..` only steps out of directories that exist, and open handles survive
+  renames, as on Unix. No symlinks or permissions.
+- **net**: in-memory TCP (pipe pairs, with shutdown and `BrokenPipe`) and UDP
+  (truncation, drops to unbound addresses), plus a hosts table for
+  `Resolve`.
+- **env**, **io-std**: configured variables, arguments and directories;
+  scripted stdin, captured stdout and stderr.
+- **process**: commands are answered by scripted handlers and logged.
+  `Exit` unwinds with an `Exited` payload, without running the panic hook;
+  `catch_exit` turns it back into a code.
+- **signal**: `raise_ctrl_c` queues a Ctrl-C for `CtrlC` to consume.
+
+Nothing blocks. Operations that would wait on a real system fail with
+`WouldBlock`. `Sim` is `Send + Sync`, so `Send`-bound async cores (the kind
+written for Tokio) run in it through the sync lifts and `block_on`.
+
+Handles outlive the borrow of the `Sim` that made them, so the world state
+they reach (filesystem, network, wall clock) is shared behind an
+`Arc<Mutex<_>>`. That is the crate's one use of shared state; it is linted
+with `templates/clippy.toml`, with an allow on that module alone.
 
 ## Resources and finalization
 

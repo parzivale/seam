@@ -166,3 +166,7 @@ cargo test -p seam-rs --examples --features full,std,tokio,rt,test
 ## Design
 
 See [DESIGN.md](DESIGN.md). API documentation: `cargo doc --open --all-features`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

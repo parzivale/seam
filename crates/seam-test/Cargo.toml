@@ -1,11 +1,14 @@
 [package]
-name = "seam-test"
+name = "seam-rs-test"
 description = "A pure test backend for seam: a simulated world whose only real effect is allocation."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 seam-core = { workspace = true }
@@ -29,6 +32,10 @@ full = ["time", "random", "fs", "net", "env", "process", "io-std", "signal", "rt
 
 [package.metadata.docs.rs]
 all-features = true
+
+# Published as `seam-rs-test`; code still refers to it as `seam_test`.
+[lib]
+name = "seam_test"
 
 [lints]
 workspace = true

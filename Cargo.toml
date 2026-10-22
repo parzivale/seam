@@ -8,12 +8,14 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/parzivale/seam"
+keywords = ["effects", "capabilities", "sans-io", "testing", "simulation"]
+categories = ["no-std", "asynchronous", "development-tools::testing"]
 
 [workspace.dependencies]
-seam-core = { path = "crates/seam-core", version = "0.1.0", default-features = false }
-seam-std = { path = "crates/seam-std", version = "0.1.0", default-features = false }
-seam-test = { path = "crates/seam-test", version = "0.1.0", default-features = false }
-seam-tokio = { path = "crates/seam-tokio", version = "0.1.0", default-features = false }
+seam-core = { package = "seam-rs-core", path = "crates/seam-core", version = "0.1.0", default-features = false }
+seam-std = { package = "seam-rs-std", path = "crates/seam-std", version = "0.1.0", default-features = false }
+seam-test = { package = "seam-rs-test", path = "crates/seam-test", version = "0.1.0", default-features = false }
+seam-tokio = { package = "seam-rs-tokio", path = "crates/seam-tokio", version = "0.1.0", default-features = false }
 tokio = { version = "1.54", default-features = false }
 
 [workspace.lints.rust]

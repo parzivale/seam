@@ -60,38 +60,38 @@ dependencies = [
 ]
 
 [[package]]
-name = "seam"
+name = "seam-rs"
 version = "0.1.0"
 dependencies = [
- "seam-core",
- "seam-std",
- "seam-test",
- "seam-tokio",
+ "seam-rs-core",
+ "seam-rs-std",
+ "seam-rs-test",
+ "seam-rs-tokio",
 ]
 
 [[package]]
-name = "seam-core"
+name = "seam-rs-core"
 version = "0.1.0"
 
 [[package]]
-name = "seam-std"
+name = "seam-rs-std"
 version = "0.1.0"
 dependencies = [
- "seam-core",
+ "seam-rs-core",
 ]
 
 [[package]]
-name = "seam-test"
+name = "seam-rs-test"
 version = "0.1.0"
 dependencies = [
- "seam-core",
+ "seam-rs-core",
 ]
 
 [[package]]
-name = "seam-tokio"
+name = "seam-rs-tokio"
 version = "0.1.0"
 dependencies = [
- "seam-core",
+ "seam-rs-core",
  "tokio",
 ]
 

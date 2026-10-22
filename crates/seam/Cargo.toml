@@ -1,11 +1,14 @@
 [package]
-name = "seam"
+name = "seam-rs"
 description = "Sans-effect programming: hoist every effect out of the core, behind capability traits."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 seam-core = { workspace = true }
@@ -55,6 +58,10 @@ test-util = ["seam-tokio?/test-util"]
 
 [package.metadata.docs.rs]
 all-features = true
+
+# Published as `seam-rs`; code still refers to it as `seam`.
+[lib]
+name = "seam"
 
 [lints]
 workspace = true

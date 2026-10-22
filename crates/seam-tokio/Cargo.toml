@@ -1,11 +1,14 @@
 [package]
-name = "seam-tokio"
+name = "seam-rs-tokio"
 description = "Tokio backend for seam: async implementations of seam operations over Tokio."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 seam-core = { workspace = true, features = ["std"] }
@@ -37,6 +40,10 @@ random = ["seam-core/random"]
 
 [package.metadata.docs.rs]
 all-features = true
+
+# Published as `seam-rs-tokio`; code still refers to it as `seam_tokio`.
+[lib]
+name = "seam_tokio"
 
 [lints]
 workspace = true

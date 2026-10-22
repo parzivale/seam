@@ -1,11 +1,14 @@
 [package]
-name = "seam-std"
+name = "seam-rs-std"
 description = "std backend for seam: real implementations of seam operations over std."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 seam-core = { workspace = true, features = ["std"] }
@@ -23,6 +26,10 @@ full = ["fs", "net", "time", "env", "process", "random", "io-std"]
 
 [package.metadata.docs.rs]
 all-features = true
+
+# Published as `seam-rs-std`; code still refers to it as `seam_std`.
+[lib]
+name = "seam_std"
 
 [lints]
 workspace = true

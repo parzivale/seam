@@ -1,11 +1,14 @@
 [package]
-name = "seam-core"
+name = "seam-rs-core"
 description = "Sans-effect capability traits and operation types. no_std."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
 
 [features]
 default = []
@@ -35,6 +38,10 @@ full = ["fs", "net", "process", "env", "io-std", "signal", "time", "random", "rt
 
 [package.metadata.docs.rs]
 all-features = true
+
+# Published as `seam-rs-core`; code still refers to it as `seam_core`.
+[lib]
+name = "seam_core"
 
 [lints]
 workspace = true

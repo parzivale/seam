@@ -30,11 +30,13 @@ time = []
 random = []
 # Spawning and joining tasks. No std needed.
 rt = []
+# Channels and shared cells. No std needed.
+sync = []
 
 # Handle-level read/write/flush operations. Pulled in by `fs` and `net`.
 io = ["std"]
 
-full = ["fs", "net", "process", "env", "io-std", "signal", "time", "random", "rt"]
+full = ["fs", "net", "process", "env", "io-std", "signal", "time", "random", "rt", "sync"]
 
 [package.metadata.docs.rs]
 all-features = true

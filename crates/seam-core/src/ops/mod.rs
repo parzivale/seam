@@ -15,6 +15,7 @@
 //! | `process` | `process` | yes | `RunCommand`, `Exit` |
 //! | `stdio` | `io-std` | yes | `Print`, `ReadLine` |
 //! | `signal` | `signal` | yes | `CtrlC` |
+//! | `sync` | `sync` | no | `Channel`, `SendMsg`, `RecvMsg`, `Share`, `Update` |
 //! | `task` | `rt` | no (`BoxFuture`: alloc) | `Spawn`, `SpawnSet`, `SpawnWith`, `Join`, `YieldNow` |
 //!
 //! # Resources
@@ -78,6 +79,8 @@ pub mod random;
 pub mod signal;
 #[cfg(feature = "io-std")]
 pub mod stdio;
+#[cfg(feature = "sync")]
+pub mod sync;
 #[cfg(feature = "rt")]
 pub mod task;
 #[cfg(feature = "time")]

@@ -45,7 +45,10 @@
 //! | process | `on_command` | `invocations`, `catch_exit` |
 //! | signal | `raise_ctrl_c` | |
 //!
-//! Each row needs its feature.
+//! Each row needs its feature. The same setup can be written as a world
+//! file, in KDL, and loaded with `Sim::from_world`; `Sim::check_world`
+//! checks the world afterwards against expectations in the same format.
+//! See the `world_file` module.
 //!
 //! ```
 //! # #[cfg(all(feature = "fs", feature = "env", feature = "io-std"))] {
@@ -122,6 +125,8 @@ extern crate std;
 mod env;
 #[cfg(feature = "fs")]
 pub mod fs;
+#[cfg(feature = "std")]
+mod kdl;
 #[cfg(feature = "net")]
 pub mod net;
 #[cfg(feature = "process")]
@@ -148,9 +153,13 @@ mod timeouts;
     all(feature = "time", feature = "std")
 ))]
 mod world;
+#[cfg(feature = "std")]
+pub mod world_file;
 
 #[cfg(feature = "process")]
 pub use process::{Exited, Invocation, catch_exit};
+#[cfg(feature = "std")]
+pub use world_file::{Failure, WorldError, WorldMismatch};
 
 /// A simulated world: the root capability of the test backend.
 ///

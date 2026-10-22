@@ -116,13 +116,8 @@ mod tests {
     use super::*;
 
     fn world(cores: usize) -> Sim {
-        let mut sim = Sim::new();
-        sim.add_file("/a.txt", "one two three")
-            .add_file("/b.txt", "four")
-            .add_file("/c.txt", "five six")
-            .add_file("/d.txt", "")
-            .set_args(["word_count", "/a.txt", "/b.txt", "/c.txt", "/d.txt"])
-            .set_parallelism(NonZeroUsize::new(cores).unwrap());
+        let mut sim = Sim::from_world(include_str!("word_count.world")).unwrap();
+        sim.set_parallelism(NonZeroUsize::new(cores).unwrap());
         sim
     }
 
@@ -130,6 +125,31 @@ mod tests {
         let threads = Threads::with_seed(sim, seed);
         threads.run(|mut sim| run::<_, Shared<_>, ThreadSet<_>>(&mut sim))?;
         Ok(String::from_utf8(threads.with_sim(|s| s.take_stdout())).unwrap())
+    }
+
+    /// The same check, written as expectations on the world afterwards.
+    #[test]
+    fn the_world_afterwards() {
+        let threads = Threads::with_seed(world(2), 3);
+        threads
+            .run(|mut sim| run::<_, Shared<_>, ThreadSet<_>>(&mut sim))
+            .unwrap();
+        threads.with_sim(|sim| {
+            sim.assert_world(
+                r#"
+                stdio {
+                    stdout """
+                               3 /a.txt
+                               1 /b.txt
+                               2 /c.txt
+                               0 /d.txt
+                               6 total
+
+                        """
+                }
+                "#,
+            )
+        });
     }
 
     #[test]

@@ -188,6 +188,34 @@ lets only one run at a time, handing over through a condvar.
   other thread is unwound with a private payload (via `resume_unwind`, so
   no panic message), and drops that would block return at once instead.
 
+### World files
+
+`Sim::from_world` sets a world up from a KDL file, and `check_world` checks
+one against expectations in the same format. KDL was chosen for its tree
+shape: blocks per kind of operation (`env`, `fs`, `net`, ...), and
+directories that nest the way they do on disk. Each directive is one of
+`Sim`'s setup methods, so the format cannot describe a world the simulation
+does not support.
+
+Ordering follows KDL: nodes and arguments are ordered, properties are not.
+So anything whose order matters is written as nodes or arguments, and
+properties only carry named options (`exit=`, `stdout=`). Directives apply
+in document order and the last setting wins, which is also how one file
+layers over another. The simulated filesystem lists directories by name,
+whatever order the files were written in.
+
+Expectations check only what they list. `stdout` and `stderr` compare
+exact bytes, and `ran` lines must be every command, in order. Everything is
+checked before reporting, so one run shows every difference.
+
+The parser is a small one for the subset of KDL v2 world files use (no type
+annotations, integers only), rather than the `kdl` crate, which keeps
+seam-test free of dependencies and lets errors speak in the world's terms.
+Paths are quoted, since KDL does not allow `/` in a bare word; the parser
+says so when it meets one. Dhall was considered for its types and imports,
+but its one Rust implementation is heavy, can fetch imports over the
+network, and adds programmability that tests already have in Rust.
+
 ## Resources: forced scopes
 
 Effects that produce something lasting (a file, a socket, a task) are

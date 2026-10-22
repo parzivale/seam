@@ -197,6 +197,48 @@ joined or aborted together. None of the task API allocates in seam itself;
 Temporary files left by a process that was killed outright are cleaned up
 with `SweepAtomic`.
 
+## World files
+
+A test can describe the world a core starts in, and what it should look
+like afterwards, in [KDL](https://kdl.dev): one block per kind of
+operation, the same kinds a root is built from.
+
+```kdl
+// app.world
+seed 7
+env {
+    var USER ada
+    args app "--config" "/etc/app.conf"
+}
+fs {
+    dir "/etc" {
+        file app.conf """
+            port = 8080
+
+            """
+    }
+}
+net { host example.com "93.184.216.34" }
+process { command git exit=0 stdout="clean\n" }
+```
+
+```rust
+let mut sim = Sim::from_world(include_str!("app.world"))?;
+run(&mut sim)?;
+sim.assert_world(r#"
+    fs { file "/var/log/app.log" "started on 8080\n"; absent "/tmp/app.lock" }
+    stdio { stdout "ok\n" }
+    process { ran git status }
+"#);
+```
+
+Directives apply in order, and something set twice keeps its last value;
+`load_world` layers a test's changes over a shared base. Directories nest.
+A failing expectation is reported with its line, all of them at once, and
+a mistake in the file is an error with its line and column ("unknown `fil`
+in `fs` (did you mean `file`?)"). The parser is seam-test's own, for the
+part of KDL world files use, so seam-test still has no dependencies.
+
 ## Timeouts
 
 Any operation that waits can be given a deadline by wrapping it in

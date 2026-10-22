@@ -1,0 +1,11 @@
+// The world the word_count tests start in.
+env {
+    args word_count "/a.txt" "/b.txt" "/c.txt" "/d.txt"
+}
+
+fs {
+    file "/a.txt" "one two three"
+    file "/b.txt" four
+    file "/c.txt" "five six"
+    file "/d.txt" ""
+}

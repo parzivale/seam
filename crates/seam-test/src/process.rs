@@ -16,7 +16,19 @@ type Handler = Box<dyn FnMut(&Command) -> io::Result<Output> + Send + Sync>;
 pub(crate) struct Processes {
     handlers: Vec<(OsString, Handler)>,
     log: Vec<Invocation>,
+    /// Fixed responses from world files, shared with their handlers.
+    rules: Rules,
 }
+
+/// A fixed response to a program, with its arguments if they must match.
+struct Rule {
+    program: OsString,
+    args: Option<Vec<OsString>>,
+    output: Output,
+}
+
+#[allow(clippy::disallowed_types)] // shared between the Sim and its handlers
+type Rules = std::sync::Arc<std::sync::Mutex<Vec<Rule>>>;
 
 /// A command the core ran, recorded for assertions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +58,51 @@ impl Sim {
         self.process.handlers.retain(|(p, _)| *p != program);
         self.process.handlers.push((program, Box::new(handler)));
         self
+    }
+
+    /// Scripts a fixed response: running `program`, with exactly `args` if
+    /// given and with any arguments otherwise, produces `output`. Later
+    /// responses win, and one for exact arguments wins over one for any.
+    /// Replaces a handler from [`on_command`](Self::on_command) for the
+    /// same program.
+    #[allow(clippy::disallowed_types)] // the rules are shared with the handler
+    pub(crate) fn script_command(
+        &mut self,
+        program: OsString,
+        args: Option<Vec<OsString>>,
+        output: Output,
+    ) {
+        let rules = std::sync::Arc::clone(&self.process.rules);
+        rules
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Rule {
+                program: program.clone(),
+                args,
+                output,
+            });
+        self.on_command(program, move |cmd: &Command| {
+            let rules = rules
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let args: Vec<OsString> = cmd.get_args().map(|a| a.to_os_string()).collect();
+            let for_program = || {
+                rules
+                    .iter()
+                    .rev()
+                    .filter(|r| r.program == cmd.get_program())
+            };
+            for_program()
+                .find(|r| r.args.as_ref() == Some(&args))
+                .or_else(|| for_program().find(|r| r.args.is_none()))
+                .map(|r| r.output.clone())
+                .ok_or_else(|| {
+                    error(
+                        ErrorKind::NotFound,
+                        "the world file scripts this program, but not with these arguments",
+                    )
+                })
+        });
     }
 
     /// Every command the core has run, in order.

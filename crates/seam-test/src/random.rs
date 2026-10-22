@@ -17,6 +17,15 @@ impl SplitMix64 {
     }
 }
 
+impl Sim {
+    /// Restarts the random numbers from `seed`, as if the world had been
+    /// created with [`Sim::with_seed`].
+    pub fn set_seed(&mut self, seed: u64) -> &mut Self {
+        self.rng = SplitMix64(seed);
+        self
+    }
+}
+
 impl Perform<RandomU64> for Sim {
     fn perform(&mut self, _: RandomU64) -> u64 {
         self.rng.next()

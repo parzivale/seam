@@ -9,7 +9,7 @@ use seam_core::ops::net::{
 use seam_core::{AsyncProvide, Inspect, Token};
 
 #[cfg(feature = "rt")]
-use seam_core::ops::task::SpawnWith;
+use seam_core::ops::task::{SpawnWith, TaskBody};
 
 use crate::Tokio;
 #[cfg(feature = "rt")]
@@ -92,8 +92,8 @@ impl AsyncProvide<Accept<TcpStream>> for TcpListener {
     }
 }
 
-/// Accepts a connection and handles it in a new task, which owns the
-/// stream. In the task, the stream is shut down cleanly when the body
+/// Accepts a connection and runs `body` with it in a new task, which owns
+/// the stream. In the task, the stream is shut down cleanly when the body
 /// returns `Ok`, and just closed otherwise, including when the task is
 /// aborted.
 ///
@@ -101,28 +101,31 @@ impl AsyncProvide<Accept<TcpStream>> for TcpListener {
 /// discarded, so perform [`Join`](seam_core::ops::task::Join) on the handle
 /// to see it.
 #[cfg(feature = "rt")]
-impl<T, E> AsyncProvide<SpawnWith<Accept<TcpStream>, T, E, JoinHandle<Result<T, E>>>>
+impl<B> AsyncProvide<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>>
     for TcpListener
 where
-    T: Send + 'static,
-    E: From<io::Error> + Send + 'static,
+    B: TaskBody<TcpStream>,
+    B::Error: From<io::Error>,
 {
     async fn provide_async(
         &mut self,
-        op: SpawnWith<Accept<TcpStream>, T, E, JoinHandle<Result<T, E>>>,
+        op: SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>,
         _: Token,
-    ) -> io::Result<JoinHandle<Result<T, E>>> {
+    ) -> io::Result<JoinHandle<Result<B::Output, B::Error>>> {
         let (stream, _) = self.0.accept().await?;
         let body = op.body;
         Ok(JoinHandle::new(tokio::spawn(async move {
             let mut stream = TcpStream(stream);
-            let value = body(&mut stream).await?;
+            let value = body.run(&mut stream).await?;
             stream.commit().await?;
             Ok(value)
         })))
     }
 
-    async fn close_async(&mut self, task: JoinHandle<Result<T, E>>) -> io::Result<()> {
+    async fn close_async(
+        &mut self,
+        task: JoinHandle<Result<B::Output, B::Error>>,
+    ) -> io::Result<()> {
         task.finish().await.map_err(io::Error::from)
     }
 }

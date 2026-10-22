@@ -4,7 +4,7 @@
 //! cargo run -p seam --example echo_server --features tokio,rt,rt-multi-thread,net,env,io-std,test -- 127.0.0.1:7878
 //! ```
 //!
-//! The server spawns a task per connection, through the `Spawn` operation,
+//! The server spawns a task per connection, through `SpawnWith`,
 //! on Tokio's multithreaded runtime, and detaches it. Each connection's
 //! stream is used inside a scope, so it is shut down cleanly when the echo
 //! succeeds. The per-connection logic is an async
@@ -18,7 +18,7 @@ use seam::ops::env::Args;
 use seam::ops::io::{Read, WriteAll};
 use seam::ops::net::{Accept, LocalAddr, PeerAddr, TcpBind};
 use seam::ops::stdio::Print;
-use seam::ops::task::{Detach, SpawnWith};
+use seam::ops::task::{Detach, SpawnWith, TaskBody};
 use seam::prelude::*;
 
 /// Echoes everything it reads until the peer closes its end. Returns the
@@ -57,21 +57,33 @@ where
     result.map(drop)
 }
 
+/// The task that handles one connection: owns a clone of the capability,
+/// for logging, and borrows the stream the listener accepted for it. A named
+/// type, so that `serve`'s bounds can name it, and nothing is boxed.
+struct Echo<C>(C);
+
+impl<C, S> TaskBody<S> for Echo<C>
+where
+    C: for<'a> SendPerform<Print<'a>> + Send + 'static,
+    S: for<'a> SendPerform<Read<'a>> + for<'a> SendPerform<WriteAll<'a>> + Inspect<PeerAddr> + Send,
+{
+    type Output = ();
+    type Error = io::Error;
+
+    async fn run(mut self, stream: &mut S) -> io::Result<()> {
+        connection(&mut self.0, stream).await
+    }
+}
+
 /// Binds `addr` and serves forever, each connection in its own task.
 ///
 /// The listener exists only inside its scope, and a connection only inside
 /// the task it is accepted into: `SpawnWith` has the listener accept the
-/// connection and hand it to a new task, which owns it. Each task gets its
-/// own clone of the capability, for logging.
+/// connection and hand it to a new task running `Echo`, which owns it.
 async fn serve<C, L, S, H>(c: &mut C, addr: SocketAddr) -> io::Result<()>
 where
     C: AsyncProvide<TcpBind<L>> + for<'a> SendPerform<Print<'a>> + Clone + Send + 'static,
-    L: AsyncProvide<SpawnWith<Accept<S>, (), io::Error, H>> + Inspect<LocalAddr> + Send,
-    S: for<'a> SendPerform<Read<'a>>
-        + for<'a> SendPerform<WriteAll<'a>>
-        + Inspect<PeerAddr>
-        + Send
-        + 'static,
+    L: AsyncProvide<SpawnWith<Accept<S>, Echo<C>, H>> + Inspect<LocalAddr> + Send,
     H: SendPerform<Detach> + Send,
 {
     c.acquire_async(TcpBind::new(addr), async |c, listener| {
@@ -79,10 +91,7 @@ where
         c.perform_send(Print(format!("listening on {local}\n").as_bytes()))
             .await?;
         loop {
-            let mut log = c.clone();
-            let task = SpawnWith::<_, (), io::Error, H>::new(Accept::<S>::new(), move |stream| {
-                Box::pin(async move { connection(&mut log, stream).await })
-            });
+            let task = SpawnWith::new(Accept::new(), Echo(c.clone()));
             // The handle's scope would wait for the task; detach it so the
             // server can accept the next connection meanwhile.
             listener

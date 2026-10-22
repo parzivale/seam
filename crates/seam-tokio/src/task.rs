@@ -2,13 +2,15 @@
 
 use core::future::Future;
 
-use seam_core::ops::task::{Abort, Detach, IsFinished, Join, JoinError, Spawn, SpawnAll, YieldNow};
-use seam_core::{AsyncProvide, Inspect, Perform, Token};
+use seam_core::ops::task::{
+    Abort, Detach, IsFinished, Join, JoinError, JoinNext, Spawn, SpawnInto, SpawnSet, YieldNow,
+};
+use seam_core::{AsyncProvide, Inspect, Perform, Rejected, Token};
 
 use crate::Tokio;
 
-/// A handle to a task spawned on Tokio, acquired with [`Spawn`],
-/// [`SpawnAll`] or `SpawnWith`. Perform [`Join`] to take its output,
+/// A handle to a task spawned on Tokio, acquired with [`Spawn`] or
+/// `SpawnWith`. Perform [`Join`] to take its output,
 /// [`Abort`] to cancel it, [`Detach`] to let it outlive its scope, or
 /// [`IsFinished`] to check on it.
 ///
@@ -77,38 +79,67 @@ where
     }
 }
 
-/// Spawns every task onto the current Tokio runtime. Closing waits for all
-/// of them, then reports the first failure.
+/// A set of tasks on Tokio, acquired with [`SpawnSet`]. Perform
+/// [`SpawnInto`] to add a task, [`JoinNext`] to take the next output as
+/// tasks finish, and [`Abort`] to cancel them all.
+///
+/// When its scope succeeds, closing the set waits for every task still in
+/// it and reports the first failure. When the scope fails, panics or is
+/// cancelled, every task is aborted. Backed by Tokio's `JoinSet`.
+#[derive(Debug)]
+pub struct TaskSet<T>(tokio::task::JoinSet<T>);
+
+fn join_error(e: tokio::task::JoinError) -> JoinError {
+    if e.is_panic() {
+        JoinError::Panicked
+    } else {
+        JoinError::Cancelled
+    }
+}
+
+impl<T: Send + 'static> AsyncProvide<SpawnSet<TaskSet<T>>> for Tokio {
+    async fn provide_async(
+        &mut self,
+        _: SpawnSet<TaskSet<T>>,
+        _: Token,
+    ) -> Result<TaskSet<T>, JoinError> {
+        Ok(TaskSet(tokio::task::JoinSet::new()))
+    }
+
+    async fn close_async(&mut self, mut set: TaskSet<T>) -> Result<(), JoinError> {
+        let mut first = Ok(());
+        while let Some(result) = set.0.join_next().await {
+            if let (Ok(()), Err(e)) = (&first, result) {
+                first = Err(join_error(e));
+            }
+        }
+        first
+    }
+}
+
+/// Spawns onto the current Tokio runtime. Never full.
 ///
 /// # Panics
 ///
 /// If called outside a Tokio runtime.
-impl<F> AsyncProvide<SpawnAll<F, JoinHandle<F::Output>>> for Tokio
+impl<T, F> Perform<SpawnInto<F>> for TaskSet<T>
 where
-    F: Future + Send + 'static,
-    F::Output: Send + 'static,
+    T: Send + 'static,
+    F: Future<Output = T> + Send + 'static,
 {
-    async fn provide_async(
-        &mut self,
-        op: SpawnAll<F, JoinHandle<F::Output>>,
-        _: Token,
-    ) -> Result<Vec<JoinHandle<F::Output>>, JoinError> {
-        Ok(op
-            .futures
-            .into_iter()
-            .map(|f| JoinHandle::new(tokio::spawn(f)))
-            .collect())
+    fn perform(&mut self, op: SpawnInto<F>) -> Result<(), Rejected<F>> {
+        self.0.spawn(op.future);
+        Ok(())
     }
+}
 
-    async fn close_async(&mut self, tasks: Vec<JoinHandle<F::Output>>) -> Result<(), JoinError> {
-        let mut first = Ok(());
-        for task in tasks {
-            let result = task.finish().await;
-            if first.is_ok() {
-                first = result;
-            }
-        }
-        first
+async_op!(perform [T: Send + 'static] TaskSet<T>, JoinNext<T>, |s, _op| {
+    s.0.join_next().await.map(|r| r.map_err(join_error))
+});
+
+impl<T: 'static> Perform<Abort> for TaskSet<T> {
+    fn perform(&mut self, _: Abort) {
+        self.0.abort_all();
     }
 }
 

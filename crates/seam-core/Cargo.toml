@@ -11,7 +11,7 @@ repository.workspace = true
 default = []
 # Operation types whose outcomes need std (io::Error, Path, ...).
 std = ["alloc"]
-# `BoxFuture` and `Spawn::boxed`.
+# `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type.
 alloc = []
 
 # Capability groups. Groups whose operation types need std turn it on.

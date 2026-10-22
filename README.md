@@ -45,8 +45,8 @@ and only the binary (or its tests) picks a backend.
 | Capability group | Gives you |
 |---|---|
 | `time`, `random` | `Sleep`, `Now`, `RandomU64`, `FillRandom`. No std needed. |
-| `rt` | `Spawn`, `Join`, `Abort`, `IsFinished`, `YieldNow`. No std needed. |
-| `alloc` | `BoxFuture` and `Spawn::boxed`, for tasks of unnameable type. |
+| `rt` | `Spawn`, `SpawnSet`, `SpawnWith`, `Join`, `Detach`, `YieldNow`. No std or alloc needed. |
+| `alloc` | `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type. |
 | `fs`, `net`, `process`, `env`, `io-std`, `signal` | Those operation types. Links std for their types. |
 | `full` | Every capability group. Still no backend. |
 
@@ -101,9 +101,12 @@ even while opening or closing, never commits half a result. Atomic files on
 Tokio are tested by cancelling after every possible number of polls.
 
 A resource reaches a task only through the provider: `SpawnWith` has a
-listener accept a connection into a new task that owns it, and `SpawnAll`
-spawns a batch of tasks joined together. Temporary files left by a process
-that was killed outright are cleaned up with `SweepAtomic`.
+listener accept a connection into a new task that owns it, running a named
+`TaskBody`. `SpawnSet` opens a set of tasks to spawn into and collect from,
+joined or aborted together. None of the task API allocates in seam itself;
+`alloc` only adds boxed conveniences (`Spawn::boxed`, `SpawnWith::boxed`).
+Temporary files left by a process that was killed outright are cleaned up
+with `SweepAtomic`.
 
 ## Keeping the core honest
 

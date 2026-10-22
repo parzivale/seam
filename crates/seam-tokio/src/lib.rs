@@ -51,11 +51,13 @@
 //!
 //! # Tasks
 //!
-//! With `rt`, `Tokio` provides `Spawn` and `SpawnAll`, and a `TcpListener`
-//! provides `SpawnWith<Accept<_>, ..>` (see `seam_core::ops::task`). The core
-//! gets a `task::JoinHandle` for the length of a scope, on which it performs
-//! `Join`, `Abort`, `Detach` and `IsFinished`. A successful scope waits for
-//! its task; a failed or cancelled one aborts it, unless it was detached.
+//! With `rt`, `Tokio` provides `Spawn` (a `task::JoinHandle`) and
+//! `SpawnSet` (a `task::TaskSet`, backed by Tokio's `JoinSet`), and a
+//! `TcpListener` provides `SpawnWith<Accept<_>, B, _>` for any `TaskBody`
+//! `B` (see `seam_core::ops::task`). On a handle the core performs `Join`,
+//! `Abort`, `Detach` and `IsFinished`; on a set, `SpawnInto`, `JoinNext` and
+//! `Abort`. A successful scope waits for its tasks; a failed or cancelled
+//! one aborts them, unless a handle was detached.
 //! Spawned futures must be `Send + 'static`, as with `tokio::spawn`.
 //!
 //! # Handles

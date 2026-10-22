@@ -157,7 +157,7 @@
 //! |---|---|
 //! | `time`, `random` | operation types; no std needed |
 //! | `rt` | task operations (`Spawn`, `Join`, ...); no std needed |
-//! | `alloc` | `BoxFuture`, for spawning tasks of unnameable type |
+//! | `alloc` | `Spawn::boxed`, `SpawnWith::boxed`: tasks of unnameable type, boxed |
 //! | `fs`, `net`, `process`, `env`, `io-std`, `signal` | operation types (links std for their types) |
 //! | `full` | every group above |
 //!

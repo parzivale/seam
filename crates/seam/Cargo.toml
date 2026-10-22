@@ -41,7 +41,7 @@ signal = ["seam-core/signal", "seam-tokio?/signal", "seam-test?/signal"]
 time = ["seam-core/time", "seam-std?/time", "seam-tokio?/time", "seam-test?/time"]
 random = ["seam-core/random", "seam-std?/random", "seam-tokio?/random", "seam-test?/random"]
 rt = ["seam-core/rt", "seam-tokio?/rt"]
-# `BoxFuture` and `Spawn::boxed`, for spawning tasks of unnameable type.
+# `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type.
 alloc = ["seam-core/alloc"]
 
 # Every capability group. Still no backend.

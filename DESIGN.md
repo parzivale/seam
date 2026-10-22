@@ -52,14 +52,16 @@ feature, so a core written against them runs on any backend:
 - `random`: `RandomU64`, `FillRandom` (no_std)
 - `stdio`: `Print`, `EPrint`, `ReadLine`
 - `signal`: `CtrlC`
-- `task` (feature `rt`, no_std): the acquisitions `Spawn<F, H>`,
-  `SpawnAll<F, H>` and `SpawnWith<A, T, E, H>` (the last two with `alloc`),
-  and `Join<T>`, `Abort`, `IsFinished` and `Detach` on the handle;
-  `YieldNow`. A bound must name the spawned future's type, so a core either
-  takes the task as a function argument (the type is inferred at the call
-  site, no allocation) or spawns a `BoxFuture`. Tasks are `'static`, so they
-  get their own clone of the root capability (`Std` and `Tokio` are
-  `Clone`).
+- `task` (feature `rt`, no_std, no alloc): the acquisitions `Spawn<F, H>`,
+  `SpawnSet<S>` and `SpawnWith<A, B, H>`; `Join<T>`, `Abort`, `IsFinished`
+  and `Detach` on a handle; `SpawnInto<F>` (which hands the future back if a
+  fixed-capacity set is full) and `JoinNext<T>` on a set; `YieldNow`. A bound
+  must name the spawned future's type, so a core takes the task as a
+  function argument (the type is inferred at the call site), and a
+  `SpawnWith` body is a named `TaskBody` type, whose `run` declares a `Send`
+  future. With `alloc`, `Spawn::boxed` and `SpawnWith::boxed` accept
+  unnameable futures and closures instead. Tasks are `'static`, so they get
+  their own clone of the root capability (`Std` and `Tokio` are `Clone`).
 
 Outcome types must be constructible without the OS, or a test backend could
 not produce them. So `Now` returns seam's own `time::Instant` (a duration
@@ -176,8 +178,10 @@ every possible number of polls; a naive version fails it.
 task, a failed or cancelled one aborts it, and `Detach` opts out. Because a
 core cannot move a resource, `SpawnWith` has the provider acquire one on a
 task's behalf (a listener accepting a connection into a new task that owns
-it), and `SpawnAll` spawns a batch, since handles cannot be collected
-outside their scopes.
+it), and `SpawnSet` opens a set to spawn a batch into, since handles cannot
+be collected outside their scopes. Neither allocates in seam; storing tasks
+is the backend's business, so a backend for an executor with static task
+storage could implement them without `alloc`.
 
 **Leftovers.** A process killed outright runs no `Drop`. Temporary files are
 named `.<name>.seam-<suffix>.tmp`, and `SweepAtomic { dir, older_than }`

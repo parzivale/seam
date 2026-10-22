@@ -1,7 +1,7 @@
 //! Spawning and joining concurrent tasks.
 //!
-//! Spawning is an [`Acquisition`](crate::Acquisition): a task handle exists
-//! only inside a scope, like a file or a socket. When the scope succeeds,
+//! Spawning is an [`Acquisition`](crate::Acquisition): a task handle (or a
+//! task set) exists only inside a scope, like a file or a socket. When the scope succeeds,
 //! closing the handle waits for the task; when it fails, panics or is
 //! cancelled, abandoning it aborts the task. So a task cannot outlive the
 //! code that spawned it by accident. Perform [`Detach`] on the handle for a
@@ -11,49 +11,53 @@
 //! cancel it, or [`IsFinished`] to check on it. [`YieldNow`] lets other
 //! tasks run.
 //!
-//! | Acquisition | Spawns | Feature |
+//! | Acquisition | Provides | Allocates in seam |
 //! |---|---|---|
-//! | [`Spawn`] | one task | `rt` |
-//! | `SpawnAll` | a batch of tasks, joined together | `rt` + `alloc` |
-//! | `SpawnWith` | a task that owns a resource acquired for it, such as an accepted connection | `rt` + `alloc` |
+//! | [`Spawn`] | a handle to one task | no |
+//! | [`SpawnSet`] | a set to spawn tasks into ([`SpawnInto`]) and collect them from ([`JoinNext`]) | no |
+//! | [`SpawnWith`] | a handle to a task that owns a resource acquired for it, such as an accepted connection | no |
+//!
+//! None of these needs `alloc`; whether spawning allocates is up to the
+//! backend (Tokio allocates every task). With `alloc`, `Spawn::boxed` and
+//! `SpawnWith::boxed` take futures and closures whose types cannot be named,
+//! at the cost of a box.
 //!
 //! # Naming the future
 //!
 //! A bound has to name the future type it spawns, and a generic core cannot
 //! name the type of an `async` block it writes itself. Take the task as a
 //! function argument instead; the future type becomes a type parameter,
-//! inferred where the function is called, and nothing is boxed:
+//! inferred where the function is called:
 //!
 //! ```
-//! # #[cfg(feature = "alloc")] {
 //! use core::future::Future;
 //! use seam_core::prelude::*;
-//! use seam_core::ops::task::{Join, JoinError, SpawnAll};
+//! use seam_core::ops::task::{JoinError, JoinNext, SpawnInto, SpawnSet};
 //!
-//! /// Runs `job` on every input concurrently and collects the results. If
-//! /// this future is dropped, every task is aborted.
-//! async fn fan_out<C, J, Fut, H>(c: &mut C, inputs: Vec<u32>, job: J) -> Result<Vec<u32>, JoinError>
+//! /// Runs `job` on every input concurrently and sums the results. If this
+//! /// future is dropped, every task is aborted.
+//! async fn fan_out<C, S, J, Fut>(c: &mut C, inputs: &[u32], job: J) -> Result<u32, JoinError>
 //! where
-//!     C: AsyncProvide<SpawnAll<Fut, H>>,
+//!     C: AsyncProvide<SpawnSet<S>>,
+//!     S: SendPerform<SpawnInto<Fut>> + SendPerform<JoinNext<u32>>,
 //!     J: Fn(u32) -> Fut,
 //!     Fut: Future<Output = u32>,
-//!     H: SendPerform<Join<u32>>,
 //! {
-//!     let tasks = SpawnAll::new(inputs.into_iter().map(job).collect());
-//!     c.acquire_async(tasks, async |_c, handles| {
-//!         let mut results = Vec::new();
-//!         for h in handles {
-//!             results.push(h.perform_send(Join::new()).await?);
+//!     c.acquire_async(SpawnSet::new(), async |_, set| {
+//!         for &input in inputs {
+//!             if set.perform_send(SpawnInto::new(job(input))).await.is_err() {
+//!                 break; // a fixed-capacity set is full
+//!             }
 //!         }
-//!         Ok(results)
+//!         let mut sum = 0;
+//!         while let Some(result) = set.perform_send(JoinNext::new()).await {
+//!             sum += result?;
+//!         }
+//!         Ok(sum)
 //!     })
 //!     .await
 //! }
-//! # }
 //! ```
-//!
-//! With `alloc`, `Spawn::boxed` erases the future's type, so one bound
-//! covers any task, `async` blocks included.
 //!
 //! # Capabilities inside tasks
 //!
@@ -73,42 +77,123 @@ pub struct Spawn<F, H> {
     handle: PhantomData<fn() -> H>,
 }
 
-/// Spawn a batch of tasks, providing their handles, in order, for the
-/// length of a scope. Closing waits for all of them and reports the first
-/// failure; abandoning aborts them all.
-#[cfg(feature = "alloc")]
-pub struct SpawnAll<F, H> {
-    /// The tasks.
-    pub futures: alloc::vec::Vec<F>,
-    handle: PhantomData<fn() -> H>,
+/// Open an empty set of tasks of the backend's type `S`, for the length of
+/// a scope. In the scope, perform [`SpawnInto`] on the set to add tasks and
+/// [`JoinNext`] to collect their outputs as they finish.
+///
+/// Closing the set waits for every task still in it and reports the first
+/// failure; abandoning it aborts them all. Storing the tasks is the
+/// backend's business: seam itself allocates nothing.
+pub struct SpawnSet<S> {
+    set: PhantomData<fn() -> S>,
 }
 
-/// Acquire `A` and hand the resource to `body` in a new task, which owns
-/// it. Provides the task's handle, of type `H`.
+/// Add a task to a set opened with [`SpawnSet`]. Performed on the set.
+///
+/// A set with a fixed capacity hands the future back when it is full.
+pub struct SpawnInto<F> {
+    /// The task.
+    pub future: F,
+}
+
+/// Wait for the next task in a set to finish, and take its output.
+/// Performed on the set; `None` once the set is empty.
+pub struct JoinNext<T> {
+    output: PhantomData<fn() -> T>,
+}
+
+/// Acquire `A` and run `body` with the resource in a new task, which owns
+/// the resource. Provides the task's handle, of type `H`.
 ///
 /// This is how a resource reaches a task. A core cannot move a resource
 /// anywhere, since it only ever borrows one, so the provider acquires it on
 /// the task's behalf: for example, a listener accepts a connection and
 /// spawns `body` with the stream. Inside the task, the resource is closed
 /// when `body` returns `Ok` and abandoned otherwise.
-#[cfg(feature = "alloc")]
-pub struct SpawnWith<A: crate::Acquisition, T, E, H> {
+///
+/// `body` is a [`TaskBody`]: a named type, so that a bound can name it, and
+/// nothing is boxed. With `alloc`, `SpawnWith::boxed` takes a closure
+/// instead.
+pub struct SpawnWith<A, B, H> {
     /// What to acquire for the task.
     pub acquisition: A,
     /// What the task does with it.
-    pub body: TaskBody<A::Resource, T, E>,
+    pub body: B,
     handle: PhantomData<fn() -> H>,
 }
 
-/// The body of a [`SpawnWith`] task: borrows the resource and returns a
-/// boxed future.
-#[cfg(feature = "alloc")]
-pub type TaskBody<R, T, E> =
-    alloc::boxed::Box<dyn for<'a> FnOnce(&'a mut R) -> BoxFuture<'a, Result<T, E>> + Send>;
+/// What a [`SpawnWith`] task does with the resource acquired for it.
+///
+/// A trait rather than a closure so that it can be named in a bound, and so
+/// that its future is known to be `Send`, without boxing:
+///
+/// ```
+/// # #[cfg(feature = "io")] {
+/// use std::io;
+/// use seam_core::prelude::*;
+/// use seam_core::ops::io::{ReadToEnd, WriteAll};
+/// use seam_core::ops::task::TaskBody;
+///
+/// /// Replies to whatever the peer sent with its length.
+/// struct CountBytes;
+///
+/// impl<S> TaskBody<S> for CountBytes
+/// where
+///     S: for<'a> SendPerform<ReadToEnd<'a>> + for<'a> SendPerform<WriteAll<'a>> + Send,
+/// {
+///     type Output = usize;
+///     type Error = io::Error;
+///
+///     async fn run(self, stream: &mut S) -> io::Result<usize> {
+///         let mut bytes = Vec::new();
+///         let n = stream.perform_send(ReadToEnd(&mut bytes)).await?;
+///         stream.perform_send(WriteAll(n.to_string().as_bytes())).await?;
+///         Ok(n)
+///     }
+/// }
+/// # }
+/// ```
+pub trait TaskBody<R>: Send + 'static {
+    /// What the task produces when it succeeds.
+    type Output: Send + 'static;
+    /// Why the task failed.
+    type Error: Send + 'static;
+
+    /// Runs the task. The resource is closed if this returns `Ok`, and
+    /// abandoned otherwise.
+    fn run(
+        self,
+        resource: &mut R,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send;
+}
 
 /// A type-erased future.
 #[cfg(feature = "alloc")]
 pub type BoxFuture<'a, T> = core::pin::Pin<alloc::boxed::Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// A [`TaskBody`] made from a closure, by `SpawnWith::boxed`.
+#[cfg(feature = "alloc")]
+pub struct BoxedBody<R, T, E>(alloc::boxed::Box<dyn BodyFn<R, T, E>>);
+
+/// The closure inside a [`BoxedBody`].
+#[cfg(feature = "alloc")]
+trait BodyFn<R, T, E>: for<'a> FnOnce(&'a mut R) -> BoxFuture<'a, Result<T, E>> + Send {}
+
+#[cfg(feature = "alloc")]
+impl<R, T, E, F> BodyFn<R, T, E> for F where
+    F: for<'a> FnOnce(&'a mut R) -> BoxFuture<'a, Result<T, E>> + Send
+{
+}
+
+#[cfg(feature = "alloc")]
+impl<R: 'static, T: Send + 'static, E: Send + 'static> TaskBody<R> for BoxedBody<R, T, E> {
+    type Output = T;
+    type Error = E;
+
+    fn run(self, resource: &mut R) -> impl Future<Output = Result<T, E>> + Send {
+        (self.0)(resource)
+    }
+}
 
 /// Wait for a task to finish and take its output. Performed on the handle.
 ///
@@ -165,30 +250,62 @@ impl<T, H> Spawn<BoxFuture<'static, T>, H> {
     }
 }
 
-#[cfg(feature = "alloc")]
-impl<F, H> SpawnAll<F, H> {
-    /// Describes spawning each of `futures`.
-    pub fn new(futures: alloc::vec::Vec<F>) -> Self {
+impl<S> SpawnSet<S> {
+    /// Describes opening an empty task set.
+    pub fn new() -> Self {
+        Self { set: PhantomData }
+    }
+}
+
+impl<S> Default for SpawnSet<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<F> SpawnInto<F> {
+    /// Describes adding `future` to the set.
+    pub fn new(future: F) -> Self {
+        Self { future }
+    }
+}
+
+impl<T> JoinNext<T> {
+    /// Describes waiting for the next task to finish.
+    pub fn new() -> Self {
         Self {
-            futures,
+            output: PhantomData,
+        }
+    }
+}
+
+impl<T> Default for JoinNext<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<A, B, H> SpawnWith<A, B, H> {
+    /// Describes acquiring `acquisition` and running `body` with it in a new
+    /// task.
+    pub fn new(acquisition: A, body: B) -> Self {
+        Self {
+            acquisition,
+            body,
             handle: PhantomData,
         }
     }
 }
 
 #[cfg(feature = "alloc")]
-impl<A: crate::Acquisition, T, E, H> SpawnWith<A, T, E, H> {
-    /// Describes acquiring `acquisition` and running `body` with it in a new
-    /// task.
-    pub fn new(
+impl<A: crate::Acquisition, T, E, H> SpawnWith<A, BoxedBody<A::Resource, T, E>, H> {
+    /// Describes acquiring `acquisition` and running the closure `body` with
+    /// it in a new task. The closure and its future are boxed.
+    pub fn boxed(
         acquisition: A,
         body: impl for<'a> FnOnce(&'a mut A::Resource) -> BoxFuture<'a, Result<T, E>> + Send + 'static,
     ) -> Self {
-        Self {
-            acquisition,
-            body: alloc::boxed::Box::new(body),
-            handle: PhantomData,
-        }
+        Self::new(acquisition, BoxedBody(alloc::boxed::Box::new(body)))
     }
 }
 
@@ -221,17 +338,25 @@ impl<F, H> fmt::Debug for Spawn<F, H> {
     }
 }
 
-#[cfg(feature = "alloc")]
-impl<F, H> fmt::Debug for SpawnAll<F, H> {
+impl<S> fmt::Debug for SpawnSet<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SpawnAll")
-            .field("tasks", &self.futures.len())
-            .finish()
+        f.write_str("SpawnSet")
     }
 }
 
-#[cfg(feature = "alloc")]
-impl<A: crate::Acquisition + fmt::Debug, T, E, H> fmt::Debug for SpawnWith<A, T, E, H> {
+impl<F> fmt::Debug for SpawnInto<F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SpawnInto")
+    }
+}
+
+impl<T> fmt::Debug for JoinNext<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("JoinNext")
+    }
+}
+
+impl<A: fmt::Debug, B, H> fmt::Debug for SpawnWith<A, B, H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SpawnWith")
             .field("acquisition", &self.acquisition)
@@ -269,16 +394,22 @@ impl<F: Future, H> crate::Acquisition for Spawn<F, H> {
     type Error = JoinError;
 }
 
-#[cfg(feature = "alloc")]
-impl<F: Future, H> crate::Acquisition for SpawnAll<F, H> {
-    type Resource = alloc::vec::Vec<H>;
+impl<S> crate::Acquisition for SpawnSet<S> {
+    type Resource = S;
     type Error = JoinError;
 }
 
-#[cfg(feature = "alloc")]
-impl<A: crate::Acquisition, T, E, H> crate::Acquisition for SpawnWith<A, T, E, H> {
+impl<A: crate::Acquisition, B, H> crate::Acquisition for SpawnWith<A, B, H> {
     type Resource = H;
     type Error = A::Error;
+}
+
+impl<F: Future> crate::Operation for SpawnInto<F> {
+    type Outcome = Result<(), crate::Rejected<F>>;
+}
+
+impl<T> crate::Operation for JoinNext<T> {
+    type Outcome = Option<Result<T, JoinError>>;
 }
 
 impl<T> crate::Operation for Join<T> {

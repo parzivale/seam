@@ -15,7 +15,7 @@
 //! | `process` | `process` | yes | `RunCommand`, `Exit` |
 //! | `stdio` | `io-std` | yes | `Print`, `ReadLine` |
 //! | `signal` | `signal` | yes | `CtrlC` |
-//! | `task` | `rt` | no (`SpawnWith`, `BoxFuture`: alloc) | `Spawn`, `Join`, `Detach`, `YieldNow` |
+//! | `task` | `rt` | no (`BoxFuture`: alloc) | `Spawn`, `SpawnSet`, `SpawnWith`, `Join`, `YieldNow` |
 //!
 //! # Resources
 //!

@@ -9,8 +9,10 @@ repository.workspace = true
 
 [features]
 default = []
-# Operation types whose outcomes need std (io::Error, Path, Instant, ...).
-std = []
+# Operation types whose outcomes need std (io::Error, Path, ...).
+std = ["alloc"]
+# `BoxFuture` and `Spawn::boxed`.
+alloc = []
 
 # Capability groups. Groups whose operation types need std turn it on.
 fs = ["std", "io"]
@@ -23,11 +25,13 @@ signal = ["std"]
 # gains `WallClock`.
 time = []
 random = []
+# Spawning and joining tasks. No std needed.
+rt = []
 
 # Handle-level read/write/flush operations. Pulled in by `fs` and `net`.
 io = ["std"]
 
-full = ["fs", "net", "process", "env", "io-std", "signal", "time", "random"]
+full = ["fs", "net", "process", "env", "io-std", "signal", "time", "random", "rt"]
 
 [package.metadata.docs.rs]
 all-features = true

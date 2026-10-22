@@ -41,8 +41,15 @@
 //! ```
 //!
 //! Every operation must run inside a Tokio runtime. With the `rt` feature,
-//! `seam_tokio::block_on` starts one and hands the core the root capability; or create
-//! `Tokio::new()` inside a runtime you already have.
+//! `seam_tokio::block_on` starts one and hands the core the root capability;
+//! or create `Tokio::new()` inside a runtime you already have.
+//!
+//! # Tasks
+//!
+//! With `rt`, `Tokio` performs `Spawn` (see `seam_core::ops::task`),
+//! producing a `task::JoinHandle` on which the core performs `Join`, `Abort`
+//! and `IsFinished`. Spawned futures must be `Send + 'static`, as with
+//! `tokio::spawn`.
 //!
 //! # Handles
 //!
@@ -61,8 +68,9 @@
 /// The root capability over Tokio.
 ///
 /// It holds no state. Every operation it supports is a real effect, and must
-/// run inside a Tokio runtime.
-#[derive(Debug, Default)]
+/// run inside a Tokio runtime. It is `Clone`, so a core can hand a copy to
+/// each task it spawns.
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct Tokio;
 
@@ -168,6 +176,8 @@ mod runtime;
 mod signal;
 #[cfg(feature = "io-std")]
 mod stdio;
+#[cfg(feature = "rt")]
+pub mod task;
 #[cfg(feature = "time")]
 mod time;
 

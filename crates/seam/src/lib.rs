@@ -106,8 +106,9 @@
 //!   scripted tests, including a test of a playing strategy.
 //! - `backup`: snapshots a directory and prunes old snapshots. Filesystem,
 //!   clock and arguments, with the capabilities bundled into one trait.
-//! - `echo_server`: a TCP echo server on Tokio, whose async `Send` core is
-//!   tested on the in-memory network with no runtime.
+//! - `echo_server`: a TCP echo server on Tokio that spawns a task per
+//!   connection. Its async `Send` connection handler is tested on the
+//!   in-memory network with no runtime.
 //! - `custom_ops`: defining your own operations, and building a capability
 //!   out of other capabilities.
 //!
@@ -125,6 +126,8 @@
 //! | Capability group | Gives you |
 //! |---|---|
 //! | `time`, `random` | operation types; no std needed |
+//! | `rt` | task operations (`Spawn`, `Join`, ...); no std needed |
+//! | `alloc` | `BoxFuture`, for spawning tasks of unnameable type |
 //! | `fs`, `net`, `process`, `env`, `io-std`, `signal` | operation types (links std for their types) |
 //! | `full` | every group above |
 //!
@@ -133,7 +136,7 @@
 //! | `std` | the std backend, `seam::stdlib` |
 //! | `tokio` | the Tokio backend, `seam::tokio` |
 //! | `test` | the pure test backend, `seam::test`: a simulated world |
-//! | `rt`, `rt-multi-thread`, `test-util` | Tokio runtime options, as in Tokio; only with `tokio` |
+//! | `rt-multi-thread`, `test-util` | Tokio runtime options, as in Tokio; only with `tokio` |
 //!
 //! Each backend implements exactly the capability groups that are enabled.
 //! A typical split:

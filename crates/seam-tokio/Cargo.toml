@@ -20,7 +20,7 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "fs",
 default = []
 full = ["fs", "net", "time", "process", "io-std", "signal", "rt", "rt-multi-thread", "env", "random"]
 
-rt = ["tokio/rt"]
+rt = ["tokio/rt", "seam-core/rt"]
 rt-multi-thread = ["rt", "tokio/rt-multi-thread"]
 io-util = ["tokio/io-util"]
 fs = ["tokio/fs", "io-util", "seam-core/fs"]

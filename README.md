@@ -45,6 +45,8 @@ and only the binary (or its tests) picks a backend.
 | Capability group | Gives you |
 |---|---|
 | `time`, `random` | `Sleep`, `Now`, `RandomU64`, `FillRandom`. No std needed. |
+| `rt` | `Spawn`, `Join`, `Abort`, `IsFinished`, `YieldNow`. No std needed. |
+| `alloc` | `BoxFuture` and `Spawn::boxed`, for tasks of unnameable type. |
 | `fs`, `net`, `process`, `env`, `io-std`, `signal` | Those operation types. Links std for their types. |
 | `full` | Every capability group. Still no backend. |
 
@@ -53,7 +55,7 @@ and only the binary (or its tests) picks a backend.
 | `std` | The std backend, `seam::stdlib`. |
 | `tokio` | The Tokio backend, `seam::tokio`. |
 | `test` | The pure test backend, `seam::test`. No std on its own. |
-| `rt`, `rt-multi-thread`, `test-util` | Tokio runtime options, named as in Tokio. Only with `tokio`. |
+| `rt-multi-thread`, `test-util` | Tokio runtime options, named as in Tokio. Only with `tokio`. |
 
 A backend implements exactly the capability groups that are enabled, so
 `features = ["tokio", "rt", "net", "time"]` gives you Tokio-backed
@@ -96,7 +98,7 @@ tests that run its core in the simulation:
 |---|---|
 | [`guess`](crates/seam/examples/guess.rs) | randomness and stdio; seeded, scripted tests, and a test of a playing strategy |
 | [`backup`](crates/seam/examples/backup.rs) | filesystem, clock and arguments; bundling many capabilities into one trait |
-| [`echo_server`](crates/seam/examples/echo_server.rs) | an async `Send` core on Tokio, tested on the in-memory network with no runtime |
+| [`echo_server`](crates/seam/examples/echo_server.rs) | an async `Send` core on Tokio that spawns a task per connection; its handler is tested on the in-memory network with no runtime |
 | [`custom_ops`](crates/seam/examples/custom_ops.rs) | defining your own operations; building a capability out of other capabilities |
 
 ```text

@@ -63,8 +63,9 @@
 
 /// The root capability over std.
 ///
-/// It holds no state. Every operation it supports is a real effect.
-#[derive(Debug, Default)]
+/// It holds no state. Every operation it supports is a real effect. It is
+/// `Clone`, so a core can hand a copy to each thread or task it starts.
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct Std;
 

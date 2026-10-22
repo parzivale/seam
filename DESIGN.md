@@ -52,6 +52,12 @@ feature, so a core written against them runs on any backend:
 - `random`: `RandomU64`, `FillRandom` (no_std)
 - `stdio`: `Print`, `EPrint`, `ReadLine`
 - `signal`: `CtrlC`
+- `task` (feature `rt`, no_std): `Spawn<F, H>`, and `Join<T>`, `Abort`,
+  `IsFinished` on the handle; `YieldNow`. A bound must name the spawned
+  future's type, so a core either takes the task as a function argument
+  (the type is inferred at the call site, no allocation) or spawns a
+  `BoxFuture` (feature `alloc`). Tasks are `'static`, so they get their own
+  clone of the root capability (`Std` and `Tokio` are `Clone`).
 
 Outcome types must be constructible without the OS, or a test backend could
 not produce them. So `Now` returns seam's own `time::Instant` (a duration
@@ -160,8 +166,9 @@ module's imports, like its bounds, show what it can do.
 
 ## Deferred
 
-- **Spawning** as an operation. Without it a core cannot start concurrent
-  tasks, so the `echo_server` example serves one connection at a time.
+- **Spawning in the other backends.** Only Tokio implements `Spawn`. The
+  test backend would need a deterministic executor; the std backend could
+  spawn threads.
 
 - **Allocation as a capability.** The plan was an explicit `A: Allocator`
   generic in the core, fallible APIs only, and clippy bans on the `Global`

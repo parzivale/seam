@@ -1,24 +1,23 @@
 //! A TCP echo server on Tokio.
 //!
 //! ```text
-//! cargo run -p seam --example echo_server --features tokio,rt,net,env,io-std,test -- 127.0.0.1:7878
+//! cargo run -p seam --example echo_server --features tokio,rt,rt-multi-thread,net,env,io-std,test -- 127.0.0.1:7878
 //! ```
 //!
-//! The per-connection logic is an async core with `Send` bounds, so it can
-//! run on Tokio's multithreaded runtime, and the same function is tested
-//! against the in-memory network in `seam::test`, with no sockets and no
-//! runtime.
-//!
-//! seam has no operation for spawning tasks yet, so the server handles one
-//! connection at a time.
+//! The server spawns a task per connection, through the `Spawn` operation,
+//! on Tokio's multithreaded runtime. The per-connection logic is an async
+//! core with `Send` bounds, and the same function is tested against the
+//! in-memory network in `seam::test`, with no sockets and no runtime.
 
+use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 
 use seam::ops::env::Args;
 use seam::ops::io::{Read, WriteAll};
-use seam::ops::net::{Accept, LocalAddr, PeerAddr, TcpBind};
+use seam::ops::net::{Accept, LocalAddr, TcpBind};
 use seam::ops::stdio::Print;
+use seam::ops::task::Spawn;
 use seam::prelude::*;
 
 /// Echoes everything it reads until the peer closes its end. Returns the
@@ -39,24 +38,47 @@ where
     }
 }
 
-/// Binds `addr` and echoes connections, one at a time, forever.
-async fn serve<C, L, S>(c: &mut C, addr: SocketAddr) -> io::Result<()>
+/// One connection's task: echo, then log how it went. It owns a clone of
+/// the root capability, since a spawned task cannot borrow the server's.
+async fn connection<C, S>(mut c: C, mut stream: S, peer: SocketAddr)
 where
-    C: SendPerform<TcpBind<L>> + for<'a> SendPerform<Print<'a>> + Send,
+    C: for<'a> SendPerform<Print<'a>> + Send,
+    S: for<'a> SendPerform<Read<'a>> + for<'a> SendPerform<WriteAll<'a>> + Send,
+{
+    let line = match echo(&mut stream).await {
+        Ok(n) => format!("{peer}: echoed {n} bytes\n"),
+        Err(e) => format!("{peer}: {e}\n"),
+    };
+    let _ = c.perform_send(Print(line.as_bytes())).await;
+}
+
+/// Binds `addr` and spawns `handle` for every connection, forever.
+///
+/// `handle` is passed in rather than called by name so that its future's
+/// type, `Fut`, is a type parameter: that is what lets the `Spawn` bound
+/// name it without boxing.
+async fn serve<C, L, S, F, Fut, H>(c: &mut C, addr: SocketAddr, handle: F) -> io::Result<()>
+where
+    C: SendPerform<TcpBind<L>>
+        + SendPerform<Spawn<Fut, H>>
+        + for<'a> SendPerform<Print<'a>>
+        + Clone
+        + Send,
     L: SendPerform<Accept<S>> + Inspect<LocalAddr> + Send,
-    S: for<'a> SendPerform<Read<'a>> + for<'a> SendPerform<WriteAll<'a>> + Inspect<PeerAddr> + Send,
+    F: Fn(C, S, SocketAddr) -> Fut + Send,
+    Fut: Future<Output = ()> + Send,
+    H: Send,
 {
     let mut listener = c.perform_send(TcpBind::new(addr)).await?;
     let local = listener.inspect(LocalAddr)?;
     c.perform_send(Print(format!("listening on {local}\n").as_bytes()))
         .await?;
     loop {
-        let (mut stream, peer) = listener.perform_send(Accept::new()).await?;
-        let line = match echo(&mut stream).await {
-            Ok(n) => format!("{peer}: echoed {n} bytes\n"),
-            Err(e) => format!("{peer}: {e}\n"),
-        };
-        c.perform_send(Print(line.as_bytes())).await?;
+        let (stream, peer) = listener.perform_send(Accept::new()).await?;
+        // Dropping the handle detaches the task.
+        let _task = c
+            .perform_send(Spawn::new(handle(c.clone(), stream, peer)))
+            .await;
     }
 }
 
@@ -74,9 +96,12 @@ fn listen_addr<C: Inspect<Args>>(c: &C) -> io::Result<SocketAddr> {
 }
 
 fn main() -> io::Result<()> {
-    seam::tokio::block_on(|mut tokio| async move {
+    use seam::tokio::Tokio;
+    use seam::tokio::net::TcpStream;
+
+    seam::tokio::block_on_multi_thread(|mut tokio| async move {
         let addr = listen_addr(&tokio)?;
-        serve::<_, _, seam::tokio::net::TcpStream>(&mut tokio, addr).await
+        serve(&mut tokio, addr, connection::<Tokio, TcpStream>).await
     })
 }
 

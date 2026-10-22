@@ -35,16 +35,20 @@ process = ["seam-core/process", "seam-std?/process", "seam-tokio?/process", "sea
 env = ["seam-core/env", "seam-std?/env", "seam-tokio?/env", "seam-test?/env"]
 io-std = ["seam-core/io-std", "seam-std?/io-std", "seam-tokio?/io-std", "seam-test?/io-std"]
 signal = ["seam-core/signal", "seam-tokio?/signal", "seam-test?/signal"]
-# Usable without std: `Sleep`, `Now`, `RandomU64`, `FillRandom`.
+# Usable without std: `Sleep`, `Now`, `RandomU64`, `FillRandom`, and the
+# task operations (`Spawn`, `Join`, ...). In the Tokio backend, `rt` also
+# turns on Tokio's runtime, as in Tokio.
 time = ["seam-core/time", "seam-std?/time", "seam-tokio?/time", "seam-test?/time"]
 random = ["seam-core/random", "seam-std?/random", "seam-tokio?/random", "seam-test?/random"]
+rt = ["seam-core/rt", "seam-tokio?/rt"]
+# `BoxFuture` and `Spawn::boxed`, for spawning tasks of unnameable type.
+alloc = ["seam-core/alloc"]
 
 # Every capability group. Still no backend.
-full = ["fs", "net", "process", "env", "io-std", "signal", "time", "random"]
+full = ["fs", "net", "process", "env", "io-std", "signal", "time", "random", "rt", "alloc"]
 
 # Tokio runtime options, named as in Tokio. They configure the Tokio
 # backend and do nothing unless `tokio` is also enabled.
-rt = ["seam-tokio?/rt"]
 rt-multi-thread = ["rt", "seam-tokio?/rt-multi-thread"]
 test-util = ["seam-tokio?/test-util"]
 
@@ -67,7 +71,7 @@ test = true
 
 [[example]]
 name = "echo_server"
-required-features = ["tokio", "rt", "net", "env", "io-std", "test"]
+required-features = ["tokio", "rt", "rt-multi-thread", "net", "env", "io-std", "test"]
 test = true
 
 [[example]]

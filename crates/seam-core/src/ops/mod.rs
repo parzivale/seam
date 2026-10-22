@@ -15,6 +15,7 @@
 //! | `process` | `process` | yes | `RunCommand`, `Exit` |
 //! | `stdio` | `io-std` | yes | `Print`, `ReadLine` |
 //! | `signal` | `signal` | yes | `CtrlC` |
+//! | `task` | `rt` | no (`BoxFuture`: alloc) | `Spawn`, `Join`, `Abort`, `YieldNow` |
 //!
 //! # Handles
 //!
@@ -74,5 +75,7 @@ pub mod random;
 pub mod signal;
 #[cfg(feature = "io-std")]
 pub mod stdio;
+#[cfg(feature = "rt")]
+pub mod task;
 #[cfg(feature = "time")]
 pub mod time;

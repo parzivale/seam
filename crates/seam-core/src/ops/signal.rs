@@ -14,3 +14,13 @@ pub struct CtrlC;
 operations! {
     CtrlC => io::Result<()>;
 }
+
+/// Gives up with `io::ErrorKind::TimedOut`; the Ctrl-C, if one comes
+/// later, is still delivered to the next wait.
+#[cfg(feature = "time")]
+impl crate::ops::time::TimesOut for CtrlC {
+    type Expired = io::Result<()>;
+    fn timed_out(self) -> Self::Expired {
+        Err(crate::ops::time::io_timed_out())
+    }
+}

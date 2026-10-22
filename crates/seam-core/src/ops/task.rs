@@ -249,6 +249,9 @@ pub enum JoinError {
     Panicked,
     /// The task was aborted, or its executor shut down first.
     Cancelled,
+    /// A [`Join`] or [`JoinNext`] given a `Timeout` stopped waiting. The
+    /// task is still running, and can be joined again.
+    TimedOut,
 }
 
 impl<F, H> Spawn<F, H> {
@@ -394,6 +397,7 @@ impl fmt::Display for JoinError {
         f.write_str(match self {
             Self::Panicked => "task panicked",
             Self::Cancelled => "task was cancelled",
+            Self::TimedOut => "timed out waiting for the task",
         })
     }
 }
@@ -404,7 +408,38 @@ impl core::error::Error for JoinError {}
 #[cfg(feature = "std")]
 impl From<JoinError> for std::io::Error {
     fn from(e: JoinError) -> Self {
-        std::io::Error::other(e)
+        match e {
+            JoinError::TimedOut => std::io::Error::new(std::io::ErrorKind::TimedOut, e),
+            _ => std::io::Error::other(e),
+        }
+    }
+}
+
+/// Gives up with `TimedOut`, leaving the task running.
+#[cfg(feature = "time")]
+impl<T> crate::ops::time::TimesOut for Join<T> {
+    type Expired = Result<T, JoinError>;
+    fn timed_out(self) -> Self::Expired {
+        Err(JoinError::TimedOut)
+    }
+}
+
+/// Gives up with `Some(Err(TimedOut))`, taking no task out of the set. An
+/// empty set still answers `None` at once.
+#[cfg(feature = "time")]
+impl<T> crate::ops::time::TimesOut for JoinNext<T> {
+    type Expired = Option<Result<T, JoinError>>;
+    fn timed_out(self) -> Self::Expired {
+        Some(Err(JoinError::TimedOut))
+    }
+}
+
+/// Gives up as the acquisition it wraps does; the body is dropped.
+#[cfg(feature = "time")]
+impl<A: crate::ops::time::TimesOut, B, H> crate::ops::time::TimesOut for SpawnWith<A, B, H> {
+    type Expired = A::Expired;
+    fn timed_out(self) -> A::Expired {
+        self.acquisition.timed_out()
     }
 }
 

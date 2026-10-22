@@ -59,3 +59,44 @@ operations! {
     WriteAll<'_> => io::Result<()>;
     Flush => io::Result<()>;
 }
+
+/// Each gives up with `io::ErrorKind::TimedOut`.
+#[cfg(feature = "time")]
+mod timeouts {
+    use super::*;
+    use crate::ops::time::{TimesOut, io_timed_out};
+
+    /// Nothing was read.
+    impl TimesOut for Read<'_> {
+        type Expired = io::Result<usize>;
+        fn timed_out(self) -> Self::Expired {
+            Err(io_timed_out())
+        }
+    }
+
+    /// The deadline covers the whole read. What arrived before it is left
+    /// in the buffer, as when `ReadToEnd` fails for any other reason.
+    impl TimesOut for ReadToEnd<'_> {
+        type Expired = io::Result<usize>;
+        fn timed_out(self) -> Self::Expired {
+            Err(io_timed_out())
+        }
+    }
+
+    /// Nothing was written.
+    impl TimesOut for Write<'_> {
+        type Expired = io::Result<usize>;
+        fn timed_out(self) -> Self::Expired {
+            Err(io_timed_out())
+        }
+    }
+
+    /// The deadline covers the whole write. Part of the buffer may have
+    /// been written, as when `WriteAll` fails for any other reason.
+    impl TimesOut for WriteAll<'_> {
+        type Expired = io::Result<()>;
+        fn timed_out(self) -> Self::Expired {
+            Err(io_timed_out())
+        }
+    }
+}

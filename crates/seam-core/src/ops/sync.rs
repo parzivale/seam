@@ -366,3 +366,23 @@ impl<T> crate::Operation for Store<T> {
 impl<T, R> crate::Operation for Update<'_, T, R> {
     type Outcome = R;
 }
+
+/// Gives up as `Full`, handing the value back.
+#[cfg(feature = "time")]
+impl<T> crate::ops::time::TimesOut for SendMsg<T> {
+    type Expired = Result<(), SendError<T>>;
+
+    fn timed_out(self) -> Self::Expired {
+        Err(SendError::Full(self.0))
+    }
+}
+
+/// Gives up as `Empty`.
+#[cfg(feature = "time")]
+impl<T> crate::ops::time::TimesOut for RecvMsg<T> {
+    type Expired = Result<T, RecvError>;
+
+    fn timed_out(self) -> Self::Expired {
+        Err(RecvError::Empty)
+    }
+}

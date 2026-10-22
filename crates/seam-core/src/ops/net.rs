@@ -190,3 +190,33 @@ impl<U> crate::Acquisition for UdpBind<U> {
     type Resource = U;
     type Error = io::Error;
 }
+
+/// Each gives up with `io::ErrorKind::TimedOut`.
+#[cfg(feature = "time")]
+mod timeouts {
+    use super::*;
+    use crate::ops::time::{TimesOut, io_timed_out};
+
+    /// No connection is taken from the backlog.
+    impl<S> TimesOut for Accept<S> {
+        type Expired = io::Error;
+        fn timed_out(self) -> io::Error {
+            io_timed_out()
+        }
+    }
+
+    impl<S> TimesOut for TcpConnect<S> {
+        type Expired = io::Error;
+        fn timed_out(self) -> io::Error {
+            io_timed_out()
+        }
+    }
+
+    /// No datagram is taken.
+    impl TimesOut for RecvFrom<'_> {
+        type Expired = io::Result<(usize, SocketAddr)>;
+        fn timed_out(self) -> Self::Expired {
+            Err(io_timed_out())
+        }
+    }
+}

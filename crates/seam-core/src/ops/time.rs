@@ -3,6 +3,9 @@
 //! [`Sleep`], [`Now`] and [`Instant`] need no std. `WallClock` produces a
 //! `SystemTime` and needs the `std` feature.
 //!
+//! [`Timeout`] wraps an operation that waits, such as a receive, a read or
+//! a join, to give up after a while.
+//!
 //! A core that takes its clock as a capability can be tested without
 //! waiting:
 //!
@@ -149,6 +152,95 @@ impl Sub for Instant {
     fn sub(self, earlier: Self) -> Duration {
         self.duration_since(earlier)
     }
+}
+
+/// Perform `op`, but give up waiting after `after`.
+///
+/// Its outcome is `op`'s own: an expiry is reported the way `op` reports
+/// not being able to finish, as its [`TimesOut`] impl says. A receive that
+/// times out fails with `RecvError::Empty`, a send with `SendError::Full`
+/// (handing the value back), and an I/O operation with
+/// `io::ErrorKind::TimedOut`. An operation that expires had no effect,
+/// except where its own docs say otherwise (`ReadToEnd` keeps what it read,
+/// and `WriteAll` may have written part of its buffer).
+///
+/// `Timeout` also wraps acquisitions that wait, such as `Accept` and
+/// `TcpConnect`, failing them with their own error.
+///
+/// A timeout of zero does not wait at all: the operation finishes only if
+/// it can do so at once.
+///
+/// ```
+/// # #[cfg(feature = "sync")] {
+/// use core::time::Duration;
+/// use seam_core::Perform;
+/// use seam_core::ops::sync::{RecvError, RecvMsg};
+/// use seam_core::ops::time::Timeout;
+///
+/// /// Waits up to a second for the next job, so the worker can check in
+/// /// between whether it should stop.
+/// fn next_job<R>(jobs: &mut R) -> Option<u32>
+/// where
+///     R: Perform<Timeout<RecvMsg<u32>>>,
+/// {
+///     match jobs.perform(Timeout::new(Duration::from_secs(1), RecvMsg::new())) {
+///         Ok(job) => Some(job),
+///         Err(RecvError::Empty | RecvError::Closed) => None,
+///     }
+/// }
+/// # }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timeout<O> {
+    /// How long to wait at most.
+    pub after: Duration,
+    /// The operation or acquisition.
+    pub op: O,
+}
+
+impl<O> Timeout<O> {
+    /// Describes performing `op`, waiting at most `after`.
+    pub const fn new(after: Duration, op: O) -> Self {
+        Self { after, op }
+    }
+}
+
+/// An operation or acquisition that can wait, and so can be given a
+/// [`Timeout`]. `timed_out` gives the outcome (for an acquisition, the
+/// error) that reports giving up.
+///
+/// Backends call it to build what an expired `Timeout` returns; cores
+/// do not need it.
+pub trait TimesOut {
+    /// What an expiry produces: the operation's outcome, or the
+    /// acquisition's error.
+    type Expired;
+
+    /// The outcome of giving up, built from the operation, which did not
+    /// run to completion.
+    fn timed_out(self) -> Self::Expired;
+}
+
+impl<O> crate::Operation for Timeout<O>
+where
+    O: crate::Operation + TimesOut<Expired = O::Outcome>,
+{
+    type Outcome = O::Outcome;
+}
+
+impl<A> crate::Acquisition for Timeout<A>
+where
+    A: crate::Acquisition + TimesOut<Expired = A::Error>,
+{
+    type Resource = A::Resource;
+    type Error = A::Error;
+}
+
+/// The `io::Error` an I/O operation that times out fails with.
+#[cfg(feature = "std")]
+#[allow(dead_code)] // used by whichever of io, net and signal are on
+pub(crate) fn io_timed_out() -> std::io::Error {
+    std::io::ErrorKind::TimedOut.into()
 }
 
 operations! {

@@ -1,0 +1,25 @@
+# The core must not reach for the global allocator or ambient shared state.
+# Copy this file into any crate that should stay sans-effect.
+disallowed-methods = [
+    { path = "alloc::vec::Vec::new", reason = "uses the global allocator; take an `A: Allocator` and use `Buf::new_in`" },
+    { path = "alloc::vec::Vec::with_capacity", reason = "uses the global allocator; use `Buf::new_in` + `try_reserve`" },
+    { path = "alloc::boxed::Box::new", reason = "uses the global allocator and aborts on OOM" },
+    { path = "alloc::boxed::Box::pin", reason = "uses the global allocator and aborts on OOM" },
+]
+disallowed-macros = [
+    { path = "alloc::vec", reason = "uses the global allocator" },
+    { path = "alloc::format", reason = "uses the global allocator" },
+]
+disallowed-types = [
+    { path = "alloc::vec::Vec", reason = "global allocator; use `seam::Buf<T, A>`" },
+    { path = "alloc::string::String", reason = "global allocator" },
+    { path = "alloc::rc::Rc", reason = "shared state is an effect, and Rc uses the global allocator" },
+    { path = "alloc::sync::Arc", reason = "shared state is an effect, and Arc uses the global allocator" },
+    { path = "alloc::collections::BTreeMap", reason = "global allocator" },
+    { path = "alloc::collections::BTreeSet", reason = "global allocator" },
+    { path = "alloc::collections::VecDeque", reason = "global allocator" },
+    { path = "alloc::collections::BinaryHeap", reason = "global allocator" },
+    { path = "alloc::collections::LinkedList", reason = "global allocator" },
+    { path = "core::cell::Cell", reason = "interior mutability is an effect; model it as an operation" },
+    { path = "core::cell::RefCell", reason = "interior mutability is an effect; model it as an operation" },
+]

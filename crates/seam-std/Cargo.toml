@@ -1,0 +1,14 @@
+[package]
+name = "seam-std"
+description = "std functionality (fs, net, time, env, process, random) as seam operations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+seam = { path = "../seam" }
+
+[lints]
+workspace = true

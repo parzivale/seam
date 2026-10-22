@@ -37,10 +37,11 @@ io-std = ["seam-core/io-std", "seam-std?/io-std", "seam-tokio?/io-std", "seam-te
 signal = ["seam-core/signal", "seam-tokio?/signal", "seam-test?/signal"]
 # Usable without std: `Sleep`, `Now`, `RandomU64`, `FillRandom`, and the
 # task operations (`Spawn`, `Join`, ...). In the Tokio backend, `rt` also
-# turns on Tokio's runtime, as in Tokio.
+# turns on Tokio's runtime, as in Tokio; with `test`, it adds the simulated
+# runtime, which needs std.
 time = ["seam-core/time", "seam-std?/time", "seam-tokio?/time", "seam-test?/time"]
 random = ["seam-core/random", "seam-std?/random", "seam-tokio?/random", "seam-test?/random"]
-rt = ["seam-core/rt", "seam-tokio?/rt"]
+rt = ["seam-core/rt", "seam-tokio?/rt", "seam-test?/rt"]
 # `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type.
 alloc = ["seam-core/alloc"]
 

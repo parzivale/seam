@@ -69,7 +69,7 @@
 //! |---|---|---|---|
 //! | `seam::stdlib` | `std` | `Std` | sync programs, blocking I/O |
 //! | `seam::tokio` | `tokio` | `Tokio` | async programs, multithreaded |
-//! | `seam::test` | `test` | `Sim` | tests: a deterministic simulated world |
+//! | `seam::test` | `test` | `Sim`, `rt::AsyncSim` | tests: a deterministic simulated world, and a seeded runtime for concurrent cores |
 //!
 //! Backends hand out handles (files, sockets) as newtypes with no std or
 //! Tokio I/O traits, so effects on those also go through the capability

@@ -77,9 +77,30 @@ sim.perform(WriteFile::new("/data/out", "ok")).unwrap(); // your core here
 assert_eq!(sim.file("/data/out").unwrap(), b"ok");
 ```
 
-Nothing in the simulation waits: `Sleep` advances the virtual clock, and an
-operation that would block (an empty socket, no pending connection) fails
-with `WouldBlock`. The same seed and calls always give the same results.
+Used directly, nothing in the simulation waits: `Sleep` advances the
+virtual clock, and an operation that would block fails with `WouldBlock`.
+The same seed and calls always give the same results.
+
+For concurrent cores, `seam::test::rt::Runtime` runs async code over a `Sim`
+on a deterministic executor:
+
+```rust
+let rt = Runtime::with_seed(sim, seed);
+rt.block_on(|sim| async move { serve(&mut sim.clone(), addr).await /* ... */ });
+```
+
+- Blocking operations (reads, accepts, receives, `CtrlC`) suspend until
+  another task makes them possible.
+- `Sleep` waits on a virtual clock that jumps to the next timer when every
+  task is waiting, so hours of timeouts take no time.
+- The seed picks which ready task runs next. Sweep seeds to explore
+  interleavings and replay a failure from its seed. The tests include a
+  lost-update race that only some seeds expose.
+- When nothing can ever make progress, `block_on` reports a deadlock
+  instead of hanging.
+- Tasks (`Spawn`, `SpawnSet`, `SpawnWith`) work as on Tokio, so the
+  `echo_server` example's whole accept loop is tested with concurrent
+  clients under 16 schedules.
 
 ## Resources and cancellation
 

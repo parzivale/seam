@@ -169,6 +169,77 @@ mod tests {
         Ok(())
     }
 
+    /// The whole server, accept loop and spawned tasks included, with three
+    /// clients connecting at once, on the deterministic runtime. Each seed
+    /// schedules the tasks differently; every one must echo correctly.
+    #[test]
+    fn serves_concurrent_clients_under_every_schedule() {
+        use seam::ops::task::{Detach, JoinNext, Spawn, SpawnInto, SpawnSet};
+        use seam::ops::time::Sleep;
+        use seam::test::rt::net::{TcpListener as RtListener, TcpStream as RtStream};
+        use seam::test::rt::{AsyncSim, JoinHandle, Runtime, TaskSet};
+
+        let addr = SocketAddr::from(([127, 0, 0, 1], 7878));
+        for seed in 0..16 {
+            let rt = Runtime::with_seed(Sim::new(), seed);
+            rt.block_on(|mut sim| async move {
+                let mut server = sim.clone();
+                let serving = Spawn::<_, JoinHandle<io::Result<()>>>::new(async move {
+                    serve::<AsyncSim, RtListener, RtStream, JoinHandle<io::Result<()>>>(
+                        &mut server,
+                        addr,
+                    )
+                    .await
+                });
+                sim.acquire_async(serving, async |sim, server| {
+                    // Let the server bind before the clients connect.
+                    sim.perform_send(Sleep(std::time::Duration::from_millis(1)))
+                        .await;
+                    let clients = SpawnSet::<TaskSet<io::Result<(String, Vec<u8>)>>>::new();
+                    sim.acquire_async(clients, async |sim, clients| {
+                        for name in ["alice", "bob", "carol"] {
+                            let mut c = sim.clone();
+                            let client = async move {
+                                c.acquire_async(TcpConnect::<RtStream>::new(addr), async |_, s| {
+                                    for part in [name, " says hi"] {
+                                        s.perform_send(WriteAll(part.as_bytes())).await?;
+                                    }
+                                    s.perform_send(Shutdown(How::Write)).await?;
+                                    let mut reply = Vec::new();
+                                    s.perform_send(ReadToEnd(&mut reply)).await?;
+                                    io::Result::Ok((name.to_owned(), reply))
+                                })
+                                .await
+                            };
+                            let _ = clients.perform_send(SpawnInto::new(client)).await;
+                        }
+                        while let Some(result) = clients.perform_send(JoinNext::new()).await {
+                            let (name, reply) = result.map_err(io::Error::from)??;
+                            assert_eq!(
+                                reply,
+                                format!("{name} says hi").into_bytes(),
+                                "seed {seed}"
+                            );
+                        }
+                        io::Result::Ok(())
+                    })
+                    .await?;
+                    // The server runs forever; let the runtime drop it.
+                    server.perform_send(Detach).await;
+                    io::Result::Ok(())
+                })
+                .await
+                .unwrap();
+            });
+            let log = String::from_utf8(rt.with_sim(|s| s.take_stdout())).unwrap();
+            assert!(
+                log.starts_with("listening on 127.0.0.1:7878\n"),
+                "seed {seed}: {log}"
+            );
+            assert_eq!(log.matches("echoed").count(), 3, "seed {seed}: {log}");
+        }
+    }
+
     #[test]
     fn address_comes_from_the_arguments() {
         let mut sim = Sim::new();

@@ -87,17 +87,27 @@
 //!
 //! # Blocking operations
 //!
-//! Nothing in the simulation waits. An operation that would block on a real
-//! system (reading an empty socket, accepting with no pending connection,
-//! waiting for Ctrl-C that was never raised) fails with
-//! `io::ErrorKind::WouldBlock` instead.
-//! `Sleep` advances the virtual clock and returns.
+//! Used directly, nothing in `Sim` waits. An operation that would block on
+//! a real system (reading an empty socket, accepting with no pending
+//! connection, waiting for Ctrl-C that was never raised) fails with
+//! `io::ErrorKind::WouldBlock` instead, and `Sleep` advances the virtual
+//! clock and returns.
+//!
+//! # Concurrency: the deterministic runtime
+//!
+//! For cores that spawn tasks, or whose tasks wait on each other, the `rt`
+//! module runs async code over a `Sim` on a deterministic executor. There,
+//! blocking operations suspend until another task makes them possible,
+//! `Sleep` waits on a virtual clock that jumps straight to the next timer,
+//! the next task to run is chosen from a seed so that interleavings are
+//! reproducible, and a deadlock is reported rather than hanging.
 //!
 //! # Features
 //!
 //! `time` and `random` work without std. `fs`, `net`, `env`, `process`,
 //! `io-std` and `signal` need std's types, but still make no system calls
-//! of their own. `full` turns on everything.
+//! of their own. `rt` adds the deterministic runtime. `full` turns on
+//! everything.
 #![no_std]
 
 #[cfg(feature = "std")]
@@ -113,6 +123,8 @@ pub mod net;
 mod process;
 #[cfg(feature = "random")]
 mod random;
+#[cfg(feature = "rt")]
+pub mod rt;
 #[cfg(feature = "signal")]
 mod signal;
 #[cfg(feature = "io-std")]

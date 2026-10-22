@@ -118,9 +118,35 @@ group with no real effects other than allocation:
   `catch_exit` turns it back into a code.
 - **signal**: `raise_ctrl_c` queues a Ctrl-C for `CtrlC` to consume.
 
-Nothing blocks. Operations that would wait on a real system fail with
-`WouldBlock`. `Sim` is `Send + Sync`, so `Send`-bound async cores (the kind
-written for Tokio) run in it through the sync lifts and `block_on`.
+Used directly, nothing blocks: operations that would wait on a real system
+fail with `WouldBlock`. `Sim` is `Send + Sync`, so `Send`-bound async cores
+(the kind written for Tokio) run in it through the sync lifts and
+`block_on`, as long as they never need another task to make progress.
+
+### The deterministic runtime
+
+`seam_test::rt::Runtime` owns a `Sim` and runs async code on a
+single-threaded executor. Cores get `AsyncSim`, a cloneable capability over
+the same world. Operations that never wait delegate to the `Sim`, so they
+behave identically in both modes. Those that would wait are native async:
+
+- **Waiting.** Reads, accepts and receives on the runtime's own sockets
+  (`rt::net`) suspend, and the in-memory network wakes exactly the waiters
+  of the pipe, listener or socket that changed. `CtrlC` waits for
+  `AsyncSim::raise_ctrl_c`. `YieldNow` lets another task run.
+- **Virtual time.** `Sleep` registers a timer. When no task is ready, the
+  executor advances the clock to the earliest deadline and wakes the timers
+  due then, so time passes only when everything is waiting.
+- **Seeded scheduling.** The next task is drawn from the ready set with a
+  SplitMix64 seeded per runtime, separate from the `Sim`'s `RandomU64`
+  stream. Same seed, same interleaving; sweeping seeds explores others.
+- **Deadlocks.** No task ready and no timer set means nothing can ever
+  happen: `try_block_on` returns `Deadlock`, `block_on` panics.
+- **Tasks.** `Spawn`, `SpawnSet` and `SpawnWith` follow the same scope rules
+  as Tokio. A task's panic is caught and reported as `Panicked`; dropping a
+  task before it finishes reports `Cancelled`. Aborts are deferred to the
+  executor so a task is never dropped mid-poll. When `block_on` returns,
+  remaining tasks are dropped.
 
 Handles outlive the borrow of the `Sim` that made them, so the world state
 they reach (filesystem, network, wall clock) is shared behind an
@@ -218,9 +244,7 @@ module's imports, like its bounds, show what it can do.
 
 ## Deferred
 
-- **Spawning in the other backends.** Only Tokio implements `Spawn`. The
-  test backend would need a deterministic executor; the std backend could
-  spawn threads.
+- **Spawning in the std backend**, which could use threads.
 
 - **Allocation as a capability.** The plan was an explicit `A: Allocator`
   generic in the core, fallible APIs only, and clippy bans on the `Global`

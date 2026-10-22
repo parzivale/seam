@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, ErrorKind};
 use std::net::{IpAddr, Ipv4Addr, Shutdown as How, SocketAddr};
 use std::string::String;
+use std::task::Waker;
 use std::vec::Vec;
 
 use seam_core::ops::io::{Flush, Read, ReadToEnd, Write, WriteAll};
@@ -46,6 +47,79 @@ pub(crate) struct Net {
     tcp_ports: BTreeMap<SocketAddr, ()>,
     udp: BTreeMap<SocketAddr, VecDeque<(Vec<u8>, SocketAddr)>>,
     pipes: Vec<Pipe>,
+    /// Tasks of the simulated runtime waiting for something to change.
+    waiters: BTreeMap<WaitKey, Vec<Waker>>,
+}
+
+/// What a task of the simulated runtime can wait for on the network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum WaitKey {
+    /// Data, or end of input, on a pipe.
+    Read(usize),
+    /// A connection to a listener bound to this address.
+    Accept(SocketAddr),
+    /// A datagram for a UDP socket bound to this address.
+    Recv(SocketAddr),
+}
+
+impl TcpStream {
+    /// Whether a read would return now: data has arrived, or the stream
+    /// has ended. If not, `waker` is woken when that changes.
+    pub(crate) fn poll_readable(&self, waker: &Waker) -> bool {
+        let mut world = self.world.lock();
+        let pipe = &world.net.pipes[self.rx];
+        let ready = !pipe.bytes.is_empty() || pipe.writer_closed || pipe.reader_closed;
+        if !ready {
+            world.net.wait(WaitKey::Read(self.rx), waker);
+        }
+        ready
+    }
+}
+
+impl TcpListener {
+    /// Whether a connection is waiting to be accepted. If not, `waker` is
+    /// woken when one arrives.
+    pub(crate) fn poll_acceptable(&self, waker: &Waker) -> bool {
+        let mut world = self.world.lock();
+        let ready = world
+            .net
+            .listeners
+            .get(&self.addr)
+            .is_some_and(|b| !b.is_empty());
+        if !ready {
+            world.net.wait(WaitKey::Accept(self.addr), waker);
+        }
+        ready
+    }
+}
+
+impl UdpSocket {
+    /// Whether a datagram is waiting. If not, `waker` is woken when one
+    /// arrives.
+    pub(crate) fn poll_receivable(&self, waker: &Waker) -> bool {
+        let mut world = self.world.lock();
+        let ready = world.net.udp.get(&self.addr).is_some_and(|q| !q.is_empty());
+        if !ready {
+            world.net.wait(WaitKey::Recv(self.addr), waker);
+        }
+        ready
+    }
+}
+
+impl Net {
+    /// Registers `waker` to be woken when `key` changes.
+    pub(crate) fn wait(&mut self, key: WaitKey, waker: &Waker) {
+        let waiters = self.waiters.entry(key).or_default();
+        if !waiters.iter().any(|w| w.will_wake(waker)) {
+            waiters.push(waker.clone());
+        }
+    }
+
+    fn wake(&mut self, key: WaitKey) {
+        for waker in self.waiters.remove(&key).into_iter().flatten() {
+            waker.wake();
+        }
+    }
 }
 
 impl Default for Net {
@@ -60,6 +134,7 @@ impl Default for Net {
             tcp_ports: BTreeMap::new(),
             udp: BTreeMap::new(),
             pipes: Vec::new(),
+            waiters: BTreeMap::new(),
         }
     }
 }
@@ -183,6 +258,7 @@ impl Provide<TcpConnect<TcpStream>> for Sim {
             tx: down,
             peer: local,
         });
+        net.wake(WaitKey::Accept(listener));
         Ok(TcpStream {
             world: self.world.clone(),
             rx: down,
@@ -214,8 +290,8 @@ impl Provide<UdpBind<UdpSocket>> for Sim {
 /// operations.
 #[derive(Debug)]
 pub struct TcpStream {
-    world: Shared,
-    rx: usize,
+    pub(crate) world: Shared,
+    pub(crate) rx: usize,
     tx: usize,
     local: SocketAddr,
     peer: SocketAddr,
@@ -228,15 +304,15 @@ pub struct TcpStream {
 /// connections.
 #[derive(Debug)]
 pub struct TcpListener {
-    world: Shared,
-    addr: SocketAddr,
+    pub(crate) world: Shared,
+    pub(crate) addr: SocketAddr,
 }
 
 /// An in-memory UDP socket.
 #[derive(Debug)]
 pub struct UdpSocket {
-    world: Shared,
-    addr: SocketAddr,
+    pub(crate) world: Shared,
+    pub(crate) addr: SocketAddr,
 }
 
 impl TcpStream {
@@ -268,6 +344,7 @@ impl TcpStream {
             ));
         }
         pipe.bytes.extend(buf);
+        world.net.wake(WaitKey::Read(self.tx));
         Ok(buf.len())
     }
 }
@@ -325,6 +402,8 @@ impl Perform<Shutdown> for TcpStream {
         if matches!(op.0, How::Write | How::Both) {
             pipes[self.tx].writer_closed = true;
         }
+        world.net.wake(WaitKey::Read(self.rx));
+        world.net.wake(WaitKey::Read(self.tx));
         Ok(())
     }
 }
@@ -339,6 +418,8 @@ impl Drop for TcpStream {
         if self.owns_port {
             net.tcp_ports.remove(&self.local);
         }
+        net.wake(WaitKey::Read(self.rx));
+        net.wake(WaitKey::Read(self.tx));
     }
 }
 
@@ -381,20 +462,24 @@ impl Drop for TcpListener {
         for p in net.listeners.remove(&self.addr).into_iter().flatten() {
             net.pipes[p.rx].reader_closed = true;
             net.pipes[p.tx].writer_closed = true;
+            net.wake(WaitKey::Read(p.rx));
+            net.wake(WaitKey::Read(p.tx));
         }
+        net.wake(WaitKey::Accept(self.addr));
     }
 }
 
 impl Perform<SendTo<'_>> for UdpSocket {
     fn perform(&mut self, op: SendTo<'_>) -> io::Result<usize> {
         let mut world = self.world.lock();
-        if let Some((_, queue)) = world
+        if let Some((&bound, queue)) = world
             .net
             .udp
             .iter_mut()
             .find(|(b, _)| reaches(**b, op.addr))
         {
             queue.push_back((op.buf.to_vec(), self.addr));
+            world.net.wake(WaitKey::Recv(bound));
         }
         Ok(op.buf.len())
     }
@@ -460,7 +545,7 @@ impl Inspect<PeerAddr> for UdpSocket {
 
 impl TcpStream {
     /// Shuts down the write half, so the peer sees end of input.
-    fn commit(mut self) -> io::Result<()> {
+    pub(crate) fn commit(mut self) -> io::Result<()> {
         self.perform(Shutdown(How::Write))
     }
 }

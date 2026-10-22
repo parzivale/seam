@@ -105,8 +105,8 @@
 //! # Features
 //!
 //! `time` and `random` work without std. `fs`, `net`, `env`, `process`,
-//! `io-std` and `signal` need std's types, but still make no system calls
-//! of their own. `rt` adds the deterministic runtime. `full` turns on
+//! `io-std`, `signal` and `sync` need std's types, but still make no system
+//! calls of their own. `rt` adds the deterministic runtime. `full` turns on
 //! everything.
 #![no_std]
 
@@ -129,6 +129,8 @@ pub mod rt;
 mod signal;
 #[cfg(feature = "io-std")]
 mod stdio;
+#[cfg(feature = "sync")]
+pub mod sync;
 #[cfg(feature = "time")]
 mod time;
 #[cfg(any(

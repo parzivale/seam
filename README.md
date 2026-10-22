@@ -55,6 +55,7 @@ and only the binary (or its tests) picks a backend.
 |---|---|
 | `time`, `random` | `Sleep`, `Now`, `RandomU64`, `FillRandom`. No std needed. |
 | `rt` | `Spawn`, `SpawnSet`, `SpawnWith`, `Join`, `Detach`, `YieldNow`. No std or alloc needed. |
+| `sync` | Channels (`Channel`, `SendMsg`, `RecvMsg`) and shared cells (`Share`, `Load`, `Store`, `Update`). No std or alloc needed. |
 | `alloc` | `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type. |
 | `fs`, `net`, `process`, `env`, `io-std`, `signal` | Those operation types. Links std for their types. |
 | `full` | Every capability group. Still no backend. |

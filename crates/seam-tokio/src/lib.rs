@@ -72,7 +72,7 @@
 //! # Features
 //!
 //! Names follow Tokio's: `rt`, `rt-multi-thread`, `fs`, `net`, `time`,
-//! `process`, `io-std`, `signal`, `io-util`, `test-util`, `full`. Each turns
+//! `process`, `io-std`, `signal`, `sync`, `io-util`, `test-util`, `full`. Each turns
 //! on the Tokio feature of the same name and the matching seam operations.
 //! `env` and `random` are seam additions. With `test-util`, `Now` follows
 //! Tokio's pausable clock.
@@ -188,6 +188,8 @@ mod runtime;
 mod signal;
 #[cfg(feature = "io-std")]
 mod stdio;
+#[cfg(feature = "sync")]
+pub mod sync;
 #[cfg(feature = "rt")]
 pub mod task;
 #[cfg(feature = "time")]

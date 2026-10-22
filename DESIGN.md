@@ -52,6 +52,11 @@ feature, so a core written against them runs on any backend:
 - `random`: `RandomU64`, `FillRandom` (no_std)
 - `stdio`: `Print`, `EPrint`, `ReadLine`
 - `signal`: `CtrlC`
+- `sync` (feature `sync`, no_std, no alloc): `Channel<S, R>` creating owned
+  sender and receiver endpoints, with `SendMsg`/`TrySendMsg` and
+  `RecvMsg`/`TryRecvMsg`; `Share<T, C>` creating a cloneable cell, with
+  `Load`, `Store` and `Update` (an atomic read-modify-write that borrows its
+  closure, so bounds can name it). See **Shared state** below.
 - `task` (feature `rt`, no_std, no alloc): the acquisitions `Spawn<F, H>`,
   `SpawnSet<S>` and `SpawnWith<A, B, H>`; `Join<T>`, `Abort`, `IsFinished`
   and `Detach` on a handle; `SpawnInto<F>` (which hands the future back if a
@@ -235,6 +240,34 @@ with generation counters (runtime detection of stale handles).
   implement both (`seam-tokio` does this with a macro).
 - `seam-tokio` futures are `Send` and are tested on Tokio's multithreaded
   runtime.
+
+## Shared state
+
+Shared state is an effect, so channels and cells come from the backend and
+every send, receive, load and update is an operation. On the deterministic
+runtime that makes them schedulable: a receive waits until a message
+arrives, a send waits for room, and a receiver waiting on an idle channel is
+reported as a deadlock.
+
+Unlike files and sockets, endpoints and cells are **owned values**, not
+scoped resources: a sender must be able to reach another task, and a task
+cannot borrow from its spawner. They hold nothing that needs committing, so
+dropping one is always correct. The cost is unbounded lifetimes: a core can
+keep a sender alive forever, so a channel never closes (the simulation
+reports the resulting deadlock rather than hanging).
+
+Cancellation safety holds at the level of each operation: every one is
+atomic. A receive cancelled while waiting takes no message, a send cancelled
+while waiting enqueues nothing, and `Update` cannot be interrupted. The
+runtime tests cancel sends and receives after every number of polls and
+check that every message sent arrives exactly once; a receive that yields
+between taking and returning a message fails that test.
+
+Considered and deferred: scoped `Claim` (a received message redelivered
+unless its processing succeeds) and `Modify` (an optimistic transaction on a
+cell, written back only if the scope succeeds and nobody else changed it).
+Both are acquisitions on top of `acquire`, and can be added without changing
+anything here.
 
 ## Prelude
 

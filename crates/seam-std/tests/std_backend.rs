@@ -155,3 +155,75 @@ mod atomic {
         std.perform(RemoveDir::all(&dir))
     }
 }
+
+mod sync {
+    use seam_core::ops::sync::{
+        Channel, Load, RecvError, RecvMsg, SendError, SendMsg, Share, TrySendMsg, Update,
+    };
+    use seam_std::sync::{Receiver, Sender, Shared};
+
+    use super::*;
+
+    /// A core: sends `count` numbers, starting at `from`.
+    fn produce<S: Perform<SendMsg<u64>>>(tx: &mut S, from: u64, count: u64) {
+        for i in from..from + count {
+            tx.perform(SendMsg(i)).unwrap();
+        }
+    }
+
+    /// Senders cloned into threads; the channel closes when the last one is
+    /// dropped.
+    #[test]
+    fn channels_across_threads() {
+        let mut std = Std::new();
+        let (tx, mut rx): (Sender<u64>, Receiver<u64>) = std.perform(Channel::bounded(4));
+        std::thread::scope(|s| {
+            for t in 0..4 {
+                let mut tx = tx.clone();
+                s.spawn(move || produce(&mut tx, t * 1000, 250));
+            }
+            drop(tx);
+            let mut got = Vec::new();
+            loop {
+                match rx.perform(RecvMsg::new()) {
+                    Ok(n) => got.push(n),
+                    Err(RecvError::Closed) => break,
+                    Err(e) => panic!("{e}"),
+                }
+            }
+            assert_eq!(got.len(), 1000);
+            got.sort();
+            got.dedup();
+            assert_eq!(got.len(), 1000, "no message duplicated");
+        });
+    }
+
+    #[test]
+    fn bounded_channels_push_back() {
+        let mut std = Std::new();
+        let (mut tx, rx): (Sender<u8>, Receiver<u8>) = std.perform(Channel::bounded(1));
+        tx.perform(TrySendMsg(1)).unwrap();
+        assert_eq!(tx.perform(TrySendMsg(2)), Err(SendError::Full(2)));
+        drop(rx);
+        assert_eq!(tx.perform(SendMsg(3)), Err(SendError::Closed(3)));
+    }
+
+    /// Eight threads each add 1000 to a shared counter; `Update` is atomic,
+    /// so none is lost.
+    #[test]
+    fn cells_across_threads() {
+        let mut std = Std::new();
+        let counter: Shared<u64> = std.perform(Share::new(0));
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                let mut c = counter.clone();
+                s.spawn(move || {
+                    for _ in 0..1000 {
+                        c.perform(Update::new(&mut |n: &mut u64| *n += 1));
+                    }
+                });
+            }
+        });
+        assert_eq!(counter.inspect(Load::new()), 8000);
+    }
+}

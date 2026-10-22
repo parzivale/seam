@@ -38,6 +38,8 @@ process = ["seam-core/process", "seam-std?/process", "seam-tokio?/process", "sea
 env = ["seam-core/env", "seam-std?/env", "seam-tokio?/env", "seam-test?/env"]
 io-std = ["seam-core/io-std", "seam-std?/io-std", "seam-tokio?/io-std", "seam-test?/io-std"]
 signal = ["seam-core/signal", "seam-tokio?/signal", "seam-test?/signal"]
+# Channels and shared cells. No std needed for the operation types.
+sync = ["seam-core/sync", "seam-std?/sync", "seam-tokio?/sync", "seam-test?/sync"]
 # Usable without std: `Sleep`, `Now`, `RandomU64`, `FillRandom`, and the
 # task operations (`Spawn`, `Join`, ...). In the Tokio backend, `rt` also
 # turns on Tokio's runtime, as in Tokio; with `test`, it adds the simulated
@@ -49,7 +51,7 @@ rt = ["seam-core/rt", "seam-tokio?/rt", "seam-test?/rt"]
 alloc = ["seam-core/alloc"]
 
 # Every capability group. Still no backend.
-full = ["fs", "net", "process", "env", "io-std", "signal", "time", "random", "rt", "alloc"]
+full = ["fs", "net", "process", "env", "io-std", "signal", "time", "random", "rt", "sync", "alloc"]
 
 # Tokio runtime options, named as in Tokio. They configure the Tokio
 # backend and do nothing unless `tokio` is also enabled.

@@ -26,9 +26,10 @@ env = ["std", "seam-core/env"]
 process = ["std", "seam-core/process"]
 io-std = ["std", "seam-core/io-std"]
 signal = ["std", "seam-core/signal"]
+sync = ["std", "seam-core/sync"]
 # A deterministic async runtime over the simulation, with tasks.
 rt = ["std", "seam-core/rt"]
-full = ["time", "random", "fs", "net", "env", "process", "io-std", "signal", "rt"]
+full = ["time", "random", "fs", "net", "env", "process", "io-std", "signal", "sync", "rt"]
 
 [package.metadata.docs.rs]
 all-features = true

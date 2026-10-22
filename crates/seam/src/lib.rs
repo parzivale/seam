@@ -157,6 +157,7 @@
 //! |---|---|
 //! | `time`, `random` | operation types; no std needed |
 //! | `rt` | task operations (`Spawn`, `Join`, ...); no std needed |
+//! | `sync` | channels and shared cells; no std needed |
 //! | `alloc` | `Spawn::boxed`, `SpawnWith::boxed`: tasks of unnameable type, boxed |
 //! | `fs`, `net`, `process`, `env`, `io-std`, `signal` | operation types (links std for their types) |
 //! | `full` | every group above |

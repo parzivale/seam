@@ -80,6 +80,8 @@ use crate::Sim;
 #[cfg(feature = "net")]
 pub mod net;
 mod ops;
+#[cfg(feature = "sync")]
+pub mod sync;
 mod task;
 
 pub use task::{JoinHandle, TaskSet};

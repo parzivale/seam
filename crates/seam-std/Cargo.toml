@@ -22,7 +22,8 @@ env = ["seam-core/env"]
 process = ["seam-core/process"]
 random = ["seam-core/random"]
 io-std = ["seam-core/io-std"]
-full = ["fs", "net", "time", "env", "process", "random", "io-std"]
+sync = ["seam-core/sync"]
+full = ["fs", "net", "time", "env", "process", "random", "io-std", "sync"]
 
 [package.metadata.docs.rs]
 all-features = true

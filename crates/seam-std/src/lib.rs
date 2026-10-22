@@ -58,7 +58,7 @@
 //! # Features
 //!
 //! One per capability group: `fs`, `net`, `time`, `env`, `process`,
-//! `random`, `io-std`, or `full`. `Std` implements only the groups that are
+//! `random`, `io-std`, `sync`, or `full`. `Std` implements only the groups that are
 //! enabled.
 //!
 //! `random` uses std's randomly keyed hasher, since std has no public random
@@ -92,6 +92,8 @@ mod process;
 mod random;
 #[cfg(feature = "io-std")]
 mod stdio;
+#[cfg(feature = "sync")]
+pub mod sync;
 #[cfg(feature = "time")]
 mod time;
 

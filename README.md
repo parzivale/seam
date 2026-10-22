@@ -36,8 +36,8 @@ fn jitter<C: Perform<RandomU64> + Perform<Sleep>>(c: &mut C) {
 | Crate | What it is |
 |---|---|
 | [`seam-core`](crates/seam-core) (`seam-rs-core`) | The traits (`Operation`, `Query`, `Inspect`, `Perform`, `Provide`/`Acquire` and their async forms, `block_on`), the operation and acquisition types, and a `prelude`. `no_std`. |
-| [`seam-std`](crates/seam-std) (`seam-rs-std`) | The std backend: a `Std` root capability and newtype handles (`File`, `TcpStream`, ...) that expose no std I/O traits. |
-| [`seam-tokio`](crates/seam-tokio) (`seam-rs-tokio`) | The Tokio backend: a `Tokio` root capability implementing the async and `Send` capability traits. |
+| [`seam-std`](crates/seam-std) (`seam-rs-std`) | The std backend: a `Std` capability (used alone, or as a part of a `Root`) and newtype handles (`File`, `TcpStream`, ...) that expose no std I/O traits. |
+| [`seam-tokio`](crates/seam-tokio) (`seam-rs-tokio`) | The Tokio backend: a `Tokio` capability implementing the async and `Send` capability traits, for time, files, the network, stdio, processes, signals, tasks and channels. |
 | [`seam-test`](crates/seam-test) (`seam-rs-test`) | The pure test backend: a `Sim` world with a virtual clock, seeded randomness, in-memory filesystem and network, scripted commands and captured stdio. Its only real effect is allocation. |
 | [`seam`](crates/seam) (`seam-rs`) | Re-exports everything, behind feature flags. `no_std` by default. |
 
@@ -107,6 +107,60 @@ impl InKind for Get { type Kind = Store; }
 the struct a name, for when the root's type must be written out. Capability types opt in to seam's lifts (an `Inspect` is
 also a `Perform`, a sync operation also works from async code) with
 `impl Capability for MyType {}`; every type in seam's backends does.
+
+## Writing your own effects
+
+A program's own effects (a key-value store, a payment API, a queue) are
+operations like seam's. Four steps:
+
+```rust
+// 1. The operations: a type each, with its outcome and its kind. A kind is
+//    a marker type, and groups operations one part serves.
+pub struct Store;
+pub struct Get(pub String);
+impl Operation for Get { type Outcome = io::Result<Option<String>>; }
+impl Query for Get {}                       // read-only: `Inspect`, `&self`
+impl InKind for Get { type Kind = Store; }
+
+pub struct Put(pub String, pub String);
+impl Operation for Put { type Outcome = io::Result<()>; }
+impl InKind for Put { type Kind = Store; }
+
+// 2. The core asks for them like any capability.
+fn visit<C: Inspect<Get> + Perform<Put>>(c: &mut C, page: &str) -> io::Result<u64> { ... }
+
+// 3. Implementations: a real one and a fake. `Capability` opts each in to
+//    seam's lifts (an `Inspect` is also a `Perform`; sync also works async).
+struct Redis { /* a connection */ }
+impl Capability for Redis {}
+impl Inspect<Get> for Redis { fn inspect(&self, op: Get) -> io::Result<Option<String>> { ... } }
+impl Perform<Put> for Redis { fn perform(&mut self, op: Put) -> io::Result<()> { ... } }
+
+#[derive(Default)]
+struct Memory(BTreeMap<String, String>);
+impl Capability for Memory {}
+// ... the same two impls, on a map
+
+// 4. At the edge, put the real one in a root next to a backend.
+let mut root = seam::root! {
+    std: Std::new() => [kinds::Env, kinds::Stdio],
+    store: Redis::connect()? => [Store],
+};
+visit(&mut root, "home")?;
+```
+
+- **Async implementations** implement `AsyncInspect`/`AsyncPerform`, and
+  the `Send` forms (`SendInspect`, `SendPerform`) for multithreaded
+  runtimes, returning `impl Future<Output = ...> + Send`.
+- **Effects built on other effects** wrap a capability and use its
+  operations: a store kept in a file is a `FileStore<C>` whose `Put` writes
+  through `C`'s `CreateAtomic`. It then runs on every backend, the
+  simulation included, and on the simulated runtime and threads its
+  interleavings are explored like any other effects. See
+  [`custom_ops`](crates/seam/examples/custom_ops.rs).
+- **Effects of a kind seam has** (another filesystem, say) use seam's
+  operations and kind (`kinds::Fs`), so they can stand in for a backend's
+  part in a root.
 
 ## Testing a core
 
@@ -280,8 +334,9 @@ tests that run its core in the simulation:
 |---|---|
 | [`guess`](crates/seam/examples/guess.rs) | randomness and stdio; seeded, scripted tests, and a test of a playing strategy |
 | [`backup`](crates/seam/examples/backup.rs) | filesystem, clock and arguments; bundling many capabilities into one trait; an atomic manifest marks complete snapshots, and crashed runs are cleaned up |
-| [`echo_server`](crates/seam/examples/echo_server.rs) | an async `Send` core on Tokio that spawns a task per connection; its handler is tested on the in-memory network with no runtime |
-| [`custom_ops`](crates/seam/examples/custom_ops.rs) | defining your own operations; building a capability out of other capabilities; atomic writes in a scope |
+| [`echo_server`](crates/seam/examples/echo_server.rs) | an async `Send` core on a root of Tokio and std that spawns a task per connection; its handler is tested on the in-memory network with no runtime |
+| [`custom_ops`](crates/seam/examples/custom_ops.rs) | defining your own operations and their kind; building a capability out of other capabilities; putting it in a root next to `Std`; atomic writes in a scope |
+| [`word_count`](crates/seam/examples/word_count.rs) | a worker pool on OS threads, tested on simulated threads under many schedules; a world file for its setup and expectations |
 
 ```text
 cargo run  -p seam-rs --example guess --features full,std,tokio,rt,test

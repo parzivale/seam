@@ -66,7 +66,7 @@
 //! **Backends** provide capabilities over the real world, and are chosen
 //! only at the edge of the program:
 //!
-//! | Backend | Feature | Root capability | For |
+//! | Backend | Feature | Capability | For |
 //! |---|---|---|---|
 //! | `seam::stdlib` | `std` | `Std` | sync programs, blocking I/O |
 //! | `seam::tokio` | `tokio` | `Tokio` | async programs, multithreaded |

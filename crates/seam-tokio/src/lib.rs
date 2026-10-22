@@ -1,6 +1,6 @@
 //! The Tokio backend for seam.
 //!
-//! [`Tokio`] is the root capability: it performs seam operations with Tokio.
+//! [`Tokio`] performs seam operations with Tokio.
 //! It implements the async traits in [`seam_core::future`], including the
 //! `Send` forms needed on a multithreaded runtime.
 //!
@@ -84,7 +84,7 @@
 //! on the Tokio feature of the same name and the matching seam operations.
 //! With `test-util`, `Now` follows Tokio's pausable clock.
 
-/// The root capability over Tokio.
+/// The Tokio backend's capability.
 ///
 /// It holds no state. Every operation it supports is a real effect, and must
 /// run inside a Tokio runtime. It is `Clone`, so a core can hand a copy to
@@ -94,7 +94,7 @@
 pub struct Tokio;
 
 impl Tokio {
-    /// Creates the root capability. Call this at the edge of the program.
+    /// Creates it. Call this at the edge of the program.
     pub fn new() -> Self {
         Self
     }

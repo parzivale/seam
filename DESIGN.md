@@ -83,8 +83,8 @@ items a core emits, to check that output scales with input size.
 
 ## Backends
 
-Each backend has a zero-sized root capability (`Std`, `Tokio`) constructed at
-the edge, and newtype handles that expose no std or Tokio I/O traits and no
+Each backend has a zero-sized capability (`Std`, `Tokio`), used alone or as
+a part of a `Root`, constructed at the edge, and newtype handles that expose no std or Tokio I/O traits and no
 way back to the inner value. Every effect on them goes through
 `Perform`/`Inspect`.
 

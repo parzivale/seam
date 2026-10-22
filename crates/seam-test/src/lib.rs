@@ -161,7 +161,7 @@ pub use process::{Exited, Invocation, catch_exit};
 #[cfg(feature = "std")]
 pub use world_file::{Failure, WorldError, WorldMismatch};
 
-/// A simulated world: the root capability of the test backend.
+/// A simulated world: the test backend's capability.
 ///
 /// Create one per test. Set up the world it starts in (files, variables,
 /// scripted commands, stdin), hand it to the core in place of a real

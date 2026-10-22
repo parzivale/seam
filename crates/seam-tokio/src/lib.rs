@@ -19,13 +19,18 @@
 //! /// so it can run on a multithreaded runtime.
 //! async fn heartbeat<C, S>(c: &mut C, host: &str) -> io::Result<()>
 //! where
-//!     C: SendInspect<Resolve> + SendPerform<TcpConnect<S>> + SendPerform<Sleep> + Send,
+//!     C: SendInspect<Resolve> + AsyncProvide<TcpConnect<S>> + SendPerform<Sleep> + Send,
 //!     S: for<'a> SendPerform<WriteAll<'a>> + Send,
 //! {
 //!     let addr = c.inspect_send(Resolve::new(host, 9000)).await?[0];
 //!     for attempt in 0..5 {
-//!         match c.perform_send(TcpConnect::new(addr)).await {
-//!             Ok(mut stream) => return stream.perform_send(WriteAll(b"alive\n")).await,
+//!         // The stream exists only inside this scope, and is shut down
+//!         // cleanly when the scope succeeds.
+//!         let sent = c
+//!             .acquire_async(TcpConnect::new(addr), async |_, s| s.perform_send(WriteAll(b"alive\n")).await)
+//!             .await;
+//!         match sent {
+//!             Ok(()) => return Ok(()),
 //!             Err(_) => c.perform_send(Sleep(Duration::from_millis(100 << attempt))).await,
 //!         }
 //!     }
@@ -46,20 +51,21 @@
 //!
 //! # Tasks
 //!
-//! With `rt`, `Tokio` performs `Spawn` (see `seam_core::ops::task`),
-//! producing a `task::JoinHandle` on which the core performs `Join`, `Abort`,
-//! `Detach` and `IsFinished`. Spawned futures must be `Send + 'static`, as
-//! with `tokio::spawn`. Unlike Tokio's own handle, dropping it aborts the
-//! task unless it was detached.
+//! With `rt`, `Tokio` provides `Spawn` and `SpawnAll`, and a `TcpListener`
+//! provides `SpawnWith<Accept<_>, ..>` (see `seam_core::ops::task`). The core
+//! gets a `task::JoinHandle` for the length of a scope, on which it performs
+//! `Join`, `Abort`, `Detach` and `IsFinished`. A successful scope waits for
+//! its task; a failed or cancelled one aborts it, unless it was detached.
+//! Spawned futures must be `Send + 'static`, as with `tokio::spawn`.
 //!
 //! # Handles
 //!
 //! As in `seam-std`, files and sockets are newtypes that expose no Tokio I/O
-//! traits. They implement `AsyncFinalize`, for use with
-//! `AsyncScoped::scope_async`: closing a file flushes and syncs it, closing
-//! a stream shuts it down, closing a task handle waits for the task, and
-//! `fs::AtomicFile` renames itself into place. A scope that fails, panics or
-//! is cancelled abandons them instead.
+//! traits, and a core only ever borrows one inside an `acquire_async` scope.
+//! When the scope succeeds, a file is flushed and synced, a stream is shut
+//! down, and `fs::AtomicFile` is renamed into place. When it fails, panics
+//! or is cancelled, they are dropped instead. `fs::AtomicFile` is safe to
+//! cancel at any point, including while it is being created or renamed.
 //!
 //! # Features
 //!

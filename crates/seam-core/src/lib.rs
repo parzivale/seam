@@ -80,8 +80,9 @@
 //!   randomness, the environment, processes, stdio and signals, behind
 //!   feature flags.
 //! - [`future`]: async capabilities, and [`block_on`](future::block_on).
-//! - [`finalize`]: resources that commit on success and roll back on error,
-//!   panic or cancellation ([`Scoped`], [`AsyncScoped`]).
+//! - [`acquire`]: resources (files, sockets, tasks), which a core can only
+//!   use inside a scope that commits on success and rolls back on error,
+//!   panic or cancellation.
 //! - [`Push`]: a sink operation for counting or capping what a core emits.
 //! - [`prelude`]: all the traits in one import.
 //!
@@ -99,15 +100,15 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+pub mod acquire;
 mod capability;
-pub mod finalize;
 pub mod future;
 mod operation;
 pub mod ops;
 pub mod prelude;
 mod push;
 
+pub use acquire::{Acquire, Acquisition, AsyncAcquire, AsyncProvide, Provide, Token};
 pub use capability::{Inspect, Perform};
-pub use finalize::{AsyncFinalize, AsyncScoped, Finalize, Scoped};
 pub use operation::{Operation, Query};
 pub use push::{Push, Rejected};

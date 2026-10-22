@@ -124,22 +124,20 @@ impl<C: Inspect<ReadToString>, F> Inspect<Get> for FileStore<C, F> {
 
 impl<C, F> Perform<Put> for FileStore<C, F>
 where
-    C: Inspect<ReadToString> + Perform<CreateAtomic<F>>,
-    F: Finalize<Error = io::Error> + for<'a> Perform<WriteAll<'a>>,
+    C: Inspect<ReadToString> + Provide<CreateAtomic<F>>,
+    F: for<'a> Perform<WriteAll<'a>>,
 {
-    /// Rewrites the whole file, atomically: the scope renames the new file
-    /// into place only if every line was written.
+    /// Rewrites the whole file, atomically: the new file is renamed into
+    /// place only if the scope succeeds, that is, if every line was written.
     fn perform(&mut self, op: Put) -> io::Result<()> {
         let mut map = self.load()?;
         map.insert(op.0, op.1);
-        self.fs
-            .perform(CreateAtomic::new(&self.path))?
-            .scope(|file| {
-                for (k, v) in &map {
-                    file.perform(WriteAll(format!("{k}\t{v}\n").as_bytes()))?;
-                }
-                Ok(())
-            })
+        self.fs.acquire(CreateAtomic::new(&self.path), |_, file| {
+            for (k, v) in &map {
+                file.perform(WriteAll(format!("{k}\t{v}\n").as_bytes()))?;
+            }
+            Ok(())
+        })
     }
 }
 

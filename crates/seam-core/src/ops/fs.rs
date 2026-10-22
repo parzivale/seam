@@ -1,8 +1,10 @@
 //! The filesystem.
 //!
 //! Whole-file operations ([`ReadFile`], [`WriteFile`], ...) are performed on
-//! the backend. [`Open`] produces a handle, and the operations on handles
-//! are in [`io`](super::io). Paths are owned, so operations can be sent to
+//! the backend. [`Open`] and [`CreateAtomic`] are acquisitions: a core
+//! acquires the file for the length of a scope (see
+//! [`acquire`](crate::acquire)), and performs the operations in
+//! [`io`](super::io) on it there. Paths are owned, so operations can be sent to
 //! another thread or held across an `.await`.
 //!
 //! Reading operations are [`Query`](crate::Query)s, so a core that only
@@ -127,12 +129,14 @@ pub struct Open<F> {
 /// Create a file that atomically replaces `path` when it is closed,
 /// producing a handle of type `F`.
 ///
-/// Writes go to a temporary file beside `path`. Closing the handle (through
-/// [`Scoped`](crate::Scoped) or [`AsyncScoped`](crate::AsyncScoped)) syncs
-/// it and renames it over `path` in one step, so readers see either the old
-/// contents or the new, never a mix. Abandoning or dropping the handle,
-/// including when a panic unwinds or a future is cancelled, deletes the
-/// temporary file and leaves `path` untouched.
+/// Writes go to a temporary file beside `path`. When the scope succeeds, the
+/// provider syncs it and renames it over `path` in one step, so readers see
+/// either the old contents or the new, never a mix. When the scope fails,
+/// panics or is cancelled, the temporary file is deleted and `path` is left
+/// untouched.
+///
+/// Temporary files are named `.<name>.seam-<suffix>.tmp`. If the process is
+/// killed outright, one can be left behind; [`SweepAtomic`] removes them.
 ///
 /// ```
 /// use std::io;
@@ -143,10 +147,10 @@ pub struct Open<F> {
 /// /// Saves settings. A crash or error halfway leaves the old file intact.
 /// fn save<C, F>(c: &mut C, settings: &[(&str, &str)]) -> io::Result<()>
 /// where
-///     C: Perform<CreateAtomic<F>>,
-///     F: Finalize<Error = io::Error> + for<'a> Perform<WriteAll<'a>>,
+///     C: Provide<CreateAtomic<F>>,
+///     F: for<'a> Perform<WriteAll<'a>>,
 /// {
-///     c.perform(CreateAtomic::new("settings.conf"))?.scope(|file| {
+///     c.acquire(CreateAtomic::new("settings.conf"), |_c, file| {
 ///         for (key, value) in settings {
 ///             file.perform(WriteAll(format!("{key} = {value}\n").as_bytes()))?;
 ///         }
@@ -184,8 +188,40 @@ impl<F> core::fmt::Debug for CreateAtomic<F> {
     }
 }
 
-impl<F> crate::Operation for CreateAtomic<F> {
-    type Outcome = io::Result<F>;
+impl<F> crate::Acquisition for CreateAtomic<F> {
+    type Resource = F;
+    type Error = io::Error;
+}
+
+/// Delete temporary files left in `dir` by [`CreateAtomic`] writes that
+/// never finished, because the process was killed before it could clean up.
+/// Returns how many were removed.
+///
+/// Only files whose last modification is at least `older_than` ago are
+/// removed, so that writes still in progress, in this process or another,
+/// are left alone. Pick an age longer than any write takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SweepAtomic {
+    /// The directory to sweep. Subdirectories are not visited.
+    pub dir: PathBuf,
+    /// How old a temporary file must be to count as abandoned.
+    pub older_than: core::time::Duration,
+}
+
+impl SweepAtomic {
+    /// Describes sweeping `dir` of temporary files at least `older_than` old.
+    pub fn new(dir: impl Into<PathBuf>, older_than: core::time::Duration) -> Self {
+        Self {
+            dir: dir.into(),
+            older_than,
+        }
+    }
+
+    /// Whether `name` is a temporary file name from [`CreateAtomic`].
+    pub fn is_temp_name(name: &std::ffi::OsStr) -> bool {
+        name.to_str()
+            .is_some_and(|n| n.starts_with('.') && n.ends_with(".tmp") && n.contains(".seam-"))
+    }
 }
 
 /// How to open a file. Mirrors `std::fs::OpenOptions`.
@@ -392,8 +428,10 @@ operations! {
     RemoveDir => io::Result<()>;
     Rename => io::Result<()>;
     CopyFile => io::Result<u64>;
+    SweepAtomic => io::Result<u64>;
 }
 
-impl<F> crate::Operation for Open<F> {
-    type Outcome = io::Result<F>;
+impl<F> crate::Acquisition for Open<F> {
+    type Resource = F;
+    type Error = io::Error;
 }

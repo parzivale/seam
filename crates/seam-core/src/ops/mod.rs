@@ -15,29 +15,32 @@
 //! | `process` | `process` | yes | `RunCommand`, `Exit` |
 //! | `stdio` | `io-std` | yes | `Print`, `ReadLine` |
 //! | `signal` | `signal` | yes | `CtrlC` |
-//! | `task` | `rt` | no (`BoxFuture`: alloc) | `Spawn`, `Join`, `Abort`, `YieldNow` |
+//! | `task` | `rt` | no (`SpawnWith`, `BoxFuture`: alloc) | `Spawn`, `Join`, `Detach`, `YieldNow` |
 //!
-//! # Handles
+//! # Resources
 //!
-//! Operations that create a resource (opening a file, connecting a socket)
-//! are generic over the handle type, since each backend has its own. The
-//! core names the handle as a type parameter with the bounds it needs, and
-//! the operations on the handle are in `io` or `net`:
+//! Effects that produce something lasting (opening a file, connecting a
+//! socket, spawning a task) are [`Acquisition`](crate::Acquisition)s, not
+//! operations: a core never owns the file or socket, it acquires one for the
+//! length of a scope (see [`acquire`](crate::acquire)). They are generic over
+//! the backend's handle type; the core names it as a type parameter with the
+//! bounds it needs, and performs the operations in `io` or `net` on it:
 //!
 //! ```
 //! # #[cfg(feature = "fs")] {
 //! use std::io;
-//! use seam_core::Perform;
+//! use seam_core::prelude::*;
 //! use seam_core::ops::fs::Open;
 //! use seam_core::ops::io::WriteAll;
 //!
 //! fn save<C, F>(c: &mut C, report: &str) -> io::Result<()>
 //! where
-//!     C: Perform<Open<F>>,
+//!     C: Provide<Open<F>>,
 //!     F: for<'a> Perform<WriteAll<'a>>,
 //! {
-//!     let mut file = c.perform(Open::create("report.txt"))?;
-//!     file.perform(WriteAll(report.as_bytes()))
+//!     c.acquire(Open::create("report.txt"), |_c, file| {
+//!         file.perform(WriteAll(report.as_bytes()))
+//!     })
 //! }
 //! # }
 //! ```

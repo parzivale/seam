@@ -1,29 +1,31 @@
-//! Filesystem operations, and the [`File`] handle.
+//! Filesystem operations, and the [`File`] and [`AtomicFile`] handles.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
+use std::time::SystemTime;
+
 use seam_core::ops::fs::{
     CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Open, ReadDir, ReadFile,
-    ReadToString, RemoveDir, RemoveFile, Rename, WriteFile,
+    ReadToString, RemoveDir, RemoveFile, Rename, SweepAtomic, WriteFile,
 };
-use seam_core::{Finalize, Inspect, Perform};
+use seam_core::{Inspect, Perform, Provide, Token};
 
 use crate::Std;
 
-/// An open file. Read and write it with the `io` operations.
+/// An open file, acquired with [`Open`]. Read and write it with the `io`
+/// operations.
 ///
-/// [`Finalize::close`] flushes and syncs it to disk, returning any error;
-/// abandoning or dropping it closes it without syncing.
+/// When its scope succeeds, a file opened for writing is flushed and synced
+/// to disk, and an error is returned from the scope. Otherwise it is closed
+/// without syncing.
 #[derive(Debug)]
 pub struct File(std::fs::File, Writable);
 
 crate::io_ops!(File);
 
-impl Finalize for File {
-    type Error = io::Error;
-
-    fn close(mut self) -> io::Result<()> {
+impl File {
+    fn commit(mut self) -> io::Result<()> {
         if !self.1.0 {
             return Ok(());
         }
@@ -37,12 +39,12 @@ impl Finalize for File {
 #[derive(Debug, Clone, Copy)]
 struct Writable(bool);
 
-/// A file that replaces its target when closed. See
+/// A file that replaces its target when its scope succeeds, acquired with
 /// [`CreateAtomic`].
 ///
-/// Writes go to a temporary file in the same directory. [`Finalize::close`]
-/// syncs it and renames it over the target. Abandoning or dropping it
-/// deletes the temporary file.
+/// Writes go to a temporary file in the same directory. When the scope
+/// succeeds, it is synced and renamed over the target. Otherwise, including
+/// on a panic, it is deleted.
 #[derive(Debug)]
 pub struct AtomicFile(std::fs::File, Pending);
 
@@ -65,10 +67,8 @@ impl Drop for Pending {
     }
 }
 
-impl Finalize for AtomicFile {
-    type Error = io::Error;
-
-    fn close(mut self) -> io::Result<()> {
+impl AtomicFile {
+    fn commit(mut self) -> io::Result<()> {
         io::Write::flush(&mut self.0)?;
         self.0.sync_all()?;
         let temp = self
@@ -98,11 +98,34 @@ fn temp_path(target: &Path) -> PathBuf {
     use std::hash::{BuildHasher, Hasher, RandomState};
     let name = target.file_name().unwrap_or_default().to_string_lossy();
     let salt = RandomState::new().build_hasher().finish();
-    target.with_file_name(format!(".{name}.{salt:016x}.tmp"))
+    target.with_file_name(format!(".{name}.seam-{salt:016x}.tmp"))
 }
 
-impl Perform<CreateAtomic<AtomicFile>> for Std {
-    fn perform(&mut self, op: CreateAtomic<AtomicFile>) -> io::Result<AtomicFile> {
+impl Provide<Open<File>> for Std {
+    fn provide(&mut self, op: Open<File>, _: Token) -> io::Result<File> {
+        let o = op.options;
+        std::fs::OpenOptions::new()
+            .read(o.read)
+            .write(o.write)
+            .append(o.append)
+            .truncate(o.truncate)
+            .create(o.create)
+            .create_new(o.create_new)
+            .open(op.path)
+            .map(|f| File(f, Writable(o.write || o.append)))
+    }
+
+    fn close(&mut self, file: File) -> io::Result<()> {
+        file.commit()
+    }
+}
+
+impl Provide<CreateAtomic<AtomicFile>> for Std {
+    fn close(&mut self, file: AtomicFile) -> io::Result<()> {
+        file.commit()
+    }
+
+    fn provide(&mut self, op: CreateAtomic<AtomicFile>, _: Token) -> io::Result<AtomicFile> {
         let temp = temp_path(&op.path);
         let file = std::fs::OpenOptions::new()
             .write(true)
@@ -188,18 +211,27 @@ impl Perform<CopyFile> for Std {
     }
 }
 
-impl Perform<Open<File>> for Std {
-    fn perform(&mut self, op: Open<File>) -> io::Result<File> {
-        let o = op.options;
-        std::fs::OpenOptions::new()
-            .read(o.read)
-            .write(o.write)
-            .append(o.append)
-            .truncate(o.truncate)
-            .create(o.create)
-            .create_new(o.create_new)
-            .open(op.path)
-            .map(|f| File(f, Writable(o.write || o.append)))
+impl Perform<SweepAtomic> for Std {
+    fn perform(&mut self, op: SweepAtomic) -> io::Result<u64> {
+        let now = SystemTime::now();
+        let mut removed = 0;
+        for entry in std::fs::read_dir(&op.dir)? {
+            let entry = entry?;
+            if !SweepAtomic::is_temp_name(&entry.file_name()) {
+                continue;
+            }
+            let modified = entry.metadata()?.modified()?;
+            let age = now.duration_since(modified).unwrap_or_default();
+            if age >= op.older_than {
+                match std::fs::remove_file(entry.path()) {
+                    Ok(()) => removed += 1,
+                    // Finished or cleaned up by its writer in the meantime.
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        Ok(removed)
     }
 }
 

@@ -1,81 +1,104 @@
 //! Runs the Tokio backend against the real OS.
 #![cfg(feature = "full")]
 
+use std::future::{Future, poll_fn};
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
+use std::pin::pin;
+use std::task::Poll;
 use std::time::Duration;
 
-use seam_core::Inspect;
 use seam_core::future::{SendInspect, SendPerform};
-use seam_core::ops::fs::{CreateDir, Open, ReadFile, RemoveDir, WriteFile};
-use seam_core::ops::io::{Flush, Read, ReadToEnd, WriteAll};
+use seam_core::ops::fs::{CreateAtomic, CreateDir, Open, ReadDir, ReadFile, RemoveDir, WriteFile};
+use seam_core::ops::io::{Read, ReadToEnd, WriteAll};
 use seam_core::ops::net::{Accept, LocalAddr, TcpBind, TcpConnect};
 use seam_core::ops::time::{Now, Sleep};
+use seam_core::{AsyncAcquire, AsyncProvide, Inspect};
 use seam_tokio::Tokio;
-use seam_tokio::fs::File;
+use seam_tokio::fs::AtomicFile;
 use seam_tokio::net::{TcpListener, TcpStream};
 
-/// A core written only against `Send` capability bounds, so it can be
-/// spawned on a multithreaded runtime.
-async fn copy_file<C, F>(
-    c: &mut C,
-    from: std::path::PathBuf,
-    to: std::path::PathBuf,
-) -> io::Result<()>
+async fn scratch_dir(tokio: &mut Tokio, name: &str) -> io::Result<PathBuf> {
+    let mut dir = std::env::temp_dir();
+    dir.push(format!("seam-tokio-{name}-{}", std::process::id()));
+    let _ = tokio.perform_send(RemoveDir::all(dir.clone())).await;
+    tokio.perform_send(CreateDir::all(dir.clone())).await?;
+    Ok(dir)
+}
+
+/// A core written only against capability bounds.
+async fn copy_file<C, F>(c: &mut C, from: PathBuf, to: PathBuf) -> io::Result<()>
 where
-    C: SendPerform<Open<F>> + Send,
-    F: for<'a> SendPerform<ReadToEnd<'a>>
-        + for<'a> SendPerform<WriteAll<'a>>
-        + SendPerform<Flush>
-        + Send,
+    C: AsyncProvide<Open<F>> + Send,
+    F: for<'a> SendPerform<ReadToEnd<'a>> + for<'a> SendPerform<WriteAll<'a>> + Send,
 {
-    let mut bytes = Vec::new();
-    c.perform_send(Open::read(from))
-        .await?
-        .perform_send(ReadToEnd(&mut bytes))
-        .await?;
-    let mut out = c.perform_send(Open::create(to)).await?;
-    out.perform_send(WriteAll(&bytes)).await?;
-    out.perform_send(Flush).await
+    c.acquire_async(Open::read(from), async |c, src| {
+        let mut bytes = Vec::new();
+        src.perform_send(ReadToEnd(&mut bytes)).await?;
+        c.acquire_async(Open::create(to), async |_, dst| {
+            dst.perform_send(WriteAll(&bytes)).await
+        })
+        .await
+    })
+    .await
+}
+
+/// Generic cores that acquire resources produce `Send` futures, so they can
+/// be spawned on a multithreaded runtime.
+#[allow(dead_code)]
+fn copy_file_is_send<C, F>(c: &mut C)
+where
+    C: AsyncProvide<Open<F>> + Send,
+    F: for<'a> SendPerform<ReadToEnd<'a>> + for<'a> SendPerform<WriteAll<'a>> + Send,
+{
+    fn assert_send<T: Future + Send>(_: T) {}
+    assert_send(copy_file(c, PathBuf::new(), PathBuf::new()));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn spawned_core_on_multithreaded_runtime() -> io::Result<()> {
     let mut tokio = Tokio::new();
-    let mut dir = std::env::temp_dir();
-    dir.push(format!("seam-tokio-fs-{}", std::process::id()));
-    tokio.perform_send(CreateDir::all(dir.clone())).await?;
+    let dir = scratch_dir(&mut tokio, "fs").await?;
     let (a, b) = (dir.join("a"), dir.join("b"));
     tokio.perform_send(WriteFile::new(&a, "hello")).await?;
 
-    let handle = tokio::spawn(async move {
+    let copied = tokio::spawn(async move {
         let mut tokio = Tokio::new();
-        copy_file::<_, File>(&mut tokio, a, b.clone()).await?;
+        copy_file(&mut tokio, a, b.clone()).await?;
         tokio.inspect_send(ReadFile::new(b)).await
     });
-    assert_eq!(handle.await.unwrap()?, b"hello");
-
+    assert_eq!(copied.await.unwrap()?, b"hello");
     tokio.perform_send(RemoveDir::all(dir)).await
 }
 
 #[tokio::test]
 async fn tcp_loopback() -> io::Result<()> {
     let mut tokio = Tokio::new();
-    let mut listener: TcpListener = tokio
-        .perform_send(TcpBind::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))))
-        .await?;
-    let addr = listener.inspect(LocalAddr)?;
-
-    let accept = tokio::spawn(async move {
-        let (mut server, _) = listener.perform_send(Accept::<TcpStream>::new()).await?;
-        let mut buf = [0; 4];
-        let n = server.perform_send(Read(&mut buf)).await?;
-        io::Result::Ok(buf[..n].to_vec())
-    });
-    let mut client: TcpStream = tokio.perform_send(TcpConnect::new(addr)).await?;
-    client.perform_send(WriteAll(b"ping")).await?;
-    assert_eq!(accept.await.unwrap()?, b"ping");
-    Ok(())
+    let any_port = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    tokio
+        .acquire_async(
+            TcpBind::<TcpListener>::new(any_port),
+            async |tokio, listener| {
+                let addr = listener.inspect(LocalAddr)?;
+                // Accept and connect concurrently: the body holds both the
+                // listener and the root capability.
+                let server = listener.acquire_async(Accept::<TcpStream>::new(), async |_, s| {
+                    let mut buf = [0; 4];
+                    let n = s.perform_send(Read(&mut buf)).await?;
+                    io::Result::Ok(buf[..n].to_vec())
+                });
+                let client = tokio
+                    .acquire_async(TcpConnect::<TcpStream>::new(addr), async |_, c| {
+                        c.perform_send(WriteAll(b"ping")).await
+                    });
+                let (received, sent) = tokio::join!(server, client);
+                sent?;
+                assert_eq!(received?, b"ping");
+                Ok(())
+            },
+        )
+        .await
 }
 
 #[tokio::test]
@@ -95,42 +118,87 @@ fn block_on_hands_out_the_root() {
     assert_eq!(n, 7);
 }
 
-/// Cancelling a scope that is writing an atomic file leaves the old file
-/// and no temporary file behind.
-#[tokio::test]
-async fn atomic_file_survives_cancellation() -> io::Result<()> {
-    use seam_core::AsyncScoped;
-    use seam_core::ops::fs::{CreateAtomic, ReadDir};
-    use seam_tokio::fs::AtomicFile;
+/// Waits for background cleanup, then returns what is in `dir`.
+async fn settled_listing(dir: &Path, expect: &Path) -> Vec<PathBuf> {
+    let mut listing = Vec::new();
+    for _ in 0..200 {
+        listing = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        if listing == [expect] {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    listing
+}
 
+/// Cancels an atomic write after every possible number of polls, so at
+/// every step of creating the temporary file, writing, syncing, renaming and
+/// syncing the directory. Every time, the target holds exactly the old or
+/// the new contents, and no temporary file is left behind.
+#[tokio::test(flavor = "multi_thread")]
+async fn atomic_write_is_safe_to_cancel_at_every_poll() -> io::Result<()> {
     let mut tokio = Tokio::new();
-    let mut dir = std::env::temp_dir();
-    dir.push(format!("seam-tokio-atomic-{}", std::process::id()));
-    tokio.perform_send(CreateDir::all(dir.clone())).await?;
+    let dir = scratch_dir(&mut tokio, "atomic").await?;
     let path = dir.join("state.json");
-    tokio.perform_send(WriteFile::new(&path, "old")).await?;
+    let mut cut_points = 0;
 
-    let file: AtomicFile = tokio.perform_send(CreateAtomic::new(&path)).await?;
-    let scoped = file.scope_async(async |f| {
-        f.perform_send(WriteAll(b"new, but never finished")).await?;
-        std::future::pending::<()>().await;
-        io::Result::Ok(())
-    });
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), scoped)
+    for cut in 0.. {
+        tokio.perform_send(WriteFile::new(&path, "old")).await?;
+        let finished = {
+            let write =
+                tokio.acquire_async(CreateAtomic::<AtomicFile>::new(&path), async |_, f| {
+                    f.perform_send(WriteAll(b"new ")).await?;
+                    f.perform_send(WriteAll(b"contents")).await
+                });
+            let mut write = pin!(write);
+            let mut polls = 0;
+            poll_fn(|cx| {
+                if polls == cut {
+                    return Poll::Ready(false);
+                }
+                polls += 1;
+                write.as_mut().poll(cx).map(|r| r.map(|()| true).unwrap())
+            })
             .await
-            .is_err()
-    );
-    assert_eq!(tokio.inspect_send(ReadFile::new(&path)).await?, b"old");
+        }; // dropped here: cancelled, unless it finished
+
+        let contents = std::fs::read(&path)?;
+        assert!(
+            contents == b"old" || contents == b"new contents",
+            "cut {cut}: {contents:?}"
+        );
+        assert_eq!(
+            settled_listing(&dir, &path).await,
+            std::slice::from_ref(&path),
+            "cut {cut}: leftover file"
+        );
+        if finished {
+            assert_eq!(contents, b"new contents");
+            break;
+        }
+        cut_points += 1;
+    }
+    assert!(cut_points >= 5, "only {cut_points} points to cancel at");
+    tokio.perform_send(RemoveDir::all(dir)).await
+}
+
+#[tokio::test]
+async fn atomic_file_listing_is_clean_after_success() -> io::Result<()> {
+    let mut tokio = Tokio::new();
+    let dir = scratch_dir(&mut tokio, "atomic-ok").await?;
+    let path = dir.join("state.json");
+    tokio
+        .acquire_async(CreateAtomic::<AtomicFile>::new(&path), async |_, f| {
+            f.perform_send(WriteAll(b"new")).await
+        })
+        .await?;
+    assert_eq!(tokio.inspect_send(ReadFile::new(&path)).await?, b"new");
     assert_eq!(
         tokio.inspect_send(ReadDir::new(&dir)).await?,
         std::slice::from_ref(&path)
     );
-
-    let file: AtomicFile = tokio.perform_send(CreateAtomic::new(&path)).await?;
-    file.scope_async(async |f| f.perform_send(WriteAll(b"new")).await)
-        .await?;
-    assert_eq!(tokio.inspect_send(ReadFile::new(&path)).await?, b"new");
-    assert_eq!(tokio.inspect_send(ReadDir::new(&dir)).await?, [path]);
     tokio.perform_send(RemoveDir::all(dir)).await
 }

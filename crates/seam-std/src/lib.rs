@@ -40,10 +40,12 @@
 //! Files and sockets are newtypes (`fs::File`, `net::TcpStream`, ...)
 //! that expose no std I/O traits and no way to get the std value back, so
 //! every effect on them also goes through [`Perform`](seam_core::Perform)
-//! or [`Inspect`](seam_core::Inspect). They implement
-//! [`Finalize`](seam_core::Finalize) for use in scopes: closing a file
-//! flushes and syncs it, closing a stream shuts it down, and
-//! `fs::AtomicFile` renames itself into place; errors are returned.
+//! or [`Inspect`](seam_core::Inspect). A core only ever borrows one inside
+//! an [`acquire`](seam_core::Acquire::acquire) scope. When the scope
+//! succeeds, a file is flushed and synced, a stream is shut down cleanly,
+//! and `fs::AtomicFile` is renamed into place, and errors are returned;
+//! otherwise they are just closed, and an atomic file's temporary file is
+//! deleted.
 //!
 //! # Async
 //!

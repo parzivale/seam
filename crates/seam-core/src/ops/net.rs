@@ -1,25 +1,27 @@
 //! Networking.
 //!
-//! Operations that create a socket are generic over the backend's socket
-//! types. Reading and writing a connected stream use [`io`](super::io). DNS
-//! is an effect too: resolve names with [`Resolve`].
+//! Sockets are acquisitions, generic over the backend's socket types: a
+//! core acquires one for the length of a scope (see
+//! [`acquire`](crate::acquire)). Reading and writing a connected stream use
+//! [`io`](super::io). DNS is an effect too: resolve names with [`Resolve`].
 //!
 //! ```
 //! use std::io;
-//! use seam_core::{Inspect, Perform};
+//! use seam_core::prelude::*;
 //! use seam_core::ops::io::WriteAll;
 //! use seam_core::ops::net::{Resolve, TcpConnect};
 //!
 //! /// Sends one line to `host:port`, trying each address it resolves to.
 //! fn notify<C, S>(c: &mut C, host: &str, port: u16, line: &str) -> io::Result<()>
 //! where
-//!     C: Inspect<Resolve> + Perform<TcpConnect<S>>,
+//!     C: Inspect<Resolve> + Provide<TcpConnect<S>>,
 //!     S: for<'a> Perform<WriteAll<'a>>,
 //! {
 //!     let mut last = io::Error::new(io::ErrorKind::NotFound, "no addresses");
 //!     for addr in c.inspect(Resolve::new(host, port))? {
-//!         match c.perform(TcpConnect::new(addr)) {
-//!             Ok(mut stream) => return stream.perform(WriteAll(line.as_bytes())),
+//!         // Closing the stream when the scope succeeds shuts it down cleanly.
+//!         match c.acquire(TcpConnect::new(addr), |_c, s| s.perform(WriteAll(line.as_bytes()))) {
+//!             Ok(()) => return Ok(()),
 //!             Err(e) => last = e,
 //!         }
 //!     }
@@ -57,8 +59,8 @@ pub struct TcpBind<L> {
     handle: PhantomData<fn() -> L>,
 }
 
-/// Accept a connection on a listener, producing a stream of type `S` and
-/// the peer's address.
+/// Accept a connection on a listener, producing a stream of type `S`.
+/// Acquired from the listener; [`PeerAddr`] on the stream says who it is.
 pub struct Accept<S> {
     handle: PhantomData<fn() -> S>,
 }
@@ -169,18 +171,22 @@ operations! {
     Shutdown => io::Result<()>;
 }
 
-impl<S> crate::Operation for TcpConnect<S> {
-    type Outcome = io::Result<S>;
+impl<S> crate::Acquisition for TcpConnect<S> {
+    type Resource = S;
+    type Error = io::Error;
 }
 
-impl<L> crate::Operation for TcpBind<L> {
-    type Outcome = io::Result<L>;
+impl<L> crate::Acquisition for TcpBind<L> {
+    type Resource = L;
+    type Error = io::Error;
 }
 
-impl<S> crate::Operation for Accept<S> {
-    type Outcome = io::Result<(S, SocketAddr)>;
+impl<S> crate::Acquisition for Accept<S> {
+    type Resource = S;
+    type Error = io::Error;
 }
 
-impl<U> crate::Operation for UdpBind<U> {
-    type Outcome = io::Result<U>;
+impl<U> crate::Acquisition for UdpBind<U> {
+    type Resource = U;
+    type Error = io::Error;
 }

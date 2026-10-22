@@ -1,66 +1,59 @@
 //! Spawning and joining concurrent tasks.
 //!
-//! [`Spawn`] hands a future to the backend's executor and produces a handle
-//! of the backend's type `H`. [`Join`], [`Abort`], [`Detach`] and
-//! [`IsFinished`] are performed on that handle. [`YieldNow`] lets other
+//! Spawning is an [`Acquisition`](crate::Acquisition): a task handle exists
+//! only inside a scope, like a file or a socket. When the scope succeeds,
+//! closing the handle waits for the task; when it fails, panics or is
+//! cancelled, abandoning it aborts the task. So a task cannot outlive the
+//! code that spawned it by accident. Perform [`Detach`] on the handle for a
+//! task that should keep running on its own.
+//!
+//! On the handle, perform [`Join`] to take the task's output, [`Abort`] to
+//! cancel it, or [`IsFinished`] to check on it. [`YieldNow`] lets other
 //! tasks run.
 //!
-//! Dropping a handle aborts its task unless it was detached.
+//! | Acquisition | Spawns | Feature |
+//! |---|---|---|
+//! | [`Spawn`] | one task | `rt` |
+//! | `SpawnAll` | a batch of tasks, joined together | `rt` + `alloc` |
+//! | `SpawnWith` | a task that owns a resource acquired for it, such as an accepted connection | `rt` + `alloc` |
 //!
 //! # Naming the future
 //!
 //! A bound has to name the future type it spawns, and a generic core cannot
-//! name the type of an `async` block it writes itself. There are two ways
-//! around that.
-//!
-//! **Pass the task in.** Take the task as a function argument; the future
-//! type becomes a type parameter, inferred where the function is called.
-//! This needs no allocation:
+//! name the type of an `async` block it writes itself. Take the task as a
+//! function argument instead; the future type becomes a type parameter,
+//! inferred where the function is called, and nothing is boxed:
 //!
 //! ```
+//! # #[cfg(feature = "alloc")] {
 //! use core::future::Future;
-//! use seam_core::future::SendPerform;
-//! use seam_core::ops::task::{Join, JoinError, Spawn};
+//! use seam_core::prelude::*;
+//! use seam_core::ops::task::{Join, JoinError, SpawnAll};
 //!
-//! /// Runs `job` on every input concurrently, then collects the results.
+//! /// Runs `job` on every input concurrently and collects the results. If
+//! /// this future is dropped, every task is aborted.
 //! async fn fan_out<C, J, Fut, H>(c: &mut C, inputs: Vec<u32>, job: J) -> Result<Vec<u32>, JoinError>
 //! where
-//!     C: SendPerform<Spawn<Fut, H>>,
+//!     C: AsyncProvide<SpawnAll<Fut, H>>,
 //!     J: Fn(u32) -> Fut,
 //!     Fut: Future<Output = u32>,
 //!     H: SendPerform<Join<u32>>,
 //! {
-//!     let mut handles = Vec::new();
-//!     for input in inputs {
-//!         handles.push(c.perform_send(Spawn::new(job(input))).await);
-//!     }
-//!     let mut results = Vec::new();
-//!     for mut h in handles {
-//!         results.push(h.perform_send(Join::new()).await?);
-//!     }
-//!     Ok(results)
-//! }
-//! ```
-//!
-//! **Box it.** With the `alloc` feature, `BoxFuture` erases the future's
-//! type, so one bound covers any task, `async` blocks included:
-//!
-//! ```
-//! # #[cfg(feature = "alloc")] {
-//! use seam_core::future::SendPerform;
-//! use seam_core::ops::task::{BoxFuture, Spawn};
-//!
-//! async fn background<C, H>(c: &mut C, name: &'static str) -> H
-//! where
-//!     C: SendPerform<Spawn<BoxFuture<()>, H>>,
-//! {
-//!     c.perform_send(Spawn::boxed(async move {
-//!         let _ = name; // ...whatever the task does
-//!     }))
+//!     let tasks = SpawnAll::new(inputs.into_iter().map(job).collect());
+//!     c.acquire_async(tasks, async |_c, handles| {
+//!         let mut results = Vec::new();
+//!         for h in handles {
+//!             results.push(h.perform_send(Join::new()).await?);
+//!         }
+//!         Ok(results)
+//!     })
 //!     .await
 //! }
 //! # }
 //! ```
+//!
+//! With `alloc`, `Spawn::boxed` erases the future's type, so one bound
+//! covers any task, `async` blocks included.
 //!
 //! # Capabilities inside tasks
 //!
@@ -72,25 +65,56 @@ use core::fmt;
 use core::future::Future;
 use core::marker::PhantomData;
 
-/// Start running a future concurrently, producing a handle of type `H`.
-///
-/// Dropping the handle aborts the task, so a task never outlives the code
-/// that spawned it by accident: cancelling a parent cancels its children.
-/// Perform [`Detach`] on the handle to let the task run on its own.
-///
-/// Handles implement [`AsyncFinalize`](crate::AsyncFinalize): in a scope,
-/// closing waits for the task to finish, and abandoning aborts it.
+/// Spawn one task, providing a handle of type `H` for the length of a
+/// scope. Closing the handle waits for the task; abandoning it aborts it.
 pub struct Spawn<F, H> {
     /// The task.
     pub future: F,
     handle: PhantomData<fn() -> H>,
 }
 
+/// Spawn a batch of tasks, providing their handles, in order, for the
+/// length of a scope. Closing waits for all of them and reports the first
+/// failure; abandoning aborts them all.
+#[cfg(feature = "alloc")]
+pub struct SpawnAll<F, H> {
+    /// The tasks.
+    pub futures: alloc::vec::Vec<F>,
+    handle: PhantomData<fn() -> H>,
+}
+
+/// Acquire `A` and hand the resource to `body` in a new task, which owns
+/// it. Provides the task's handle, of type `H`.
+///
+/// This is how a resource reaches a task. A core cannot move a resource
+/// anywhere, since it only ever borrows one, so the provider acquires it on
+/// the task's behalf: for example, a listener accepts a connection and
+/// spawns `body` with the stream. Inside the task, the resource is closed
+/// when `body` returns `Ok` and abandoned otherwise.
+#[cfg(feature = "alloc")]
+pub struct SpawnWith<A: crate::Acquisition, T, E, H> {
+    /// What to acquire for the task.
+    pub acquisition: A,
+    /// What the task does with it.
+    pub body: TaskBody<A::Resource, T, E>,
+    handle: PhantomData<fn() -> H>,
+}
+
+/// The body of a [`SpawnWith`] task: borrows the resource and returns a
+/// boxed future.
+#[cfg(feature = "alloc")]
+pub type TaskBody<R, T, E> =
+    alloc::boxed::Box<dyn for<'a> FnOnce(&'a mut R) -> BoxFuture<'a, Result<T, E>> + Send>;
+
+/// A type-erased future.
+#[cfg(feature = "alloc")]
+pub type BoxFuture<'a, T> = core::pin::Pin<alloc::boxed::Box<dyn Future<Output = T> + Send + 'a>>;
+
 /// Wait for a task to finish and take its output. Performed on the handle.
 ///
 /// # Panics
 ///
-/// Joining a handle that was already joined successfully may panic.
+/// Joining a handle that was already joined may panic.
 pub struct Join<T> {
     output: PhantomData<fn() -> T>,
 }
@@ -100,8 +124,8 @@ pub struct Join<T> {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Abort;
 
-/// Let a task keep running after its handle is dropped. Performed on the
-/// handle; afterwards the handle can still be joined.
+/// Let a task keep running after its scope ends. Performed on the handle;
+/// the scope then neither waits for it nor aborts it.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Detach;
 
@@ -123,10 +147,6 @@ pub enum JoinError {
     Cancelled,
 }
 
-/// A type-erased task, for spawning futures whose type cannot be named.
-#[cfg(feature = "alloc")]
-pub type BoxFuture<T> = core::pin::Pin<alloc::boxed::Box<dyn Future<Output = T> + Send + 'static>>;
-
 impl<F, H> Spawn<F, H> {
     /// Describes spawning `future`.
     pub fn new(future: F) -> Self {
@@ -138,10 +158,37 @@ impl<F, H> Spawn<F, H> {
 }
 
 #[cfg(feature = "alloc")]
-impl<T, H> Spawn<BoxFuture<T>, H> {
+impl<T, H> Spawn<BoxFuture<'static, T>, H> {
     /// Describes spawning `future`, boxed so that its type is erased.
     pub fn boxed(future: impl Future<Output = T> + Send + 'static) -> Self {
         Self::new(alloc::boxed::Box::pin(future))
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<F, H> SpawnAll<F, H> {
+    /// Describes spawning each of `futures`.
+    pub fn new(futures: alloc::vec::Vec<F>) -> Self {
+        Self {
+            futures,
+            handle: PhantomData,
+        }
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<A: crate::Acquisition, T, E, H> SpawnWith<A, T, E, H> {
+    /// Describes acquiring `acquisition` and running `body` with it in a new
+    /// task.
+    pub fn new(
+        acquisition: A,
+        body: impl for<'a> FnOnce(&'a mut A::Resource) -> BoxFuture<'a, Result<T, E>> + Send + 'static,
+    ) -> Self {
+        Self {
+            acquisition,
+            body: alloc::boxed::Box::new(body),
+            handle: PhantomData,
+        }
     }
 }
 
@@ -174,6 +221,24 @@ impl<F, H> fmt::Debug for Spawn<F, H> {
     }
 }
 
+#[cfg(feature = "alloc")]
+impl<F, H> fmt::Debug for SpawnAll<F, H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SpawnAll")
+            .field("tasks", &self.futures.len())
+            .finish()
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<A: crate::Acquisition + fmt::Debug, T, E, H> fmt::Debug for SpawnWith<A, T, E, H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SpawnWith")
+            .field("acquisition", &self.acquisition)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<T> fmt::Debug for Join<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Join")
@@ -191,8 +256,29 @@ impl fmt::Display for JoinError {
 
 impl core::error::Error for JoinError {}
 
-impl<F: Future, H> crate::Operation for Spawn<F, H> {
-    type Outcome = H;
+/// So that cores working in `io::Result` can spawn tasks.
+#[cfg(feature = "std")]
+impl From<JoinError> for std::io::Error {
+    fn from(e: JoinError) -> Self {
+        std::io::Error::other(e)
+    }
+}
+
+impl<F: Future, H> crate::Acquisition for Spawn<F, H> {
+    type Resource = H;
+    type Error = JoinError;
+}
+
+#[cfg(feature = "alloc")]
+impl<F: Future, H> crate::Acquisition for SpawnAll<F, H> {
+    type Resource = alloc::vec::Vec<H>;
+    type Error = JoinError;
+}
+
+#[cfg(feature = "alloc")]
+impl<A: crate::Acquisition, T, E, H> crate::Acquisition for SpawnWith<A, T, E, H> {
+    type Resource = H;
+    type Error = A::Error;
 }
 
 impl<T> crate::Operation for Join<T> {

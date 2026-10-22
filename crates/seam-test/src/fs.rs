@@ -15,10 +15,10 @@ use std::vec::Vec;
 
 use seam_core::ops::fs::{
     CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Open, ReadDir, ReadFile,
-    ReadToString, RemoveDir, RemoveFile, Rename, WriteFile,
+    ReadToString, RemoveDir, RemoveFile, Rename, SweepAtomic, WriteFile,
 };
 use seam_core::ops::io::{Flush, Read, ReadToEnd, Write, WriteAll};
-use seam_core::{Finalize, Inspect, Perform};
+use seam_core::{Inspect, Perform, Provide, Token};
 
 use crate::world::{Shared, World};
 use crate::{Sim, error};
@@ -403,6 +403,32 @@ impl Perform<Rename> for Sim {
     }
 }
 
+impl Perform<SweepAtomic> for Sim {
+    fn perform(&mut self, op: SweepAtomic) -> io::Result<u64> {
+        self.fs_op(&op.dir, |w, dir| {
+            w.fs.require_dir(&dir)?;
+            let now = w.wall;
+            let doomed: Vec<Key> = w
+                .fs
+                .children(&dir)
+                .filter(|k| k.len() == dir.len() + 1 && SweepAtomic::is_temp_name(&k[dir.len()]))
+                .filter(|k| match w.fs.nodes[*k] {
+                    Node::File(inode) => {
+                        let modified = w.fs.inodes[inode].modified;
+                        now.duration_since(modified).unwrap_or_default() >= op.older_than
+                    }
+                    Node::Dir { .. } => false,
+                })
+                .cloned()
+                .collect();
+            for k in &doomed {
+                w.fs.nodes.remove(k);
+            }
+            Ok(doomed.len() as u64)
+        })
+    }
+}
+
 impl Perform<CopyFile> for Sim {
     fn perform(&mut self, op: CopyFile) -> io::Result<u64> {
         self.fs_op(&op.from, |w, from| {
@@ -416,8 +442,13 @@ impl Perform<CopyFile> for Sim {
     }
 }
 
-impl Perform<Open<File>> for Sim {
-    fn perform(&mut self, op: Open<File>) -> io::Result<File> {
+/// Writes land immediately, so closing has nothing left to do.
+impl Provide<Open<File>> for Sim {
+    fn close(&mut self, _: File) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn provide(&mut self, op: Open<File>, _: Token) -> io::Result<File> {
         let o = op.options;
         let writable = o.write || o.append;
         if !(o.read || writable) || ((o.truncate || o.create || o.create_new) && !writable) {
@@ -545,21 +576,13 @@ impl Perform<Flush> for File {
     }
 }
 
-/// Writes land immediately, so closing has nothing left to do.
-impl Finalize for File {
-    type Error = io::Error;
-
-    fn close(self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-/// A file that replaces its target when closed. See [`CreateAtomic`].
+/// A file that replaces its target when its scope succeeds, acquired with
+/// [`CreateAtomic`].
 ///
 /// While it is open, its contents live in a temporary file beside the
 /// target, visible in the simulated filesystem as `.<name>.seam-<n>.tmp`.
-/// Closing renames it over the target; abandoning or dropping it removes
-/// the temporary file.
+/// When the scope succeeds it is renamed over the target; otherwise the
+/// temporary file is removed.
 #[derive(Debug)]
 pub struct AtomicFile {
     file: File,
@@ -568,8 +591,12 @@ pub struct AtomicFile {
     committed: bool,
 }
 
-impl Perform<CreateAtomic<AtomicFile>> for Sim {
-    fn perform(&mut self, op: CreateAtomic<AtomicFile>) -> io::Result<AtomicFile> {
+impl Provide<CreateAtomic<AtomicFile>> for Sim {
+    fn close(&mut self, file: AtomicFile) -> io::Result<()> {
+        file.commit()
+    }
+
+    fn provide(&mut self, op: CreateAtomic<AtomicFile>, _: Token) -> io::Result<AtomicFile> {
         let (temp, target, inode) = self.fs_op(&op.path, |w, target| {
             let Some(name) = target.last() else {
                 return Err(error(ErrorKind::IsADirectory, "is a directory"));
@@ -605,10 +632,8 @@ impl Perform<CreateAtomic<AtomicFile>> for Sim {
     }
 }
 
-impl Finalize for AtomicFile {
-    type Error = io::Error;
-
-    fn close(mut self) -> io::Result<()> {
+impl AtomicFile {
+    fn commit(mut self) -> io::Result<()> {
         let mut world = self.file.world.lock();
         let now = world.wall;
         let fs = &mut world.fs;

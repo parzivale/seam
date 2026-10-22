@@ -15,7 +15,7 @@ use seam_core::ops::io::{Flush, Read, ReadToEnd, Write, WriteAll};
 use seam_core::ops::net::{
     Accept, LocalAddr, PeerAddr, RecvFrom, Resolve, SendTo, Shutdown, TcpBind, TcpConnect, UdpBind,
 };
-use seam_core::{Finalize, Inspect, Perform};
+use seam_core::{Inspect, Perform, Provide, Token};
 
 use crate::world::Shared;
 use crate::{Sim, error};
@@ -137,8 +137,12 @@ impl Inspect<Resolve> for Sim {
     }
 }
 
-impl Perform<TcpBind<TcpListener>> for Sim {
-    fn perform(&mut self, op: TcpBind<TcpListener>) -> io::Result<TcpListener> {
+impl Provide<TcpBind<TcpListener>> for Sim {
+    fn close(&mut self, _: TcpListener) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn provide(&mut self, op: TcpBind<TcpListener>, _: Token) -> io::Result<TcpListener> {
         let mut world = self.world.lock();
         let net = &mut world.net;
         let addr = net.assign(op.addr, Net::tcp_taken)?;
@@ -151,8 +155,12 @@ impl Perform<TcpBind<TcpListener>> for Sim {
     }
 }
 
-impl Perform<TcpConnect<TcpStream>> for Sim {
-    fn perform(&mut self, op: TcpConnect<TcpStream>) -> io::Result<TcpStream> {
+impl Provide<TcpConnect<TcpStream>> for Sim {
+    fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+        stream.commit()
+    }
+
+    fn provide(&mut self, op: TcpConnect<TcpStream>, _: Token) -> io::Result<TcpStream> {
         let mut world = self.world.lock();
         let net = &mut world.net;
         let Some(&listener) = net.listeners.keys().find(|&&b| reaches(b, op.addr)) else {
@@ -186,8 +194,12 @@ impl Perform<TcpConnect<TcpStream>> for Sim {
     }
 }
 
-impl Perform<UdpBind<UdpSocket>> for Sim {
-    fn perform(&mut self, op: UdpBind<UdpSocket>) -> io::Result<UdpSocket> {
+impl Provide<UdpBind<UdpSocket>> for Sim {
+    fn close(&mut self, _: UdpSocket) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn provide(&mut self, op: UdpBind<UdpSocket>, _: Token) -> io::Result<UdpSocket> {
         let mut world = self.world.lock();
         let addr = world.net.assign(op.addr, Net::udp_taken)?;
         world.net.udp.insert(addr, VecDeque::new());
@@ -330,8 +342,12 @@ impl Drop for TcpStream {
     }
 }
 
-impl Perform<Accept<TcpStream>> for TcpListener {
-    fn perform(&mut self, _: Accept<TcpStream>) -> io::Result<(TcpStream, SocketAddr)> {
+impl Provide<Accept<TcpStream>> for TcpListener {
+    fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+        stream.commit()
+    }
+
+    fn provide(&mut self, _: Accept<TcpStream>, _: Token) -> io::Result<TcpStream> {
         let mut world = self.world.lock();
         let backlog = world
             .net
@@ -352,7 +368,7 @@ impl Perform<Accept<TcpStream>> for TcpListener {
             peer,
             owns_port: false,
         };
-        Ok((stream, peer))
+        Ok(stream)
     }
 }
 
@@ -442,27 +458,9 @@ impl Inspect<PeerAddr> for UdpSocket {
     }
 }
 
-/// Shuts down the write half, so the peer sees end of input.
-impl Finalize for TcpStream {
-    type Error = io::Error;
-
-    fn close(mut self) -> io::Result<()> {
+impl TcpStream {
+    /// Shuts down the write half, so the peer sees end of input.
+    fn commit(mut self) -> io::Result<()> {
         self.perform(Shutdown(How::Write))
-    }
-}
-
-impl Finalize for TcpListener {
-    type Error = io::Error;
-
-    fn close(self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl Finalize for UdpSocket {
-    type Error = io::Error;
-
-    fn close(self) -> io::Result<()> {
-        Ok(())
     }
 }

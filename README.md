@@ -26,7 +26,7 @@ fn jitter<C: Perform<RandomU64> + Perform<Sleep>>(c: &mut C) {
 
 | Crate | What it is |
 |---|---|
-| [`seam-core`](crates/seam-core) | The traits (`Operation`, `Query`, `Inspect`, `Perform`, `Finalize`/`Scoped` and their async forms, `block_on`), the operation types, and a `prelude`. `no_std`. |
+| [`seam-core`](crates/seam-core) | The traits (`Operation`, `Query`, `Inspect`, `Perform`, `Provide`/`Acquire` and their async forms, `block_on`), the operation and acquisition types, and a `prelude`. `no_std`. |
 | [`seam-std`](crates/seam-std) | The std backend: a `Std` root capability and newtype handles (`File`, `TcpStream`, ...) that expose no std I/O traits. |
 | [`seam-tokio`](crates/seam-tokio) | The Tokio backend: a `Tokio` root capability implementing the async and `Send` capability traits. |
 | [`seam-test`](crates/seam-test) | The pure test backend: a `Sim` world with a virtual clock, seeded randomness, in-memory filesystem and network, scripted commands and captured stdio. Its only real effect is allocation. |
@@ -83,19 +83,27 @@ with `WouldBlock`. The same seed and calls always give the same results.
 
 ## Resources and cancellation
 
-Handles with something to commit are used in a scope, which commits only on
-success:
+A core never owns a file, socket or task. It acquires one for the length of
+a closure, which borrows it and gets the capability back:
 
 ```rust
-c.perform(CreateAtomic::new("settings.conf"))?.scope(|file| {
+c.acquire(CreateAtomic::new("settings.conf"), |c, file| {
     file.perform(WriteAll(b"..."))?; // an error, a panic, or (with
-    Ok(())                           // scope_async) cancellation here...
+    Ok(())                           // acquire_async) cancellation here...
 })?;                                 // ...leaves the old file untouched
 ```
 
-Dropping a handle always counts as abandoning it, so a cancelled future
-never commits half a result. Task handles follow the same rule: dropping one
-aborts its task unless it was detached.
+When the body returns `Ok` the resource is committed: a file is synced, an
+atomic file renamed into place, a stream shut down cleanly, a task waited
+for. Otherwise it is rolled back, and a task is aborted. Providers make
+dropping a resource equal rolling it back, so cancelling at any `.await`,
+even while opening or closing, never commits half a result. Atomic files on
+Tokio are tested by cancelling after every possible number of polls.
+
+A resource reaches a task only through the provider: `SpawnWith` has a
+listener accept a connection into a new task that owns it, and `SpawnAll`
+spawns a batch of tasks joined together. Temporary files left by a process
+that was killed outright are cleaned up with `SweepAtomic`.
 
 ## Keeping the core honest
 

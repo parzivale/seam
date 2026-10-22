@@ -6,7 +6,8 @@ use std::sync::Mutex;
 
 use seam_core::future::{AsyncPerform, SendPerform, block_on};
 use seam_core::{
-    AsyncScoped, Finalize, Inspect, Operation, Perform, Push, Query, Rejected, Scoped,
+    Acquire, Acquisition, AsyncAcquire, AsyncProvide, Inspect, Operation, Perform, Provide, Push,
+    Query, Rejected, Token,
 };
 
 struct Get;
@@ -140,83 +141,146 @@ fn block_on_parks_until_woken() {
     thread.join().unwrap();
 }
 
-/// Records what happened to it. `close` fails if `fail_close` is set.
-struct Tracked<'a> {
-    state: &'a Mutex<&'static str>,
+/// A test provider that records what happened to each lease it hands out.
+#[derive(Default)]
+struct Leases {
+    log: Vec<&'static str>,
+    fail_open: bool,
     fail_close: bool,
 }
 
+/// Acquire a lease: a `u32` the body can change.
+struct Lease;
+
 #[derive(Debug, PartialEq)]
 enum Failure {
+    Open,
     Close,
     Work,
 }
 
-impl<'a> Tracked<'a> {
-    fn new(state: &'a Mutex<&'static str>) -> Self {
-        Self {
-            state,
-            fail_close: false,
-        }
-    }
-}
-
-impl Finalize for Tracked<'_> {
+impl Acquisition for Lease {
+    type Resource = u32;
     type Error = Failure;
+}
 
-    fn close(self) -> Result<(), Failure> {
-        *self.state.lock().unwrap() = "closed";
-        if self.fail_close {
-            Err(Failure::Close)
-        } else {
-            Ok(())
+impl Provide<Lease> for Leases {
+    fn provide(&mut self, _: Lease, _: Token) -> Result<u32, Failure> {
+        if self.fail_open {
+            return Err(Failure::Open);
         }
+        self.log.push("opened");
+        Ok(0)
     }
 
-    fn abandon(self) {
-        *self.state.lock().unwrap() = "abandoned";
+    fn close(&mut self, n: u32) -> Result<(), Failure> {
+        if self.fail_close {
+            return Err(Failure::Close);
+        }
+        self.log
+            .push(if n == 0 { "closed" } else { "closed changed" });
+        Ok(())
     }
 }
 
-fn state(m: &Mutex<&'static str>) -> &'static str {
-    *m.lock().unwrap()
+/// Async-only, so that abandoning can be observed without `&mut self`.
+struct AsyncLeases<'a>(&'a Mutex<Vec<&'static str>>);
+
+struct Tracked<'a>(&'a Mutex<Vec<&'static str>>);
+
+impl Drop for Tracked<'_> {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().push("dropped");
+    }
+}
+
+struct AsyncLease;
+
+impl Acquisition for AsyncLease {
+    type Resource = Tracked<'static>;
+    type Error = Failure;
+}
+
+impl AsyncProvide<AsyncLease> for AsyncLeases<'static> {
+    async fn provide_async(
+        &mut self,
+        _: AsyncLease,
+        _: Token,
+    ) -> Result<Tracked<'static>, Failure> {
+        Suspend::default().await;
+        Ok(Tracked(self.0))
+    }
+
+    async fn close_async(&mut self, lease: Tracked<'static>) -> Result<(), Failure> {
+        Suspend::default().await;
+        self.0.lock().unwrap().push("closed");
+        drop(lease);
+        Ok(())
+    }
+
+    fn abandon_async(lease: Tracked<'static>) {
+        lease.0.lock().unwrap().push("abandoned");
+    }
 }
 
 #[test]
-fn scope_closes_on_ok() {
-    let s = Mutex::new("open");
-    assert_eq!(Tracked::new(&s).scope(|_| Ok::<_, Failure>(3)), Ok(3));
-    assert_eq!(state(&s), "closed");
-}
-
-#[test]
-fn scope_abandons_on_err() {
-    let s = Mutex::new("open");
+fn acquire_closes_on_ok() {
+    let mut p = Leases::default();
     assert_eq!(
-        Tracked::new(&s).scope(|_| Err::<(), _>(Failure::Work)),
+        p.acquire(Lease, |_, n| {
+            *n += 1;
+            Ok::<_, Failure>("value")
+        }),
+        Ok("value")
+    );
+    assert_eq!(p.log, ["opened", "closed changed"]);
+}
+
+#[test]
+fn acquire_abandons_on_err_and_panic() {
+    let mut p = Leases::default();
+    assert_eq!(
+        p.acquire(Lease, |_, _| Err::<(), _>(Failure::Work)),
         Err(Failure::Work)
     );
-    assert_eq!(state(&s), "abandoned");
-}
-
-#[test]
-fn scope_abandons_on_panic() {
-    let s = Mutex::new("open");
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        Tracked::new(&s).scope(|_| -> Result<(), Failure> { panic!("boom") })
+    let panicked = catch_unwind(AssertUnwindSafe(|| {
+        p.acquire(Lease, |_, _| -> Result<(), Failure> { panic!("boom") })
     }));
-    assert!(result.is_err());
-    assert_eq!(state(&s), "abandoned");
+    assert!(panicked.is_err());
+    assert_eq!(p.log, ["opened", "opened"], "neither lease was closed");
 }
 
 #[test]
-fn scope_returns_close_errors() {
-    let s = Mutex::new("open");
-    let t = Tracked {
-        state: &s,
-        fail_close: true,
+fn acquire_returns_open_and_close_errors() {
+    let mut p = Leases {
+        fail_open: true,
+        ..Leases::default()
     };
-    assert_eq!(t.scope(|_| Ok::<_, Failure>(())), Err(Failure::Close));
+    assert_eq!(
+        p.acquire(Lease, |_, _| Ok::<_, Failure>(())),
+        Err(Failure::Open)
+    );
+    let mut p = Leases {
+        fail_close: true,
+        ..Leases::default()
+    };
+    assert_eq!(
+        p.acquire(Lease, |_, _| Ok::<_, Failure>(())),
+        Err(Failure::Close)
+    );
+}
+
+/// The body gets the provider back, so it can acquire more while it holds
+/// one resource; the inner scope closes first.
+#[test]
+fn acquisitions_nest() {
+    let mut p = Leases::default();
+    p.acquire(Lease, |p, outer| {
+        *outer += 1;
+        p.acquire(Lease, |_, _| Ok::<_, Failure>(()))
+    })
+    .unwrap();
+    assert_eq!(p.log, ["opened", "opened", "closed", "closed changed"]);
 }
 
 /// Pending once, then ready: a stand-in for any `.await` that suspends.
@@ -238,48 +302,95 @@ impl Future for Suspend {
     }
 }
 
-#[test]
-fn async_scope_closes_on_ok_and_abandons_on_err() {
-    let s = Mutex::new("open");
-    let out = block_on(Tracked::new(&s).scope_async(async |_| {
-        Suspend::default().await;
-        Ok::<_, Failure>(1)
-    }));
-    assert_eq!((out, state(&s)), (Ok(1), "closed"));
-
-    let out = block_on(Tracked::new(&s).scope_async(async |_| Err::<(), _>(Failure::Work)));
-    assert_eq!((out, state(&s)), (Err(Failure::Work), "abandoned"));
+fn leak_log() -> &'static Mutex<Vec<&'static str>> {
+    Box::leak(Box::new(Mutex::new(Vec::new())))
 }
 
-/// Dropping the scope's future while the closure is suspended abandons the
-/// resource: cancellation is a rollback, never a commit.
+fn log(m: &Mutex<Vec<&'static str>>) -> Vec<&'static str> {
+    m.lock().unwrap().clone()
+}
+
 #[test]
-fn async_scope_abandons_on_cancellation() {
-    let s = Mutex::new("open");
+fn sync_providers_lift_to_async() {
+    let mut p = Leases::default();
+    let out = block_on(p.acquire_async(Lease, async |_, n| {
+        Suspend::default().await;
+        *n += 1;
+        Ok::<_, Failure>(())
+    }));
+    assert_eq!(out, Ok(()));
+    assert_eq!(p.log, ["opened", "closed changed"]);
+}
+
+#[test]
+fn async_acquire_closes_on_ok_and_abandons_on_err() {
+    let l = leak_log();
+    let mut p = AsyncLeases(l);
+    block_on(p.acquire_async(AsyncLease, async |_, _| Ok::<_, Failure>(()))).unwrap();
+    assert_eq!(log(l), ["closed", "dropped"]);
+
+    let l = leak_log();
+    let mut p = AsyncLeases(l);
+    let out = block_on(p.acquire_async(AsyncLease, async |_, _| Err::<(), _>(Failure::Work)));
+    assert_eq!(out, Err(Failure::Work));
+    assert_eq!(log(l), ["abandoned", "dropped"]);
+}
+
+/// Drops the future after `polls` polls, then reports what happened.
+fn cancel_after(polls: usize) -> Vec<&'static str> {
+    let l = leak_log();
+    let mut p = AsyncLeases(l);
     {
-        let fut = Tracked::new(&s).scope_async(async |_| {
+        let fut = p.acquire_async(AsyncLease, async |_, _| {
             Suspend::default().await;
             Ok::<_, Failure>(())
         });
         let mut fut = std::pin::pin!(fut);
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-        assert!(fut.as_mut().poll(&mut cx).is_pending());
-        assert_eq!(state(&s), "open");
-    } // cancelled here
-    assert_eq!(state(&s), "abandoned");
+        for _ in 0..polls {
+            if fut.as_mut().poll(&mut cx).is_ready() {
+                break;
+            }
+        }
+    }
+    log(l)
 }
 
-/// The async scope's future is `Send` when the resource is, so it can run in
-/// a task on a multithreaded runtime.
+/// Cancelling at every point: while opening (nothing to roll back), inside
+/// the body (abandoned), while closing (the resource is dropped inside
+/// `close_async`), and after finishing (closed). Never a half state.
 #[test]
-fn async_scope_is_send() {
+fn async_acquire_is_cancellation_safe_at_every_await() {
+    assert_eq!(
+        cancel_after(1),
+        Vec::<&str>::new(),
+        "cancelled while opening"
+    );
+    assert_eq!(
+        cancel_after(2),
+        ["abandoned", "dropped"],
+        "cancelled in the body"
+    );
+    assert_eq!(
+        cancel_after(3),
+        ["dropped"],
+        "cancelled while closing: dropped, not closed"
+    );
+    assert_eq!(cancel_after(4), ["closed", "dropped"], "finished");
+}
+
+/// The future is `Send` when the provider and resource are, so it can run
+/// in a task on a multithreaded runtime.
+#[test]
+fn async_acquire_is_send() {
     fn assert_send<F: Future + Send>(f: F) -> F {
         f
     }
-    let s = Mutex::new("open");
-    let fut = assert_send(Tracked::new(&s).scope_async(async |_| Ok::<_, Failure>(())));
-    std::thread::scope(|scope| scope.spawn(move || block_on(fut)).join().unwrap()).unwrap();
-    assert_eq!(state(&s), "closed");
+    let l = leak_log();
+    let mut p = AsyncLeases(l);
+    let fut = assert_send(p.acquire_async(AsyncLease, async |_, _| Ok::<_, Failure>(())));
+    std::thread::scope(|s| s.spawn(move || block_on(fut)).join().unwrap()).unwrap();
+    assert_eq!(log(l), ["closed", "dropped"]);
 }
 
 /// A sink that caps how many items the core may emit.

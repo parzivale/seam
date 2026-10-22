@@ -43,7 +43,7 @@ trait BackupEnv<F: AtomicWrite>:
     + Perform<CreateDir>
     + Perform<CopyFile>
     + Perform<RemoveDir>
-    + Perform<CreateAtomic<F>>
+    + Provide<CreateAtomic<F>>
     + for<'a> Perform<Print<'a>>
 {
 }
@@ -56,14 +56,14 @@ impl<T, F: AtomicWrite> BackupEnv<F> for T where
         + Perform<CreateDir>
         + Perform<CopyFile>
         + Perform<RemoveDir>
-        + Perform<CreateAtomic<F>>
+        + Provide<CreateAtomic<F>>
         + for<'a> Perform<Print<'a>>
 {
 }
 
-/// A file that can be written and then committed, or rolled back.
-trait AtomicWrite: Finalize<Error = io::Error> + for<'a> Perform<WriteAll<'a>> {}
-impl<F: Finalize<Error = io::Error> + for<'a> Perform<WriteAll<'a>>> AtomicWrite for F {}
+/// What the backup tool does with an atomic file: write to it.
+trait AtomicWrite: for<'a> Perform<WriteAll<'a>> {}
+impl<F: for<'a> Perform<WriteAll<'a>>> AtomicWrite for F {}
 
 /// Parses the arguments and runs one backup.
 fn run<F: AtomicWrite>(env: &mut impl BackupEnv<F>) -> io::Result<()> {
@@ -93,7 +93,7 @@ fn run<F: AtomicWrite>(env: &mut impl BackupEnv<F>) -> io::Result<()> {
 /// Copies `source` into a new snapshot under `dest`, then prunes old ones.
 ///
 /// A snapshot counts only once its manifest exists. The manifest is written
-/// last, through an atomic file in a scope, so it exists completely or not
+/// last, through an atomic file acquired for a scope, so it exists completely or not
 /// at all: a run that crashes, fails or is killed partway leaves a snapshot
 /// with no manifest, which the next run removes.
 fn backup<F: AtomicWrite>(
@@ -118,14 +118,13 @@ fn backup<F: AtomicWrite>(
     let mut copied = Vec::new();
     copy_tree(env, source, &snapshot, Path::new(""), &mut copied)?;
 
-    env.perform(CreateAtomic::new(snapshot.join(MANIFEST)))?
-        .scope(|manifest| {
-            for (path, bytes) in &copied {
-                let line = format!("{bytes}\t{}\n", path.display());
-                manifest.perform(WriteAll(line.as_bytes()))?;
-            }
-            Ok::<_, io::Error>(())
-        })?;
+    env.acquire(CreateAtomic::new(snapshot.join(MANIFEST)), |_, manifest| {
+        for (path, bytes) in &copied {
+            let line = format!("{bytes}\t{}\n", path.display());
+            manifest.perform(WriteAll(line.as_bytes()))?;
+        }
+        io::Result::Ok(())
+    })?;
 
     let mut complete = Vec::new();
     for dir in env.inspect(ReadDir::new(dest))? {

@@ -23,7 +23,7 @@ use seam_core::ops::random::RandomU64;
 use seam_core::ops::signal::CtrlC;
 use seam_core::ops::stdio::{Print, ReadLine};
 use seam_core::ops::time::{Now, Sleep, WallClock};
-use seam_core::{Finalize, Inspect, Perform, Scoped};
+use seam_core::{Acquire, AsyncAcquire, Inspect, Perform, Provide};
 use seam_test::fs::File;
 use seam_test::net::{TcpListener, TcpStream, UdpSocket};
 use seam_test::{Invocation, Sim, catch_exit};
@@ -65,16 +65,17 @@ fn clocks_are_virtual() {
 /// A core: an append-only log with rotation, written only against bounds.
 fn append_log<C, F>(c: &mut C, dir: &Path, line: &str, max: u64) -> io::Result<()>
 where
-    C: Perform<Open<F>> + Inspect<Metadata> + Perform<Rename> + Perform<CreateDir>,
-    F: Finalize<Error = io::Error> + for<'a> Perform<WriteAll<'a>>,
+    C: Provide<Open<F>> + Inspect<Metadata> + Perform<Rename> + Perform<CreateDir>,
+    F: for<'a> Perform<WriteAll<'a>>,
 {
     c.perform(CreateDir::all(dir))?;
     let log = dir.join("app.log");
     if c.inspect(Metadata::new(&log)).is_ok_and(|m| m.len >= max) {
         c.perform(Rename::new(&log, dir.join("app.log.1")))?;
     }
-    c.perform(Open::<F>::append(&log))?
-        .scope(|f| f.perform(WriteAll(line.as_bytes())))
+    c.acquire(Open::append(&log), |_, f| {
+        f.perform(WriteAll(line.as_bytes()))
+    })
 }
 
 #[test]
@@ -82,7 +83,7 @@ fn filesystem_core() {
     let mut sim = Sim::new();
     let dir = Path::new("/var/log");
     for line in ["one\n", "two\n", "three\n"] {
-        append_log::<_, File>(&mut sim, dir, line, 8).unwrap();
+        append_log(&mut sim, dir, line, 8).unwrap();
     }
     assert_eq!(sim.file("/var/log/app.log.1").unwrap(), b"one\ntwo\n");
     assert_eq!(sim.file("/var/log/app.log").unwrap(), b"three\n");
@@ -132,7 +133,7 @@ fn filesystem_errors_match_a_real_system() {
         ErrorKind::InvalidInput
     );
     assert_eq!(
-        kind(sim.perform(Open::<File>::create("/a"))),
+        kind(sim.acquire(Open::<File>::create("/a"), |_, _| Ok(()))),
         ErrorKind::IsADirectory
     );
 
@@ -157,86 +158,114 @@ fn relative_paths_and_open_handles() {
     sim.perform(WriteFile::new("notes/../a.txt", "hi")).unwrap();
     assert_eq!(sim.file("/home/me/a.txt").unwrap(), b"hi");
 
-    // A handle survives its path being renamed, as on Unix.
-    let mut f = sim.perform(Open::<File>::read("a.txt")).unwrap();
-    sim.perform(Rename::new("a.txt", "b.txt")).unwrap();
-    let mut out = Vec::new();
-    f.perform(ReadToEnd(&mut out)).unwrap();
-    assert_eq!(out, b"hi");
-    assert_eq!(
-        kind(f.perform(WriteAll(b"no"))),
-        ErrorKind::PermissionDenied
-    );
-}
-
-#[test]
-fn tcp_in_memory() {
-    let mut sim = Sim::new();
-    let mut listener: TcpListener = sim
-        .perform(TcpBind::new(SocketAddr::from((
-            Ipv4Addr::UNSPECIFIED,
-            8080,
-        ))))
-        .unwrap();
-    assert_eq!(
-        kind(sim.perform(TcpBind::<TcpListener>::new(([0, 0, 0, 0], 8080)))),
-        ErrorKind::AddrInUse
-    );
-    assert_eq!(
-        kind(listener.perform(Accept::<TcpStream>::new())),
-        ErrorKind::WouldBlock
-    );
-
-    let addr = sim.inspect(Resolve::new("localhost", 8080)).unwrap()[0];
-    let mut client: TcpStream = sim.perform(TcpConnect::new(addr)).unwrap();
-    let (mut server, peer) = listener.perform(Accept::<TcpStream>::new()).unwrap();
-    assert_eq!(peer, client.inspect(LocalAddr).unwrap());
-    assert_eq!(client.inspect(PeerAddr).unwrap(), addr);
-
-    let mut buf = [0; 8];
-    assert_eq!(kind(server.perform(Read(&mut buf))), ErrorKind::WouldBlock);
-    client.perform(WriteAll(b"ping")).unwrap();
-    client.perform(Shutdown(std::net::Shutdown::Write)).unwrap();
-    assert_eq!(server.perform(Read(&mut buf)).unwrap(), 4);
-    assert_eq!(&buf[..4], b"ping");
-    assert_eq!(
-        server.perform(Read(&mut buf)).unwrap(),
-        0,
-        "end of stream after shutdown"
-    );
-
-    drop(server);
-    assert_eq!(
-        kind(
-            client
-                .perform(Shutdown(std::net::Shutdown::Read))
-                .and_then(|()| { client.perform(WriteAll(b"x")) })
-        ),
-        ErrorKind::BrokenPipe
-    );
-    assert_eq!(
-        kind(sim.perform(TcpConnect::<TcpStream>::new(([127, 0, 0, 1], 9)))),
-        ErrorKind::ConnectionRefused
-    );
-}
-
-#[test]
-fn udp_in_memory() {
-    let mut sim = Sim::new();
-    sim.add_host("peer.test", Ipv4Addr::new(10, 0, 0, 2));
-    let mut a: UdpSocket = sim.perform(UdpBind::new(([10, 0, 0, 1], 0))).unwrap();
-    let mut b: UdpSocket = sim.perform(UdpBind::new(([10, 0, 0, 2], 53))).unwrap();
-    let to = sim.inspect(Resolve::new("peer.test", 53)).unwrap()[0];
-
-    a.perform(SendTo {
-        buf: b"hello",
-        addr: to,
+    // A handle survives its path being renamed, as on Unix. The body gets
+    // the capability back, so it can rename while it holds the file.
+    sim.acquire(Open::<File>::read("a.txt"), |sim, f| {
+        sim.perform(Rename::new("a.txt", "b.txt"))?;
+        let mut out = Vec::new();
+        f.perform(ReadToEnd(&mut out))?;
+        assert_eq!(out, b"hi");
+        assert_eq!(
+            kind(f.perform(WriteAll(b"no"))),
+            ErrorKind::PermissionDenied
+        );
+        io::Result::Ok(())
     })
     .unwrap();
-    let mut buf = [0; 3];
-    let (n, from) = b.perform(RecvFrom(&mut buf)).unwrap();
-    assert_eq!((n, &buf, from), (3, b"hel", a.inspect(LocalAddr).unwrap()));
-    assert_eq!(kind(b.perform(RecvFrom(&mut buf))), ErrorKind::WouldBlock);
+}
+
+#[test]
+fn tcp_in_memory() -> io::Result<()> {
+    let mut sim = Sim::new();
+    let bind = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 8080));
+    sim.acquire(TcpBind::<TcpListener>::new(bind), |sim, listener| {
+        assert_eq!(
+            kind(sim.acquire(TcpBind::<TcpListener>::new(bind), |_, _| Ok(()))),
+            ErrorKind::AddrInUse
+        );
+        assert_eq!(
+            kind(listener.acquire(Accept::<TcpStream>::new(), |_, _| Ok(()))),
+            ErrorKind::WouldBlock
+        );
+
+        let addr = sim.inspect(Resolve::new("localhost", 8080))?[0];
+        sim.acquire(TcpConnect::<TcpStream>::new(addr), |_, client| {
+            listener.acquire(Accept::new(), |_, server| {
+                assert_eq!(server.inspect(PeerAddr)?, client.inspect(LocalAddr)?);
+                assert_eq!(client.inspect(PeerAddr)?, addr);
+
+                let mut buf = [0; 8];
+                assert_eq!(kind(server.perform(Read(&mut buf))), ErrorKind::WouldBlock);
+                client.perform(WriteAll(b"ping"))?;
+                client.perform(Shutdown(std::net::Shutdown::Write))?;
+                assert_eq!(server.perform(Read(&mut buf))?, 4);
+                assert_eq!(&buf[..4], b"ping");
+                assert_eq!(
+                    server.perform(Read(&mut buf))?,
+                    0,
+                    "end of stream after shutdown"
+                );
+                io::Result::Ok(())
+            })?;
+            // The server's end is gone now that its scope is over.
+            client.perform(Shutdown(std::net::Shutdown::Read))?;
+            assert_eq!(kind(client.perform(WriteAll(b"x"))), ErrorKind::BrokenPipe);
+            io::Result::Ok(())
+        })
+    })?;
+    assert_eq!(
+        kind(sim.acquire(
+            TcpConnect::<TcpStream>::new(([127, 0, 0, 1], 9)),
+            |_, _| Ok(())
+        )),
+        ErrorKind::ConnectionRefused
+    );
+    Ok(())
+}
+
+/// When a stream's scope succeeds it is shut down cleanly, so the peer sees
+/// end of input.
+#[test]
+fn closing_a_stream_shuts_it_down() -> io::Result<()> {
+    let mut sim = Sim::new();
+    sim.acquire(
+        TcpBind::<TcpListener>::new(([127, 0, 0, 1], 80)),
+        |sim, listener| {
+            sim.acquire(
+                TcpConnect::<TcpStream>::new(([127, 0, 0, 1], 80)),
+                |_, client| {
+                    listener.acquire(Accept::<TcpStream>::new(), |_, server| {
+                        server.perform(WriteAll(b"bye"))
+                    })?;
+                    let mut reply = Vec::new();
+                    client.perform(ReadToEnd(&mut reply))?;
+                    assert_eq!(reply, b"bye");
+                    assert_eq!(client.perform(Read(&mut [0; 4]))?, 0);
+                    Ok(())
+                },
+            )
+        },
+    )
+}
+
+#[test]
+fn udp_in_memory() -> io::Result<()> {
+    let mut sim = Sim::new();
+    sim.add_host("peer.test", Ipv4Addr::new(10, 0, 0, 2));
+    let to = sim.inspect(Resolve::new("peer.test", 53))?[0];
+    sim.acquire(UdpBind::<UdpSocket>::new(([10, 0, 0, 1], 0)), |sim, a| {
+        sim.acquire(UdpBind::<UdpSocket>::new(([10, 0, 0, 2], 53)), |_, b| {
+            a.perform(SendTo {
+                buf: b"hello",
+                addr: to,
+            })?;
+            let mut buf = [0; 3];
+            let (n, from) = b.perform(RecvFrom(&mut buf))?;
+            assert_eq!((n, &buf, from), (3, b"hel", a.inspect(LocalAddr)?));
+            assert_eq!(kind(b.perform(RecvFrom(&mut buf))), ErrorKind::WouldBlock);
+            Ok(())
+        })
+    })
 }
 
 /// A core: a tiny shell that runs the commands it reads until `exit`.
@@ -341,8 +370,7 @@ fn async_send_core() {
 }
 
 mod atomic {
-    use seam_core::AsyncScoped;
-    use seam_core::ops::fs::CreateAtomic;
+    use seam_core::ops::fs::{CreateAtomic, SweepAtomic};
     use seam_test::fs::AtomicFile;
 
     use super::*;
@@ -357,20 +385,26 @@ mod atomic {
         sim.inspect(ReadDir::new("/etc")).unwrap()
     }
 
+    fn create() -> CreateAtomic<AtomicFile> {
+        CreateAtomic::new("/etc/app.conf")
+    }
+
     #[test]
-    fn the_temporary_file_is_visible_until_close() {
+    fn the_temporary_file_is_visible_until_the_scope_succeeds() {
         let mut sim = sim();
-        let mut f: AtomicFile = sim.perform(CreateAtomic::new("/etc/app.conf")).unwrap();
-        f.perform(WriteAll(b"new")).unwrap();
-        assert_eq!(
-            listing(&sim),
-            [
-                PathBuf::from("/etc/.app.conf.seam-0.tmp"),
-                PathBuf::from("/etc/app.conf")
-            ]
-        );
-        assert_eq!(sim.file("/etc/app.conf").unwrap(), b"old");
-        f.close().unwrap();
+        sim.acquire(create(), |sim, f| {
+            f.perform(WriteAll(b"new"))?;
+            assert_eq!(
+                listing(sim),
+                [
+                    PathBuf::from("/etc/.app.conf.seam-0.tmp"),
+                    PathBuf::from("/etc/app.conf")
+                ]
+            );
+            assert_eq!(sim.file("/etc/app.conf").unwrap(), b"old");
+            io::Result::Ok(())
+        })
+        .unwrap();
         assert_eq!(listing(&sim), [PathBuf::from("/etc/app.conf")]);
         assert_eq!(sim.file("/etc/app.conf").unwrap(), b"new");
     }
@@ -378,16 +412,14 @@ mod atomic {
     #[test]
     fn errors_and_panics_roll_back() {
         let mut sim = sim();
-        let f: AtomicFile = sim.perform(CreateAtomic::new("/etc/app.conf")).unwrap();
-        let err = f.scope(|f| {
+        let err = sim.acquire(create(), |_, f| {
             f.perform(WriteAll(b"half"))?;
             Err::<(), _>(io::Error::other("validation failed"))
         });
         assert!(err.is_err());
 
-        let f: AtomicFile = sim.perform(CreateAtomic::new("/etc/app.conf")).unwrap();
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            f.scope(|f| -> io::Result<()> {
+            sim.acquire(create(), |_, f| -> io::Result<()> {
                 f.perform(WriteAll(b"half"))?;
                 panic!("crash")
             })
@@ -417,9 +449,8 @@ mod atomic {
         }
 
         let mut sim = sim();
-        let f: AtomicFile = sim.perform(CreateAtomic::new("/etc/app.conf")).unwrap();
         {
-            let fut = f.scope_async(async |f| {
+            let fut = sim.acquire_async(create(), async |_, f| {
                 f.perform_send(WriteAll(b"half")).await?;
                 Suspend(false).await;
                 io::Result::Ok(())
@@ -430,5 +461,25 @@ mod atomic {
         }
         assert_eq!(sim.file("/etc/app.conf").unwrap(), b"old");
         assert_eq!(listing(&sim), [PathBuf::from("/etc/app.conf")]);
+    }
+
+    /// A leftover from a process killed mid-write is swept once it is old
+    /// enough; a write in progress is not.
+    #[test]
+    fn sweeping_removes_only_old_leftovers() {
+        let mut sim = sim();
+        sim.add_file("/etc/.app.conf.seam-crashed.tmp", "half");
+        sim.advance(Duration::from_secs(600));
+        sim.acquire(create(), |sim, f| {
+            f.perform(WriteAll(b"new"))?;
+            assert_eq!(
+                sim.perform(SweepAtomic::new("/etc", Duration::from_secs(60)))?,
+                1
+            );
+            Ok::<_, io::Error>(())
+        })
+        .unwrap();
+        assert_eq!(listing(&sim), [PathBuf::from("/etc/app.conf")]);
+        assert_eq!(sim.file("/etc/app.conf").unwrap(), b"new");
     }
 }

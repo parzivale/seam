@@ -6,18 +6,20 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use seam_core::ops::net::{
     Accept, LocalAddr, PeerAddr, RecvFrom, Resolve, SendTo, Shutdown, TcpBind, TcpConnect, UdpBind,
 };
-use seam_core::{Finalize, Inspect, Perform};
+use seam_core::{Inspect, Perform, Provide, Token};
 
 use crate::Std;
 
-/// A connected TCP stream. Read and write it with the `io` operations.
+/// A connected TCP stream, acquired with [`TcpConnect`] or [`Accept`]. Read
+/// and write it with the `io` operations.
 ///
-/// [`Finalize::close`] shuts down both directions cleanly; abandoning or
-/// dropping it just closes the socket.
+/// When its scope succeeds it is flushed and shut down cleanly; otherwise
+/// the socket is just closed.
 #[derive(Debug)]
 pub struct TcpStream(std::net::TcpStream);
 
-/// A listening TCP socket. Perform [`Accept`] on it to get connections.
+/// A listening TCP socket, acquired with [`TcpBind`]. Acquire [`Accept`]
+/// from it to handle a connection.
 #[derive(Debug)]
 pub struct TcpListener(std::net::TcpListener);
 
@@ -27,29 +29,11 @@ pub struct UdpSocket(std::net::UdpSocket);
 
 crate::io_ops!(TcpStream);
 
-impl Finalize for TcpStream {
-    type Error = io::Error;
-
+impl TcpStream {
     /// Flushes and shuts down both directions.
-    fn close(self) -> io::Result<()> {
+    fn commit(self) -> io::Result<()> {
         io::Write::flush(&mut &self.0)?;
         self.0.shutdown(std::net::Shutdown::Both)
-    }
-}
-
-impl Finalize for TcpListener {
-    type Error = io::Error;
-
-    fn close(self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl Finalize for UdpSocket {
-    type Error = io::Error;
-
-    fn close(self) -> io::Result<()> {
-        Ok(())
     }
 }
 
@@ -59,28 +43,43 @@ impl Inspect<Resolve> for Std {
     }
 }
 
-impl Perform<TcpConnect<TcpStream>> for Std {
-    fn perform(&mut self, op: TcpConnect<TcpStream>) -> io::Result<TcpStream> {
+impl Provide<TcpConnect<TcpStream>> for Std {
+    fn provide(&mut self, op: TcpConnect<TcpStream>, _: Token) -> io::Result<TcpStream> {
         std::net::TcpStream::connect(op.addr).map(TcpStream)
     }
+
+    fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+        stream.commit()
+    }
 }
 
-impl Perform<TcpBind<TcpListener>> for Std {
-    fn perform(&mut self, op: TcpBind<TcpListener>) -> io::Result<TcpListener> {
+impl Provide<TcpBind<TcpListener>> for Std {
+    fn provide(&mut self, op: TcpBind<TcpListener>, _: Token) -> io::Result<TcpListener> {
         std::net::TcpListener::bind(op.addr).map(TcpListener)
     }
-}
 
-impl Perform<UdpBind<UdpSocket>> for Std {
-    fn perform(&mut self, op: UdpBind<UdpSocket>) -> io::Result<UdpSocket> {
-        std::net::UdpSocket::bind(op.addr).map(UdpSocket)
+    fn close(&mut self, _: TcpListener) -> io::Result<()> {
+        Ok(())
     }
 }
 
-impl Perform<Accept<TcpStream>> for TcpListener {
-    fn perform(&mut self, _: Accept<TcpStream>) -> io::Result<(TcpStream, SocketAddr)> {
-        let (stream, addr) = self.0.accept()?;
-        Ok((TcpStream(stream), addr))
+impl Provide<UdpBind<UdpSocket>> for Std {
+    fn provide(&mut self, op: UdpBind<UdpSocket>, _: Token) -> io::Result<UdpSocket> {
+        std::net::UdpSocket::bind(op.addr).map(UdpSocket)
+    }
+
+    fn close(&mut self, _: UdpSocket) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Provide<Accept<TcpStream>> for TcpListener {
+    fn provide(&mut self, _: Accept<TcpStream>, _: Token) -> io::Result<TcpStream> {
+        self.0.accept().map(|(stream, _)| TcpStream(stream))
+    }
+
+    fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+        stream.commit()
     }
 }
 

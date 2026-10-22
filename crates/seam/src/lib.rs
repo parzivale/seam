@@ -85,16 +85,39 @@
 //!
 //! # Resources
 //!
-//! Handles with something to commit implement [`Finalize`] (or
-//! [`AsyncFinalize`]). [`Scoped::scope`] and [`AsyncScoped::scope_async`]
-//! lend one to a closure: if it returns `Ok`, the handle is closed and any
-//! close error is returned; if it returns `Err`, panics, or (async) is
-//! cancelled, the handle is abandoned. Dropping a handle always counts as
-//! abandoning it, so cancellation never commits half a result.
+//! A core never owns a file, a socket or a task. It asks for the capability
+//! to [`Provide`] one, and [`acquire`](Acquire::acquire)s it for the length
+//! of a closure, which borrows it and gets the capability back:
 //!
-//! The clearest case is `ops::fs::CreateAtomic`: a file that replaces its
-//! target only when its scope succeeds, used by the `backup` and
-//! `custom_ops` examples.
+//! ```
+//! # #[cfg(feature = "fs")] {
+//! use std::io;
+//! use seam::prelude::*;
+//! use seam::ops::fs::CreateAtomic;
+//! use seam::ops::io::WriteAll;
+//!
+//! fn save<C, F>(c: &mut C, text: &str) -> io::Result<()>
+//! where
+//!     C: Provide<CreateAtomic<F>>,
+//!     F: for<'a> Perform<WriteAll<'a>>,
+//! {
+//!     c.acquire(CreateAtomic::new("notes.txt"), |_c, file| {
+//!         file.perform(WriteAll(text.as_bytes()))
+//!     })
+//! }
+//! # }
+//! ```
+//!
+//! When the body returns `Ok`, the resource is committed (here, renamed
+//! into place) and any error from that is returned. When it returns `Err`,
+//! panics, or (with [`acquire_async`](AsyncAcquire::acquire_async)) is
+//! cancelled, the resource is rolled back. Providers make dropping a
+//! resource equal rolling it back, so a cancellation at any `.await` never
+//! commits half a result. Tasks follow the same rule: a scope waits for its
+//! task on success and aborts it otherwise. See [`acquire`] for details.
+//!
+//! When a body's only error path is a `?`, Rust may not be able to infer its
+//! error type; end it with `io::Result::Ok(..)` (or your error type).
 //!
 //! # Keeping a core honest
 //!
@@ -173,7 +196,8 @@ pub use seam_core::*;
 ///
 /// The capability traits ([`Inspect`], [`Perform`] and their async and
 /// `Send` forms), [`Operation`] and [`Query`] for defining operations,
-/// [`Finalize`] and [`Scoped`] for resources, [`Push`], and
+/// [`Provide`] and [`Acquire`] (and their async forms) for resources,
+/// [`Push`], and
 /// [`block_on`](crate::future::block_on). Operation types and backends are
 /// imported separately, so that a module's imports also show what it can
 /// do.

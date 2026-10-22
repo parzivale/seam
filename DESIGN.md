@@ -42,23 +42,24 @@ feature, so a core written against them runs on any backend:
 - `io`: `Read`, `ReadToEnd`, `Write`, `WriteAll`, `Flush` (on handles)
 - `fs`: `ReadFile`, `ReadToString`, `Metadata`, `ReadDir` (queries);
   `WriteFile`, `CreateDir`, `RemoveFile`, `RemoveDir`, `Rename`, `CopyFile`,
-  `Open<F>`
-- `net`: `Resolve` (DNS is an effect), `TcpConnect<S>`, `TcpBind<L>`,
-  `Accept<S>`, `UdpBind<U>`, `SendTo`, `RecvFrom`, `Shutdown`; `LocalAddr`
-  and `PeerAddr` queries
+  `SweepAtomic`; acquisitions `Open<F>` and `CreateAtomic<F>`
+- `net`: `Resolve` (DNS is an effect), `SendTo`, `RecvFrom`, `Shutdown`;
+  `LocalAddr` and `PeerAddr` queries; acquisitions `TcpConnect<S>`,
+  `TcpBind<L>`, `Accept<S>` (from a listener) and `UdpBind<U>`
 - `time`: `Sleep`, `Now` (no_std); `WallClock` (std)
 - `env`: `Var`, `Args`, `CurrentDir`, `TempDir` (all queries)
 - `process`: `RunCommand`, `Exit` (outcome `Infallible`)
 - `random`: `RandomU64`, `FillRandom` (no_std)
 - `stdio`: `Print`, `EPrint`, `ReadLine`
 - `signal`: `CtrlC`
-- `task` (feature `rt`, no_std): `Spawn<F, H>`, and `Join<T>`, `Abort`,
-  `IsFinished` and `Detach` on the handle; `YieldNow`. Dropping a handle
-  aborts its task unless detached. A bound must name the spawned
-  future's type, so a core either takes the task as a function argument
-  (the type is inferred at the call site, no allocation) or spawns a
-  `BoxFuture` (feature `alloc`). Tasks are `'static`, so they get their own
-  clone of the root capability (`Std` and `Tokio` are `Clone`).
+- `task` (feature `rt`, no_std): the acquisitions `Spawn<F, H>`,
+  `SpawnAll<F, H>` and `SpawnWith<A, T, E, H>` (the last two with `alloc`),
+  and `Join<T>`, `Abort`, `IsFinished` and `Detach` on the handle;
+  `YieldNow`. A bound must name the spawned future's type, so a core either
+  takes the task as a function argument (the type is inferred at the call
+  site, no allocation) or spawns a `BoxFuture`. Tasks are `'static`, so they
+  get their own clone of the root capability (`Std` and `Tokio` are
+  `Clone`).
 
 Outcome types must be constructible without the OS, or a test backend could
 not produce them. So `Now` returns seam's own `time::Instant` (a duration
@@ -66,9 +67,9 @@ since a backend-chosen epoch) instead of `std::time::Instant`, `Metadata`
 returns `fs::FileInfo` instead of `std::fs::Metadata`, and `RunCommand`
 returns `process::Output` instead of `std::process::Output`.
 
-Operations that create a resource are generic over the backend's handle
-type (`Open<F>`), since each backend has its own. Bounds name the handle as a
-type parameter and inference fills it in.
+Acquisitions are generic over the backend's handle type (`Open<F>`), since
+each backend has its own. Bounds name the handle as a type parameter and
+inference fills it in.
 
 `Push<T>` (outcome `Result<(), Rejected<T>>`) lets tests count or cap the
 items a core emits, to check that output scales with input size.
@@ -124,42 +125,66 @@ they reach (filesystem, network, wall clock) is shared behind an
 `Arc<Mutex<_>>`. That is the crate's one use of shared state; it is linted
 with `templates/clippy.toml`, with an allow on that module alone.
 
-## Resources and finalization
+## Resources: forced scopes
+
+Effects that produce something lasting (a file, a socket, a task) are
+`Acquisition`s, not operations. A core never owns one:
 
 ```rust
-pub trait Finalize: Sized {
-    type Error;
-    fn close(self) -> Result<(), Self::Error>; // commit: flush, sync, rename, shut down
-    fn abandon(self) {}                         // roll back; must equal dropping
-}
-pub trait AsyncFinalize: Sized {               // every Send Finalize is one
-    type Error;
-    fn close_async(self) -> impl Future<Output = Result<(), Self::Error>> + Send;
-    fn abandon_async(self) {}
+pub trait Acquisition { type Resource; type Error; }
+
+pub trait Provide<A: Acquisition> {          // AsyncProvide: the same, async
+    fn provide(&mut self, a: A, token: Token) -> Result<A::Resource, A::Error>;
+    fn close(&mut self, r: A::Resource) -> Result<(), A::Error>;  // commit
+    fn abandon(r: A::Resource) {}                                  // roll back
 }
 
-resource.scope(|r| -> Result<R, E> { .. })              // Scoped
-resource.scope_async(async |r| -> Result<R, E> { .. })  // AsyncScoped
+c.acquire(a, |c, resource| -> Result<R, E> { .. })                 // Acquire
+c.acquire_async(a, async |c, resource| -> Result<R, E> { .. })     // AsyncAcquire
 ```
 
-A scope commits only on success: `Ok` closes the resource and returns any
-close error (through `E: From<Self::Error>`); `Err`, a panic, or dropping the
-async scope's future abandons it. `Scoped` and `AsyncScoped` each have a
-single blanket impl, so implementors cannot override them and skip cleanup.
+Cores bound on `Provide`/`AsyncProvide` and call `acquire`/`acquire_async`,
+which come from a single blanket impl each. The body borrows the resource,
+so it cannot keep, leak or drop it, and gets the capability back, so it can
+perform other effects and nest acquisitions. `Ok` closes the resource and
+returns any close error (through `E: From<A::Error>`); `Err`, a panic, or
+dropping the async future abandons it.
 
-**Drop means abandon.** A resource's `Drop` must leave things as `abandon`
-would; only `close` commits. That is what makes scopes cancellation-safe: a
-future can be dropped at any `.await`, including halfway through
-`close_async`, and whatever it held is dropped, which never commits half a
-result. It is also why seam's task handles abort their task on drop (Tokio's
-detach), with an explicit `Detach` operation.
+`provide` takes a `Token` that only `seam-core` can create, so a core cannot
+call it to get a resource outside a scope. A provider that wraps another can
+pass its token on. The remaining escape hatch is a core implementing
+`Provide` itself to intercept a token, which shows up in its source as an
+`impl Provide`.
 
-Resources: files (close flushes and syncs; read-only files skip the sync),
-TCP streams (close shuts down cleanly), task handles (close waits for the
-task), and `fs::CreateAtomic`'s atomic files, which write to a temporary
-file and rename it over the target only on close. All three backends
-implement them, and `Sim` makes the temporary file visible so tests can
-check it is cleaned up.
+The commit logic lives with the provider, not the resource, so a resource
+type needs no trait of its own. Every `Send` `Provide` is an `AsyncProvide`.
+A generic core bounding only `AsyncProvide` (plus `Send`) gets a `Send`
+`acquire_async` future, because the blanket impl's preconditions are exactly
+its bounds; this was checked before building it.
+
+**Drop means abandon.** A provider must make dropping a resource leave
+things as `abandon` would; only `close` commits. A future can be dropped at
+any `.await`, including halfway through opening or closing, so this is what
+makes scopes cancellation-safe. Tokio's `AtomicFile` creates its temporary
+file and renames it inside blocking tasks that own the cleanup guard: a
+blocking task runs to completion even if its waiter is dropped, and Tokio
+drops its result if nobody is waiting, so every cancellation point ends in
+either the rename or the deletion. A test cancels an atomic write after
+every possible number of polls; a naive version fails it.
+
+**Tasks.** Spawning is an acquisition too: a successful scope waits for its
+task, a failed or cancelled one aborts it, and `Detach` opts out. Because a
+core cannot move a resource, `SpawnWith` has the provider acquire one on a
+task's behalf (a listener accepting a connection into a new task that owns
+it), and `SpawnAll` spawns a batch, since handles cannot be collected
+outside their scopes.
+
+**Leftovers.** A process killed outright runs no `Drop`. Temporary files are
+named `.<name>.seam-<suffix>.tmp`, and `SweepAtomic { dir, older_than }`
+removes ones old enough to be abandoned.
+
+**Cost.** A body's error type is generic, so a body whose only error path is
+a `?` sometimes needs its `Ok` annotated (`io::Result::Ok(())`).
 
 For long-lived state in hand-written state machines, the plan is raw IDs
 with generation counters (runtime detection of stale handles).
@@ -198,7 +223,6 @@ module's imports, like its bounds, show what it can do.
   escape hatches. `allocator_api` is still unstable (checked on 1.99.1), so
   this waits.
 - **`Pin<Box<_>>` sink variant** for writers that are not `Unpin`.
-- **A `Resource` trait** for code generic over resources.
 - **Child process handles** (only run-to-completion today).
 
 ## Open questions

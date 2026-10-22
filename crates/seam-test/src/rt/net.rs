@@ -27,12 +27,26 @@ use crate::net as sim;
 ///
 /// When its scope succeeds its write half is shut down, so the peer sees
 /// end of input.
-#[derive(Debug)]
-pub struct TcpStream(sim::TcpStream);
+pub struct TcpStream(
+    pub(crate) sim::TcpStream,
+    #[cfg_attr(not(feature = "time"), allow(dead_code))] pub(crate) Arc<Shared>,
+);
 
 /// A listening TCP socket on the simulated runtime, acquired with
 /// [`TcpBind`]. Accepts wait for a connection.
-pub struct TcpListener(sim::TcpListener, Arc<Shared>);
+pub struct TcpListener(pub(crate) sim::TcpListener, pub(crate) Arc<Shared>);
+
+impl core::fmt::Debug for TcpStream {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("TcpStream").field(&self.0).finish()
+    }
+}
+
+impl core::fmt::Debug for UdpSocket {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("UdpSocket").field(&self.0).finish()
+    }
+}
 
 impl core::fmt::Debug for TcpListener {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -42,11 +56,13 @@ impl core::fmt::Debug for TcpListener {
 
 /// A UDP socket on the simulated runtime, acquired with [`UdpBind`].
 /// Receives wait for a datagram.
-#[derive(Debug)]
-pub struct UdpSocket(sim::UdpSocket);
+pub struct UdpSocket(
+    pub(crate) sim::UdpSocket,
+    #[cfg_attr(not(feature = "time"), allow(dead_code))] pub(crate) Arc<Shared>,
+);
 
 impl TcpStream {
-    async fn readable(&self) {
+    pub(crate) async fn readable(&self) {
         poll_fn(|cx| {
             if self.0.poll_readable(cx.waker()) {
                 Poll::Ready(())
@@ -80,7 +96,7 @@ impl Provide<TcpConnect<TcpStream>> for AsyncSim {
             TcpConnect::<sim::TcpStream>::new(op.addr),
             token,
         )
-        .map(TcpStream)
+        .map(|s| TcpStream(s, Arc::clone(&self.shared)))
     }
 
     fn close(&mut self, stream: TcpStream) -> io::Result<()> {
@@ -95,7 +111,7 @@ impl Provide<UdpBind<UdpSocket>> for AsyncSim {
             UdpBind::<sim::UdpSocket>::new(op.addr),
             token,
         )
-        .map(UdpSocket)
+        .map(|s| UdpSocket(s, Arc::clone(&self.shared)))
     }
 
     fn close(&mut self, _: UdpSocket) -> io::Result<()> {
@@ -104,7 +120,7 @@ impl Provide<UdpBind<UdpSocket>> for AsyncSim {
 }
 
 impl TcpListener {
-    async fn accept(&mut self, token: Token) -> io::Result<TcpStream> {
+    pub(crate) async fn accept(&mut self, token: Token) -> io::Result<TcpStream> {
         poll_fn(|cx| {
             if self.0.poll_acceptable(cx.waker()) {
                 Poll::Ready(())
@@ -113,7 +129,9 @@ impl TcpListener {
             }
         })
         .await;
-        self.0.provide(Accept::new(), token).map(TcpStream)
+        self.0
+            .provide(Accept::new(), token)
+            .map(|s| TcpStream(s, Arc::clone(&self.1)))
     }
 }
 

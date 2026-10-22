@@ -140,6 +140,8 @@ pub mod sync;
 pub mod threads;
 #[cfg(feature = "time")]
 mod time;
+#[cfg(all(feature = "time", feature = "std"))]
+mod timeouts;
 #[cfg(any(
     feature = "fs",
     feature = "net",

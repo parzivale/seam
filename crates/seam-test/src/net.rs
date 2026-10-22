@@ -65,6 +65,7 @@ pub(crate) enum WaitKey {
 impl TcpStream {
     /// Whether a read would return now: data has arrived, or the stream
     /// has ended. If not, `waker` is woken when that changes.
+    #[cfg_attr(not(feature = "rt"), allow(dead_code))]
     pub(crate) fn poll_readable(&self, waker: &Waker) -> bool {
         let mut world = self.world.lock();
         let pipe = &world.net.pipes[self.rx];
@@ -79,6 +80,7 @@ impl TcpStream {
 impl TcpListener {
     /// Whether a connection is waiting to be accepted. If not, `waker` is
     /// woken when one arrives.
+    #[cfg_attr(not(feature = "rt"), allow(dead_code))]
     pub(crate) fn poll_acceptable(&self, waker: &Waker) -> bool {
         let mut world = self.world.lock();
         let ready = world
@@ -96,6 +98,7 @@ impl TcpListener {
 impl UdpSocket {
     /// Whether a datagram is waiting. If not, `waker` is woken when one
     /// arrives.
+    #[cfg_attr(not(feature = "rt"), allow(dead_code))]
     pub(crate) fn poll_receivable(&self, waker: &Waker) -> bool {
         let mut world = self.world.lock();
         let ready = world.net.udp.get(&self.addr).is_some_and(|q| !q.is_empty());

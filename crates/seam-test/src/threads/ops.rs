@@ -150,6 +150,27 @@ mod signal {
             })
         }
     }
+
+    /// Blocks at most the timeout on the virtual clock.
+    #[cfg(feature = "time")]
+    impl Perform<seam_core::ops::time::Timeout<CtrlC>> for ThreadSim {
+        fn perform(&mut self, op: seam_core::ops::time::Timeout<CtrlC>) -> std::io::Result<()> {
+            use seam_core::ops::time::TimesOut;
+            self.shared.switch();
+            self.shared
+                .wait_within(op.after, |waker| {
+                    let mut sim = self.shared.sim();
+                    if sim.ctrl_c > 0 {
+                        sim.ctrl_c -= 1;
+                        return Some(Ok(()));
+                    }
+                    drop(sim);
+                    self.shared.wait_for_signal(waker);
+                    None
+                })
+                .unwrap_or_else(|| op.op.timed_out())
+        }
+    }
 }
 
 mod task {

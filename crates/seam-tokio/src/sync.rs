@@ -21,10 +21,10 @@ use crate::Tokio;
 ///
 /// [`SendMsg`] waits while a bounded channel is full.
 #[derive(Debug)]
-pub struct Sender<T>(Tx<T>);
+pub struct Sender<T>(pub(crate) Tx<T>);
 
 #[derive(Debug)]
-enum Tx<T> {
+pub(crate) enum Tx<T> {
     Unbounded(mpsc::UnboundedSender<T>),
     Bounded(mpsc::Sender<T>),
 }
@@ -41,10 +41,10 @@ impl<T> Clone for Sender<T> {
 /// The receiving end of a channel. [`RecvMsg`] waits until a message
 /// arrives or every sender is gone.
 #[derive(Debug)]
-pub struct Receiver<T>(Rx<T>);
+pub struct Receiver<T>(pub(crate) Rx<T>);
 
 #[derive(Debug)]
-enum Rx<T> {
+pub(crate) enum Rx<T> {
     Unbounded(mpsc::UnboundedReceiver<T>),
     Bounded(mpsc::Receiver<T>),
 }

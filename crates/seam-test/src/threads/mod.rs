@@ -336,21 +336,65 @@ impl Shared {
     /// Blocks the calling thread until the clock reaches `deadline`.
     #[cfg(feature = "time")]
     pub(crate) fn sleep_until(self: &Arc<Self>, deadline: Duration) {
-        let me = current();
-        let mut registered = false;
-        self.wait_until(|_| {
-            if self.sim().clock >= deadline {
-                return Some(());
+        let _ = self.wait_until_deadline(deadline, |_| None::<()>);
+    }
+
+    /// Blocks until `poll` returns `Some`, for at most `after` on the
+    /// virtual clock; `None` if the time runs out first. Unwinds if the
+    /// run halts.
+    #[cfg(feature = "time")]
+    pub(crate) fn wait_within<R>(
+        self: &Arc<Self>,
+        after: Duration,
+        poll: impl FnMut(&Waker) -> Option<R>,
+    ) -> Option<R> {
+        let deadline = self.deadline_after(after);
+        self.wait_until_deadline(deadline, poll)
+    }
+
+    /// The point on the virtual clock `after` from now.
+    #[cfg(feature = "time")]
+    pub(crate) fn deadline_after(&self, after: Duration) -> Duration {
+        self.sim().clock.saturating_add(after)
+    }
+
+    /// Blocks until `poll` returns `Some`, or until the clock reaches
+    /// `deadline`; `None` if it does first.
+    #[cfg(feature = "time")]
+    pub(crate) fn wait_until_deadline<R>(
+        self: &Arc<Self>,
+        deadline: Duration,
+        mut poll: impl FnMut(&Waker) -> Option<R>,
+    ) -> Option<R> {
+        /// Removes the timer however the wait ends, so a wait that did not
+        /// time out does not move the clock later.
+        struct Timer<'a>(&'a Shared, Option<(Duration, u64)>);
+        impl Drop for Timer<'_> {
+            fn drop(&mut self) {
+                if let Some(key) = self.1.take() {
+                    lock(&self.0.state).timers.remove(&key);
+                }
             }
-            if !registered {
+        }
+
+        let me = current();
+        let mut timer = Timer(self, None);
+        self.wait_until(|waker| {
+            if let Some(r) = poll(waker) {
+                return Some(Some(r));
+            }
+            if self.sim().clock >= deadline {
+                return Some(None);
+            }
+            if timer.1.is_none() {
                 let mut st = lock(&self.state);
                 st.next_timer += 1;
-                let seq = st.next_timer;
-                st.timers.insert((deadline, seq), me);
-                registered = true;
+                let key = (deadline, st.next_timer);
+                st.timers.insert(key, me);
+                timer.1 = Some(key);
             }
             None
-        });
+        })
     }
 
     /// Starts `work` as a new simulated thread, which first waits for its

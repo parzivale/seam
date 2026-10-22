@@ -139,23 +139,37 @@ where
         op: SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>,
         token: Token,
     ) -> io::Result<JoinHandle<Result<T, E>>> {
-        let mut stream = self.accept(token)?;
-        let body = op.body;
-        Ok(spawn(
-            &self.1,
-            move || {
-                let value = body(&mut stream)?;
-                stream.1.switch();
-                stream.0.commit()?;
-                Ok(value)
-            },
-            None,
-        ))
+        let stream = self.accept(token)?;
+        Ok(spawn_connection(&self.1, stream, op.body))
     }
 
     fn close(&mut self, thread: JoinHandle<Result<T, E>>) -> io::Result<()> {
         thread.finish().map_err(io::Error::from)
     }
+}
+
+/// Handles `stream` on a new thread with `body`, shutting it down cleanly
+/// if `body` succeeds.
+fn spawn_connection<B, T, E>(
+    shared: &Arc<Shared>,
+    mut stream: TcpStream,
+    body: B,
+) -> JoinHandle<Result<T, E>>
+where
+    B: FnOnce(&mut TcpStream) -> Result<T, E> + Send + 'static,
+    T: Send + 'static,
+    E: From<io::Error> + Send + 'static,
+{
+    spawn(
+        shared,
+        move || {
+            let value = body(&mut stream)?;
+            stream.1.switch();
+            stream.0.commit()?;
+            Ok(value)
+        },
+        None,
+    )
 }
 
 impl TcpStream {
@@ -231,4 +245,153 @@ addr_queries! {
     TcpStream: LocalAddr, PeerAddr;
     TcpListener: LocalAddr;
     UdpSocket: LocalAddr, PeerAddr;
+}
+
+#[cfg(feature = "time")]
+mod timeouts {
+    use core::time::Duration;
+
+    use seam_core::ops::time::Timeout;
+
+    use super::*;
+
+    fn timed_out() -> io::Error {
+        io::ErrorKind::TimedOut.into()
+    }
+
+    impl TcpStream {
+        /// Blocks until a read would return, or the clock reaches
+        /// `deadline`; whether it would.
+        fn readable_by(&self, deadline: Duration) -> bool {
+            self.1.switch();
+            self.1
+                .wait_until_deadline(deadline, |w| self.0.poll_readable(w).then_some(()))
+                .is_some()
+        }
+    }
+
+    impl TcpListener {
+        fn accept_within(&mut self, after: Duration, token: Token) -> io::Result<TcpStream> {
+            self.1.switch();
+            if self
+                .1
+                .wait_within(after, |w| self.0.poll_acceptable(w).then_some(()))
+                .is_none()
+            {
+                return Err(timed_out());
+            }
+            self.0
+                .provide(Accept::new(), token)
+                .map(|s| TcpStream(s, Arc::clone(&self.1)))
+        }
+    }
+
+    impl Perform<Timeout<Read<'_>>> for TcpStream {
+        fn perform(&mut self, op: Timeout<Read<'_>>) -> io::Result<usize> {
+            if !self.readable_by(self.1.deadline_after(op.after)) {
+                return Err(timed_out());
+            }
+            self.0.perform(op.op)
+        }
+    }
+
+    /// What arrived before the deadline stays in the buffer.
+    impl Perform<Timeout<ReadToEnd<'_>>> for TcpStream {
+        fn perform(&mut self, op: Timeout<ReadToEnd<'_>>) -> io::Result<usize> {
+            let deadline = self.1.deadline_after(op.after);
+            let out = op.op.0;
+            let mut total = 0;
+            loop {
+                if !self.readable_by(deadline) {
+                    return Err(timed_out());
+                }
+                let n = self.0.perform(ReadToEnd(&mut *out))?;
+                total += n;
+                if n == 0 {
+                    return Ok(total);
+                }
+            }
+        }
+    }
+
+    // Writing never waits in the simulation.
+    impl Perform<Timeout<Write<'_>>> for TcpStream {
+        fn perform(&mut self, op: Timeout<Write<'_>>) -> io::Result<usize> {
+            self.perform(op.op)
+        }
+    }
+
+    impl Perform<Timeout<WriteAll<'_>>> for TcpStream {
+        fn perform(&mut self, op: Timeout<WriteAll<'_>>) -> io::Result<()> {
+            self.perform(op.op)
+        }
+    }
+
+    impl Perform<Timeout<RecvFrom<'_>>> for UdpSocket {
+        fn perform(&mut self, op: Timeout<RecvFrom<'_>>) -> io::Result<(usize, SocketAddr)> {
+            self.1.switch();
+            if self
+                .1
+                .wait_within(op.after, |w| self.0.poll_receivable(w).then_some(()))
+                .is_none()
+            {
+                return Err(timed_out());
+            }
+            self.0.perform(op.op)
+        }
+    }
+
+    /// Connecting never waits in the simulation, so the timeout is moot.
+    impl Provide<Timeout<TcpConnect<TcpStream>>> for ThreadSim {
+        fn provide(
+            &mut self,
+            op: Timeout<TcpConnect<TcpStream>>,
+            token: Token,
+        ) -> io::Result<TcpStream> {
+            self.provide(op.op, token)
+        }
+
+        fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+            self.shared.switch();
+            stream.0.commit()
+        }
+    }
+
+    impl Provide<Timeout<Accept<TcpStream>>> for TcpListener {
+        fn provide(
+            &mut self,
+            op: Timeout<Accept<TcpStream>>,
+            token: Token,
+        ) -> io::Result<TcpStream> {
+            self.accept_within(op.after, token)
+        }
+
+        fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+            self.1.switch();
+            stream.0.commit()
+        }
+    }
+
+    /// Blocks at most the timeout for a connection, then handles it on a
+    /// new thread, as `SpawnWith` without a timeout does.
+    impl<B, T, E> Provide<Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>>
+        for TcpListener
+    where
+        B: FnOnce(&mut TcpStream) -> Result<T, E> + Send + 'static,
+        T: Send + 'static,
+        E: From<io::Error> + Send + 'static,
+    {
+        fn provide(
+            &mut self,
+            op: Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>,
+            token: Token,
+        ) -> io::Result<JoinHandle<Result<T, E>>> {
+            let stream = self.accept_within(op.after, token)?;
+            Ok(spawn_connection(&self.1, stream, op.op.body))
+        }
+
+        fn close(&mut self, thread: JoinHandle<Result<T, E>>) -> io::Result<()> {
+            thread.finish().map_err(io::Error::from)
+        }
+    }
 }

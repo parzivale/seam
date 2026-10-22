@@ -160,6 +160,30 @@ joined or aborted together. None of the task API allocates in seam itself;
 Temporary files left by a process that was killed outright are cleaned up
 with `SweepAtomic`.
 
+## Timeouts
+
+Any operation that waits can be given a deadline by wrapping it in
+`Timeout`. Its outcome stays the operation's own, so existing error handling
+covers expiry:
+
+```rust
+match rx.perform(Timeout::new(Duration::from_secs(1), RecvMsg::new())) {
+    Ok(job) => run(job),
+    Err(RecvError::Empty) => check_for_shutdown(), // nothing within a second
+    Err(RecvError::Closed) => return,
+}
+```
+
+A receive that times out reports `Empty`, a send `Full` with the value
+handed back, I/O `io::ErrorKind::TimedOut`, and a join `JoinError::TimedOut`
+with the task still running. An expired operation had no effect, except
+`ReadToEnd`, which keeps what arrived, and `WriteAll`, which may have written
+part of its buffer. `Timeout` covers channel sends and receives, socket
+reads and writes, accept (also with `SpawnWith`), connect, `RecvFrom`, joins
+and `CtrlC`, on `seam-std`, `seam-tokio` and the simulation. On the
+simulated runtime and threads, timeouts run on the virtual clock, so a test
+can check exactly when one fired.
+
 ## Keeping the core honest
 
 The newtype handles stop effects leaking out of the backends, but nothing in

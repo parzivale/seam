@@ -194,6 +194,8 @@ pub mod sync;
 pub mod task;
 #[cfg(feature = "time")]
 mod time;
+#[cfg(feature = "time")]
+mod timeouts;
 
 #[cfg(feature = "rt")]
 pub use runtime::block_on;

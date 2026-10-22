@@ -21,28 +21,46 @@ use seam_core::ops::sync::{
     Channel, RecvError, RecvMsg, SendError, SendMsg, Share, TryRecvMsg, TrySendMsg,
 };
 
-use super::{AsyncSim, async_op};
+use std::sync::Arc;
+
+use super::{AsyncSim, Shared, async_op};
 use crate::sync as sim;
 
 /// The sending end of a channel on the runtime. Clone it to send from
 /// several tasks.
-#[derive(Debug)]
-pub struct Sender<T>(sim::Sender<T>);
+pub struct Sender<T>(pub(crate) sim::Sender<T>, pub(crate) Arc<Shared>);
 
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self(self.0.clone(), Arc::clone(&self.1))
     }
 }
 
 /// The receiving end of a channel on the runtime.
-#[derive(Debug)]
-pub struct Receiver<T>(sim::Receiver<T>);
+pub struct Receiver<T>(
+    pub(crate) sim::Receiver<T>,
+    #[cfg_attr(not(feature = "time"), allow(dead_code))] pub(crate) Arc<Shared>,
+);
+
+impl<T> core::fmt::Debug for Sender<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Sender")
+    }
+}
+
+impl<T> core::fmt::Debug for Receiver<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Receiver")
+    }
+}
 
 impl<T> Perform<Channel<Sender<T>, Receiver<T>>> for AsyncSim {
     fn perform(&mut self, op: Channel<Sender<T>, Receiver<T>>) -> (Sender<T>, Receiver<T>) {
         let (tx, rx) = sim::channel(op.capacity);
-        (Sender(tx), Receiver(rx))
+        (
+            Sender(tx, Arc::clone(&self.shared)),
+            Receiver(rx, Arc::clone(&self.shared)),
+        )
     }
 }
 

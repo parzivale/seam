@@ -187,3 +187,44 @@ impl<'a, T, R> Perform<Update<'a, T, R>> for Shared<T> {
         self.with(op.0)
     }
 }
+
+#[cfg(feature = "time")]
+mod timeouts {
+    use seam_core::ops::time::{Timeout, TimesOut};
+
+    use super::*;
+
+    /// Blocks while the channel is full, for at most the timeout on the
+    /// virtual clock; a send that times out hands its value back.
+    impl<T> Perform<Timeout<SendMsg<T>>> for Sender<T> {
+        fn perform(&mut self, op: Timeout<SendMsg<T>>) -> Result<(), SendError<T>> {
+            self.1.switch();
+            let mut value = Some(op.op.0);
+            let sent = self.1.wait_within(op.after, |waker| {
+                let v = value.take().expect("a send stops waiting once it succeeds");
+                match self.0.poll_send(v, waker) {
+                    Err(SendError::Full(v)) => {
+                        value = Some(v);
+                        None
+                    }
+                    done => Some(done),
+                }
+            });
+            sent.unwrap_or_else(|| Err(SendError::Full(value.take().expect("still held"))))
+        }
+    }
+
+    /// Blocks until a message arrives, for at most the timeout on the
+    /// virtual clock.
+    impl<T> Perform<Timeout<RecvMsg<T>>> for Receiver<T> {
+        fn perform(&mut self, op: Timeout<RecvMsg<T>>) -> Result<T, RecvError> {
+            self.1.switch();
+            self.1
+                .wait_within(op.after, |waker| match self.0.poll_recv(waker) {
+                    Err(RecvError::Empty) => None,
+                    done => Some(done),
+                })
+                .unwrap_or_else(|| op.op.timed_out())
+        }
+    }
+}

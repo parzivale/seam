@@ -34,7 +34,7 @@ impl<T> JoinHandle<T> {
         }
     }
 
-    async fn join(&mut self) -> Result<T, JoinError> {
+    pub(crate) async fn join(&mut self) -> Result<T, JoinError> {
         assert!(!self.joined, "seam: task was already joined");
         let result = (&mut self.inner).await;
         self.joined = true;
@@ -90,6 +90,12 @@ where
 #[derive(Debug)]
 pub struct TaskSet<T>(tokio::task::JoinSet<T>);
 
+impl<T: 'static> TaskSet<T> {
+    pub(crate) async fn join_next(&mut self) -> Option<Result<T, JoinError>> {
+        self.0.join_next().await.map(|r| r.map_err(join_error))
+    }
+}
+
 fn join_error(e: tokio::task::JoinError) -> JoinError {
     if e.is_panic() {
         JoinError::Panicked
@@ -134,9 +140,7 @@ where
     }
 }
 
-async_op!(perform [T: Send + 'static] TaskSet<T>, JoinNext<T>, |s, _op| {
-    s.0.join_next().await.map(|r| r.map_err(join_error))
-});
+async_op!(perform [T: Send + 'static] TaskSet<T>, JoinNext<T>, |s, _op| s.join_next().await);
 
 impl<T: 'static> Perform<Abort> for TaskSet<T> {
     fn perform(&mut self, _: Abort) {

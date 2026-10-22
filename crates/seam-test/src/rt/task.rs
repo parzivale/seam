@@ -111,7 +111,7 @@ async fn wait<T>(state: &State<T>) -> Result<T, JoinError> {
 pub struct JoinHandle<T> {
     id: TaskId,
     state: State<T>,
-    shared: Arc<Shared>,
+    pub(crate) shared: Arc<Shared>,
     joined: bool,
     detached: bool,
 }
@@ -132,7 +132,7 @@ impl<T> JoinHandle<T> {
         }
     }
 
-    async fn join(&mut self) -> Result<T, JoinError> {
+    pub(crate) async fn join(&mut self) -> Result<T, JoinError> {
         assert!(!self.joined, "seam-test: task was already joined");
         let result = wait(&self.state).await;
         self.joined = true;
@@ -215,12 +215,12 @@ impl<T> Inspect<IsFinished> for JoinHandle<T> {
 /// [`JoinNext`] returns results as tasks finish, in an order the scheduler
 /// chooses from the runtime's seed.
 pub struct TaskSet<T> {
-    shared: Arc<Shared>,
+    pub(crate) shared: Arc<Shared>,
     tasks: Vec<(TaskId, State<T>)>,
 }
 
 impl<T> TaskSet<T> {
-    async fn join_next(&mut self) -> Option<Result<T, JoinError>> {
+    pub(crate) async fn join_next(&mut self) -> Option<Result<T, JoinError>> {
         poll_fn(|cx| {
             if self.tasks.is_empty() {
                 return Poll::Ready(None);

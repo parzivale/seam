@@ -83,6 +83,8 @@ mod ops;
 #[cfg(feature = "sync")]
 pub mod sync;
 mod task;
+#[cfg(feature = "time")]
+mod timeouts;
 
 pub use task::{JoinHandle, TaskSet};
 
@@ -278,13 +280,22 @@ impl Shared {
         exec.ready.insert(id);
     }
 
-    /// Wakes `waker` once the clock reaches `deadline`.
+    /// Wakes `waker` once the clock reaches `deadline`. Returns the timer's
+    /// key, for [`remove_timer`](Self::remove_timer).
     #[cfg_attr(not(feature = "time"), allow(dead_code))]
-    pub(crate) fn add_timer(&self, deadline: Duration, waker: Waker) {
+    pub(crate) fn add_timer(&self, deadline: Duration, waker: Waker) -> (Duration, u64) {
         let mut exec = self.exec();
         exec.next_timer += 1;
-        let seq = exec.next_timer;
-        exec.timers.insert((deadline, seq), waker);
+        let key = (deadline, exec.next_timer);
+        exec.timers.insert(key, waker);
+        key
+    }
+
+    /// Removes a timer that is no longer needed, so that it does not move
+    /// the clock when nothing else is left to run.
+    #[cfg_attr(not(feature = "time"), allow(dead_code))]
+    pub(crate) fn remove_timer(&self, key: (Duration, u64)) {
+        self.exec().timers.remove(&key);
     }
 
     #[cfg_attr(not(feature = "signal"), allow(dead_code))]

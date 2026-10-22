@@ -269,3 +269,49 @@ impl Perform<YieldNow> for ThreadSim {
         self.shared.switch();
     }
 }
+
+#[cfg(feature = "time")]
+mod timeouts {
+    use seam_core::ops::time::{Timeout, TimesOut};
+
+    use super::*;
+
+    /// Blocks at most the timeout on the virtual clock; the thread keeps
+    /// running if it expires.
+    impl<T> Perform<Timeout<Join<T>>> for JoinHandle<T> {
+        fn perform(&mut self, op: Timeout<Join<T>>) -> Result<T, JoinError> {
+            assert!(!self.joined, "seam-test: thread was already joined");
+            match self.shared.wait_within(op.after, |w| self.poll_result(w)) {
+                Some(result) => {
+                    self.joined = true;
+                    result
+                }
+                None => op.op.timed_out(),
+            }
+        }
+    }
+
+    /// Blocks at most the timeout; `None` at once if the set is empty.
+    impl<T> Perform<Timeout<JoinNext<T>>> for ThreadSet<T> {
+        fn perform(&mut self, op: Timeout<JoinNext<T>>) -> Option<Result<T, JoinError>> {
+            let deadline = self.shared.deadline_after(op.after);
+            while !self.threads.is_empty() {
+                let id = self.shared.wait_until_deadline(deadline, |w| {
+                    let mut d = lock(&self.done);
+                    let id = d.ids.pop_front();
+                    if id.is_none() {
+                        d.waker = Some(w.clone());
+                    }
+                    id
+                });
+                let Some(id) = id else {
+                    return op.op.timed_out();
+                };
+                if let Some(mut thread) = self.threads.remove(&id) {
+                    return Some(thread.join());
+                }
+            }
+            None
+        }
+    }
+}

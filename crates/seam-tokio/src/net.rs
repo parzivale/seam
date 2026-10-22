@@ -21,24 +21,24 @@ use crate::task::JoinHandle;
 /// When its scope succeeds, its write half is flushed and shut down, so the
 /// peer sees end of input; otherwise it is just closed.
 #[derive(Debug)]
-pub struct TcpStream(tokio::net::TcpStream);
+pub struct TcpStream(pub(crate) tokio::net::TcpStream);
 
 /// A listening TCP socket, acquired with [`TcpBind`]. Acquire [`Accept`]
 /// from it to handle a connection, or `SpawnWith<Accept<_>, ..>` to handle
 /// it in a new task.
 #[derive(Debug)]
-pub struct TcpListener(tokio::net::TcpListener);
+pub struct TcpListener(pub(crate) tokio::net::TcpListener);
 
 /// A UDP socket.
 #[derive(Debug)]
-pub struct UdpSocket(tokio::net::UdpSocket);
+pub struct UdpSocket(pub(crate) tokio::net::UdpSocket);
 
 io_ops!(TcpStream);
 
 impl TcpStream {
     /// Flushes and shuts down the write half, so the peer sees end of input.
     /// A peer that has already closed its end counts as success.
-    async fn commit(mut self) -> io::Result<()> {
+    pub(crate) async fn commit(mut self) -> io::Result<()> {
         match tokio::io::AsyncWriteExt::shutdown(&mut self.0).await {
             Err(e) if e.kind() == io::ErrorKind::NotConnected => Ok(()),
             result => result,
@@ -117,13 +117,7 @@ where
         _: Token,
     ) -> io::Result<JoinHandle<Result<B::Output, B::Error>>> {
         let (stream, _) = self.0.accept().await?;
-        let body = op.body;
-        Ok(JoinHandle::new(tokio::spawn(async move {
-            let mut stream = TcpStream(stream);
-            let value = body.run(&mut stream).await?;
-            stream.commit().await?;
-            Ok(value)
-        })))
+        Ok(spawn_connection(stream, op.body))
     }
 
     async fn close_async(
@@ -162,4 +156,23 @@ addr_queries! {
     TcpStream: LocalAddr => local_addr, PeerAddr => peer_addr;
     TcpListener: LocalAddr => local_addr;
     UdpSocket: LocalAddr => local_addr, PeerAddr => peer_addr;
+}
+
+/// Handles `stream` in a new task with `body`, shutting it down cleanly if
+/// `body` succeeds.
+#[cfg(feature = "rt")]
+pub(crate) fn spawn_connection<B>(
+    stream: tokio::net::TcpStream,
+    body: B,
+) -> JoinHandle<Result<B::Output, B::Error>>
+where
+    B: TaskBody<TcpStream>,
+    B::Error: From<io::Error>,
+{
+    JoinHandle::new(tokio::spawn(async move {
+        let mut stream = TcpStream(stream);
+        let value = body.run(&mut stream).await?;
+        stream.commit().await?;
+        Ok(value)
+    }))
 }

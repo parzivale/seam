@@ -309,6 +309,39 @@ cell, written back only if the scope succeeds and nobody else changed it).
 Both are acquisitions on top of `acquire`, and can be added without changing
 anything here.
 
+## Timeouts
+
+`Timeout<O>` wraps an operation (or an acquisition) that waits. Rather than
+a new outcome type such as `Result<O::Outcome, Elapsed>`, it reuses `O`'s
+own: each waiting operation implements `TimesOut`, which builds the outcome
+that reports giving up. That keeps one error path per operation, and it is
+what lets a timed-out send hand its value back (`SendError::Full(value)`),
+which a generic `Elapsed` could not. A timeout of zero is a non-blocking
+attempt, so the `Try*` operations are `Timeout` with zero, kept for clarity.
+
+Expiry has no effect, which each backend gets differently:
+
+- **seam-std** sets the socket's own read or write timeout around the call
+  (zero: nonblocking), and waits on condvars with a deadline for channels and
+  joins. The channel is seam's own queue and condvars, because
+  `std::sync::mpsc` cannot time out a send. std has no timed accept, so a
+  timed accept polls the listener, sleeping up to 10ms between tries.
+- **seam-tokio** wraps the call in `tokio::time::timeout`, choosing calls
+  that are cancel-safe: a timed send reserves a slot first, so the value
+  stays in hand until there is room; `ReadToEnd` reads chunk by chunk, so
+  data read before the deadline stays in the buffer.
+- **The runtime** races the operation against a timer. Every operation that
+  waits there is already atomic under cancellation, so the race needs nothing
+  per operation, except the send, which polls by hand to keep its value.
+- **Simulated threads** wait with a deadline in the scheduler.
+- **The plain `Sim`** never waits, so a timed operation that cannot finish
+  at once expires at once, and the clock does not move.
+
+On the runtime and the thread scheduler, a timer that loses its race is
+removed. Otherwise it would still move the clock when nothing else is left
+to run, and a deadlock would be reported later than it happened; the tests
+check for exactly that.
+
 ## Prelude
 
 `seam_core::prelude` (re-exported as `seam::prelude`) holds the traits and
@@ -323,6 +356,15 @@ module's imports, like its bounds, show what it can do.
   this waits.
 - **`Pin<Box<_>>` sink variant** for writers that are not `Unpin`.
 - **Child process handles** (only run-to-completion today).
+- **Composed roots.** A root built from smaller parts, so programs can mix
+  backends (Tokio networking with a simulated filesystem) and add their own
+  effects to it. Explored and set aside: it needs a macro, because Rust cannot
+  pick "whichever part implements this operation" from a tuple. The workable
+  version was `root! { seam_tokio: Sleep, Now; seam_std: Var }`, where each
+  backend publishes a macro table of the operations it provides (sync or
+  async) and `root!` writes one forwarding impl per listed operation. Std
+  and Tokio stay single types meanwhile; their small overlap (env, random,
+  wall clock, about 100 lines) can be shared internally without it.
 
 ## Open questions
 

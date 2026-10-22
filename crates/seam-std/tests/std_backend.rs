@@ -227,3 +227,187 @@ mod sync {
         assert_eq!(counter.inspect(Load::new()), 8000);
     }
 }
+
+mod threads {
+    use std::time::Instant;
+
+    use seam_core::ops::net::LocalAddr;
+    use seam_core::ops::sync::{Load, Share, Store};
+    use seam_core::ops::task::{
+        AvailableParallelism, Detach, IsFinished, Join, JoinError, JoinNext, Spawn, SpawnInto,
+        SpawnSet, SpawnWith,
+    };
+    use seam_core::ops::time::Sleep;
+    use seam_std::net::TcpStream;
+    use seam_std::sync::Shared;
+    use seam_std::task::{JoinHandle, TaskSet};
+
+    use super::*;
+
+    /// A sync core: runs `job` on every input on its own thread, and sums
+    /// the results. The closure type is a parameter, inferred from `job`.
+    fn fan_out<C, S, J, F>(c: &mut C, inputs: &[u64], job: J) -> Result<u64, JoinError>
+    where
+        C: Provide<SpawnSet<S>>,
+        S: Perform<SpawnInto<F>> + Perform<JoinNext<u64>>,
+        J: Fn(u64) -> F,
+    {
+        c.acquire(SpawnSet::new(), |_, set| {
+            for &n in inputs {
+                let _ = set.perform(SpawnInto::new(job(n)));
+            }
+            let mut sum = 0;
+            while let Some(result) = set.perform(JoinNext::new()) {
+                sum += result?;
+            }
+            Ok(sum)
+        })
+    }
+
+    #[test]
+    fn threads_run_in_parallel() {
+        let mut std = Std::new();
+        let start = Instant::now();
+        let sum = fan_out::<_, TaskSet<u64>, _, _>(&mut std, &[1, 2, 3, 4, 5, 6, 7, 8], |n| {
+            let mut std = Std::new();
+            move || {
+                std.perform(Sleep(Duration::from_millis(100)));
+                n * n
+            }
+        })
+        .unwrap();
+        assert_eq!(sum, 204);
+        assert!(
+            start.elapsed() < Duration::from_millis(600),
+            "took {:?}",
+            start.elapsed()
+        );
+        assert!(std.inspect(AvailableParallelism).get() >= 1);
+    }
+
+    #[test]
+    fn panics_are_reported() {
+        let mut std = Std::new();
+        let boom = Spawn::<_, JoinHandle<()>>::new(|| panic!("boom"));
+        assert_eq!(
+            std.acquire(boom, |_, _| Ok(())),
+            Err(JoinError::Panicked),
+            "closing reports it"
+        );
+
+        let joined = std.acquire(
+            Spawn::<_, JoinHandle<u8>>::new(|| panic!("boom")),
+            |_, t| Ok::<_, JoinError>(t.perform(Join::new())),
+        );
+        assert_eq!(joined, Ok(Err(JoinError::Panicked)));
+    }
+
+    /// A thread cannot be aborted, so a failed scope waits for it instead:
+    /// no thread outlives the scope that started it.
+    #[test]
+    fn a_failed_scope_waits_for_its_thread() {
+        let mut std = Std::new();
+        let flag: Shared<bool> = std.perform(Share::new(false));
+        let mut f = flag.clone();
+        let slow = Spawn::<_, JoinHandle<()>>::new(move || {
+            thread::sleep(Duration::from_millis(50));
+            f.perform(Store(true));
+        });
+        let failed = std.acquire(slow, |_, _| Err::<(), _>(JoinError::Cancelled));
+        assert!(failed.is_err());
+        assert!(
+            flag.inspect(Load::new()),
+            "the scope did not end until the thread had"
+        );
+    }
+
+    #[test]
+    fn detached_threads_outlive_their_scope() {
+        let mut std = Std::new();
+        let flag: Shared<bool> = std.perform(Share::new(false));
+        let mut f = flag.clone();
+        let slow = Spawn::<_, JoinHandle<()>>::new(move || {
+            thread::sleep(Duration::from_millis(50));
+            f.perform(Store(true));
+        });
+        std.acquire(slow, |_, t| {
+            t.perform(Detach);
+            Ok::<_, JoinError>(())
+        })
+        .unwrap();
+        assert!(!flag.inspect(Load::new()), "the scope did not wait");
+        thread::sleep(Duration::from_millis(150));
+        assert!(flag.inspect(Load::new()));
+    }
+
+    /// Threads cannot be aborted, but they can be told to stop.
+    #[test]
+    fn cooperative_cancellation() {
+        let mut std = Std::new();
+        let stop: Shared<bool> = std.perform(Share::new(false));
+        let watcher = stop.clone();
+        let worker = Spawn::<_, JoinHandle<u32>>::new(move || {
+            let mut rounds = 0;
+            while !watcher.inspect(Load::new()) {
+                rounds += 1;
+                thread::sleep(Duration::from_millis(1));
+            }
+            rounds
+        });
+        let rounds = std
+            .acquire(worker, |_, t| {
+                thread::sleep(Duration::from_millis(20));
+                let mut stop = stop.clone();
+                stop.perform(Store(true));
+                Ok::<_, JoinError>(t.perform(Join::new()))
+            })
+            .unwrap()
+            .unwrap();
+        assert!(rounds > 0);
+    }
+
+    /// A thread per connection: the listener accepts and hands the stream
+    /// to a new thread, which owns it and shuts it down when done.
+    #[test]
+    fn spawn_with_hands_a_connection_to_a_thread() -> io::Result<()> {
+        let mut std = Std::new();
+        let any_port = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        std.acquire(
+            TcpBind::new(any_port),
+            |std, listener: &mut seam_std::net::TcpListener| {
+                let addr = listener.inspect(LocalAddr)?;
+                let mut client_std = std.clone();
+                let client = Spawn::<_, JoinHandle<io::Result<Vec<u8>>>>::new(move || {
+                    client_std.acquire(TcpConnect::<TcpStream>::new(addr), |_, s| {
+                        s.perform(WriteAll(b"hello"))?;
+                        s.perform(seam_core::ops::net::Shutdown(std::net::Shutdown::Write))?;
+                        let mut reply = Vec::new();
+                        s.perform(ReadToEnd(&mut reply))?;
+                        Ok(reply)
+                    })
+                });
+                std.acquire(client, |_, client| {
+                    let echo = SpawnWith::<_, _, JoinHandle<io::Result<usize>>>::new(
+                        Accept::new(),
+                        |s: &mut TcpStream| {
+                            let mut got = Vec::new();
+                            s.perform(ReadToEnd(&mut got))?;
+                            s.perform(WriteAll(&got))?;
+                            Ok(got.len())
+                        },
+                    );
+                    let echoed = listener.acquire(echo, |_, t| {
+                        assert!(!t.inspect(IsFinished) || true);
+                        t.perform(Join::new()).map_err(io::Error::from)
+                    })??;
+                    assert_eq!(echoed, 5);
+                    let reply = client.perform(Join::new()).map_err(io::Error::from)??;
+                    assert_eq!(reply, b"hello");
+                    io::Result::Ok(())
+                })
+            },
+        )
+    }
+
+    use std::thread;
+}

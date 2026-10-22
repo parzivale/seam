@@ -179,7 +179,7 @@ where
         op: Spawn<F, JoinHandle<F::Output>>,
         _: Token,
     ) -> Result<JoinHandle<F::Output>, JoinError> {
-        Ok(JoinHandle::spawn(&self.shared, op.future))
+        Ok(JoinHandle::spawn(&self.shared, op.task))
     }
 
     async fn close_async(&mut self, task: JoinHandle<F::Output>) -> Result<(), JoinError> {
@@ -287,7 +287,7 @@ where
     F: Future<Output = T> + Send + 'static,
 {
     fn perform(&mut self, op: SpawnInto<F>) -> Result<(), Rejected<F>> {
-        let task = spawn(&self.shared, op.future);
+        let task = spawn(&self.shared, op.task);
         self.tasks.push(task);
         Ok(())
     }

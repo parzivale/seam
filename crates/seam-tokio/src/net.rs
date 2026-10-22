@@ -37,8 +37,12 @@ io_ops!(TcpStream);
 
 impl TcpStream {
     /// Flushes and shuts down the write half, so the peer sees end of input.
+    /// A peer that has already closed its end counts as success.
     async fn commit(mut self) -> io::Result<()> {
-        tokio::io::AsyncWriteExt::shutdown(&mut self.0).await
+        match tokio::io::AsyncWriteExt::shutdown(&mut self.0).await {
+            Err(e) if e.kind() == io::ErrorKind::NotConnected => Ok(()),
+            result => result,
+        }
     }
 }
 

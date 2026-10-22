@@ -47,6 +47,13 @@
 //! otherwise they are just closed, and an atomic file's temporary file is
 //! deleted.
 //!
+//! # Threads
+//!
+//! With `rt`, `Std` provides `Spawn` and `SpawnSet` with closures run on OS
+//! threads, and a `net::TcpListener` provides `SpawnWith<Accept<_>, B, _>`
+//! for a thread per connection (see the `task` module). Threads cannot be
+//! aborted: a scope that fails waits for its threads instead.
+//!
 //! # Async
 //!
 //! Everything here is synchronous and blocking. Through seam's blanket
@@ -58,7 +65,7 @@
 //! # Features
 //!
 //! One per capability group: `fs`, `net`, `time`, `env`, `process`,
-//! `random`, `io-std`, `sync`, or `full`. `Std` implements only the groups that are
+//! `random`, `io-std`, `sync`, `rt` (tasks on OS threads), or `full`. `Std` implements only the groups that are
 //! enabled.
 //!
 //! `random` uses std's randomly keyed hasher, since std has no public random
@@ -94,6 +101,8 @@ mod random;
 mod stdio;
 #[cfg(feature = "sync")]
 pub mod sync;
+#[cfg(feature = "rt")]
+pub mod task;
 #[cfg(feature = "time")]
 mod time;
 

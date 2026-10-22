@@ -169,6 +169,8 @@ pub struct Sim {
     stdio: stdio::Stdio,
     #[cfg(feature = "signal")]
     ctrl_c: u32,
+    #[cfg(feature = "rt")]
+    parallelism: core::num::NonZeroUsize,
 }
 
 impl Sim {
@@ -207,6 +209,8 @@ impl Sim {
             stdio: stdio::Stdio::default(),
             #[cfg(feature = "signal")]
             ctrl_c: 0,
+            #[cfg(feature = "rt")]
+            parallelism: core::num::NonZeroUsize::MIN,
         };
         #[cfg(feature = "fs")]
         sim.add_dir("/tmp");
@@ -218,6 +222,22 @@ impl Sim {
     pub fn run(mut self, core: impl FnOnce(&mut Self)) -> Self {
         core(&mut self);
         self
+    }
+}
+
+#[cfg(feature = "rt")]
+impl Sim {
+    /// Sets what `AvailableParallelism` reports. The default is 1.
+    pub fn set_parallelism(&mut self, n: core::num::NonZeroUsize) -> &mut Self {
+        self.parallelism = n;
+        self
+    }
+}
+
+#[cfg(feature = "rt")]
+impl seam_core::Inspect<seam_core::ops::task::AvailableParallelism> for Sim {
+    fn inspect(&self, _: seam_core::ops::task::AvailableParallelism) -> core::num::NonZeroUsize {
+        self.parallelism
     }
 }
 

@@ -1,7 +1,11 @@
 //! Spawning and joining concurrent tasks.
 //!
 //! Spawning is an [`Acquisition`](crate::Acquisition): a task handle (or a
-//! task set) exists only inside a scope, like a file or a socket. When the scope succeeds,
+//! task set) exists only inside a scope, like a file or a socket. What a
+//! task is depends on the backend: a future on async backends (Tokio, the
+//! simulated runtime), a closure on an OS thread for `seam-std`. Threads
+//! cannot be aborted, so on `seam-std` a scope that fails waits for its
+//! threads instead, and handles do not implement [`Abort`]. When the scope succeeds,
 //! closing the handle waits for the task; when it fails, panics or is
 //! cancelled, abandoning it aborts the task. So a task cannot outlive the
 //! code that spawned it by accident. Perform [`Detach`] on the handle for a
@@ -70,10 +74,14 @@ use core::future::Future;
 use core::marker::PhantomData;
 
 /// Spawn one task, providing a handle of type `H` for the length of a
-/// scope. Closing the handle waits for the task; abandoning it aborts it.
+/// scope. Closing the handle waits for the task; abandoning it aborts it,
+/// or, on backends that cannot abort (threads), waits for it.
+///
+/// The task `F` is whatever the backend runs: a future on async backends
+/// (Tokio, the simulated runtime), a closure on threads (`seam-std`).
 pub struct Spawn<F, H> {
-    /// The task.
-    pub future: F,
+    /// The task: a future, or on threads a closure.
+    pub task: F,
     handle: PhantomData<fn() -> H>,
 }
 
@@ -90,10 +98,12 @@ pub struct SpawnSet<S> {
 
 /// Add a task to a set opened with [`SpawnSet`]. Performed on the set.
 ///
-/// A set with a fixed capacity hands the future back when it is full.
+/// A set with a fixed capacity hands the task back when it is full. As
+/// with [`Spawn`], the task is a future or a closure, depending on the
+/// backend.
 pub struct SpawnInto<F> {
-    /// The task.
-    pub future: F,
+    /// The task: a future, or on threads a closure.
+    pub task: F,
 }
 
 /// Wait for the next task in a set to finish, and take its output.
@@ -222,6 +232,15 @@ pub struct IsFinished;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct YieldNow;
 
+/// How many tasks can usefully run at the same time: the number of
+/// threads a backend can run in parallel. At least 1.
+///
+/// For sizing a pool of workers. On the std and Tokio backends this is
+/// `std::thread::available_parallelism`; in the simulation it is whatever
+/// the test sets.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AvailableParallelism;
+
 /// Why a task produced no output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -233,10 +252,10 @@ pub enum JoinError {
 }
 
 impl<F, H> Spawn<F, H> {
-    /// Describes spawning `future`.
-    pub fn new(future: F) -> Self {
+    /// Describes spawning `task`.
+    pub fn new(task: F) -> Self {
         Self {
-            future,
+            task,
             handle: PhantomData,
         }
     }
@@ -264,9 +283,9 @@ impl<S> Default for SpawnSet<S> {
 }
 
 impl<F> SpawnInto<F> {
-    /// Describes adding `future` to the set.
-    pub fn new(future: F) -> Self {
-        Self { future }
+    /// Describes adding `task` to the set.
+    pub fn new(task: F) -> Self {
+        Self { task }
     }
 }
 
@@ -389,7 +408,7 @@ impl From<JoinError> for std::io::Error {
     }
 }
 
-impl<F: Future, H> crate::Acquisition for Spawn<F, H> {
+impl<F, H> crate::Acquisition for Spawn<F, H> {
     type Resource = H;
     type Error = JoinError;
 }
@@ -404,7 +423,7 @@ impl<A: crate::Acquisition, B, H> crate::Acquisition for SpawnWith<A, B, H> {
     type Error = A::Error;
 }
 
-impl<F: Future> crate::Operation for SpawnInto<F> {
+impl<F> crate::Operation for SpawnInto<F> {
     type Outcome = Result<(), crate::Rejected<F>>;
 }
 
@@ -421,4 +440,5 @@ operations! {
     Detach => ();
     #[query] IsFinished => bool;
     YieldNow => ();
+    #[query] AvailableParallelism => core::num::NonZeroUsize;
 }

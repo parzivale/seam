@@ -214,6 +214,16 @@ be collected outside their scopes. Neither allocates in seam; storing tasks
 is the backend's business, so a backend for an executor with static task
 storage could implement them without `alloc`.
 
+**Threads.** On `seam-std` a task is a closure on its own OS thread, so
+the same `Spawn`, `SpawnSet` and `SpawnWith` acquisitions work for sync
+cores. A running thread cannot be stopped from outside, so thread handles do
+not implement `Abort`, and abandoning one (a failed or panicking scope, or a
+drop) joins it instead, as `std::thread::scope` does: no thread outlives its
+scope unless detached. Stopping a thread early is cooperative, through a
+`Shared<bool>` or a channel. Threads cannot borrow from their spawner:
+`std::thread::scope` hands out its scope only inside a callback, which does
+not fit an open-then-close provider without `unsafe`.
+
 **Leftovers.** A process killed outright runs no `Drop`. Temporary files are
 named `.<name>.seam-<suffix>.tmp`, and `SweepAtomic { dir, older_than }`
 removes ones old enough to be abandoned.
@@ -277,7 +287,11 @@ module's imports, like its bounds, show what it can do.
 
 ## Deferred
 
-- **Spawning in the std backend**, which could use threads.
+- **Threaded sync cores in the simulation.** A sync core that spawns
+  threads moves a clone of its capability into each, but `Sim` is not
+  `Clone` (its state is owned, not shared), and plain `Sim` has no thread
+  provider. Async cores are fully testable on the runtime; sync threaded
+  ones are not yet.
 
 - **Allocation as a capability.** The plan was an explicit `A: Allocator`
   generic in the core, fallible APIs only, and clippy bans on the `Global`

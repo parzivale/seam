@@ -159,6 +159,14 @@ mod signal {
     });
 }
 
+mod task {
+    use seam_core::ops::task::AvailableParallelism;
+
+    use super::*;
+
+    delegate! { inspect [] AvailableParallelism; }
+}
+
 #[cfg(feature = "net")]
 mod net {
     use seam_core::ops::net::Resolve;

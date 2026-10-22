@@ -3,7 +3,8 @@
 use core::future::Future;
 
 use seam_core::ops::task::{
-    Abort, Detach, IsFinished, Join, JoinError, JoinNext, Spawn, SpawnInto, SpawnSet, YieldNow,
+    Abort, AvailableParallelism, Detach, IsFinished, Join, JoinError, JoinNext, Spawn, SpawnInto,
+    SpawnSet, YieldNow,
 };
 use seam_core::{AsyncProvide, Inspect, Perform, Rejected, Token};
 
@@ -71,7 +72,7 @@ where
         op: Spawn<F, JoinHandle<F::Output>>,
         _: Token,
     ) -> Result<JoinHandle<F::Output>, JoinError> {
-        Ok(JoinHandle::new(tokio::spawn(op.future)))
+        Ok(JoinHandle::new(tokio::spawn(op.task)))
     }
 
     async fn close_async(&mut self, task: JoinHandle<F::Output>) -> Result<(), JoinError> {
@@ -128,7 +129,7 @@ where
     F: Future<Output = T> + Send + 'static,
 {
     fn perform(&mut self, op: SpawnInto<F>) -> Result<(), Rejected<F>> {
-        self.0.spawn(op.future);
+        self.0.spawn(op.task);
         Ok(())
     }
 }
@@ -174,3 +175,9 @@ impl<T> Drop for JoinHandle<T> {
 }
 
 async_op!(perform [] Tokio, YieldNow, |_s, _op| tokio::task::yield_now().await);
+
+impl Inspect<AvailableParallelism> for Tokio {
+    fn inspect(&self, _: AvailableParallelism) -> std::num::NonZeroUsize {
+        std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN)
+    }
+}

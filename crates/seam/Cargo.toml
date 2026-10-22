@@ -46,7 +46,7 @@ sync = ["seam-core/sync", "seam-std?/sync", "seam-tokio?/sync", "seam-test?/sync
 # runtime, which needs std.
 time = ["seam-core/time", "seam-std?/time", "seam-tokio?/time", "seam-test?/time"]
 random = ["seam-core/random", "seam-std?/random", "seam-tokio?/random", "seam-test?/random"]
-rt = ["seam-core/rt", "seam-tokio?/rt", "seam-test?/rt"]
+rt = ["seam-core/rt", "seam-std?/rt", "seam-tokio?/rt", "seam-test?/rt"]
 # `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type.
 alloc = ["seam-core/alloc"]
 

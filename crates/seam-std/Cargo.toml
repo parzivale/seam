@@ -23,7 +23,9 @@ process = ["seam-core/process"]
 random = ["seam-core/random"]
 io-std = ["seam-core/io-std"]
 sync = ["seam-core/sync"]
-full = ["fs", "net", "time", "env", "process", "random", "io-std", "sync"]
+# Tasks on OS threads.
+rt = ["seam-core/rt"]
+full = ["fs", "net", "time", "env", "process", "random", "io-std", "sync", "rt"]
 
 [package.metadata.docs.rs]
 all-features = true

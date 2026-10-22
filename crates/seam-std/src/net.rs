@@ -8,7 +8,12 @@ use seam_core::ops::net::{
 };
 use seam_core::{Inspect, Perform, Provide, Token};
 
+#[cfg(feature = "rt")]
+use seam_core::ops::task::SpawnWith;
+
 use crate::Std;
+#[cfg(feature = "rt")]
+use crate::task::JoinHandle;
 
 /// A connected TCP stream, acquired with [`TcpConnect`] or [`Accept`]. Read
 /// and write it with the `io` operations.
@@ -30,10 +35,14 @@ pub struct UdpSocket(std::net::UdpSocket);
 crate::io_ops!(TcpStream);
 
 impl TcpStream {
-    /// Flushes and shuts down both directions.
+    /// Flushes and shuts down both directions. A peer that has already
+    /// closed its end leaves nothing to shut down, which counts as success.
     fn commit(self) -> io::Result<()> {
         io::Write::flush(&mut &self.0)?;
-        self.0.shutdown(std::net::Shutdown::Both)
+        match self.0.shutdown(std::net::Shutdown::Both) {
+            Err(e) if e.kind() == io::ErrorKind::NotConnected => Ok(()),
+            result => result,
+        }
     }
 }
 
@@ -80,6 +89,42 @@ impl Provide<Accept<TcpStream>> for TcpListener {
 
     fn close(&mut self, stream: TcpStream) -> io::Result<()> {
         stream.commit()
+    }
+}
+
+/// Accepts a connection and handles it on a new thread, which owns the
+/// stream: a thread per connection. `body` is a closure; when it returns
+/// `Ok` the stream is shut down cleanly, and otherwise just closed.
+///
+/// Closing the provided handle joins the thread; perform `Join` on it to
+/// see the body's result.
+#[cfg(feature = "rt")]
+impl<B, T, E> Provide<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>> for TcpListener
+where
+    B: FnOnce(&mut TcpStream) -> Result<T, E> + Send + 'static,
+    T: Send + 'static,
+    E: From<io::Error> + Send + 'static,
+{
+    fn provide(
+        &mut self,
+        op: SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>,
+        _: Token,
+    ) -> io::Result<JoinHandle<Result<T, E>>> {
+        let (stream, _) = self.0.accept()?;
+        let body = op.body;
+        Ok(crate::task::spawn(
+            move || {
+                let mut stream = TcpStream(stream);
+                let value = body(&mut stream)?;
+                stream.commit()?;
+                Ok(value)
+            },
+            None,
+        ))
+    }
+
+    fn close(&mut self, task: JoinHandle<Result<T, E>>) -> io::Result<()> {
+        task.finish().map_err(io::Error::from)
     }
 }
 

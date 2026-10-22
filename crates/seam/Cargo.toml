@@ -19,35 +19,34 @@ seam-tokio = { workspace = true, optional = true }
 [features]
 default = []
 
-# Backends.
-std = ["seam-core/std", "dep:seam-std"]
-tokio = ["std", "dep:seam-tokio"]
-# The pure test backend. Adds no std on its own.
+# Backends. Nothing else turns these on: picking where effects really
+# happen is always the end user's choice.
+std = ["dep:seam-std"]
+tokio = ["dep:seam-tokio"]
 test = ["dep:seam-test"]
 
-# Capability groups. Each enables the operation types and, for whichever
-# backends are on, their implementations. Those whose types need std turn
-# on the std backend.
-fs = ["std", "seam-core/fs", "seam-std?/fs", "seam-tokio?/fs", "seam-test?/fs"]
-net = ["std", "seam-core/net", "seam-std?/net", "seam-tokio?/net", "seam-test?/net"]
-process = ["std", "seam-core/process", "seam-std?/process", "seam-tokio?/process", "seam-test?/process"]
-env = ["std", "seam-core/env", "seam-std?/env", "seam-tokio?/env", "seam-test?/env"]
-io-std = ["std", "seam-core/io-std", "seam-std?/io-std", "seam-tokio?/io-std", "seam-test?/io-std"]
-signal = ["std", "seam-core/signal", "seam-tokio?/signal", "seam-test?/signal"]
-# Usable without std: `Sleep`, `RandomU64`, `FillRandom`.
+# Capability groups. Each enables its operation types and, in whichever
+# backends are on, their implementations. None of them enables a backend.
+# Those whose types need std (`io::Error`, `Path`, ...) link std, but a
+# core using only them still performs no effects of its own.
+fs = ["seam-core/fs", "seam-std?/fs", "seam-tokio?/fs", "seam-test?/fs"]
+net = ["seam-core/net", "seam-std?/net", "seam-tokio?/net", "seam-test?/net"]
+process = ["seam-core/process", "seam-std?/process", "seam-tokio?/process", "seam-test?/process"]
+env = ["seam-core/env", "seam-std?/env", "seam-tokio?/env", "seam-test?/env"]
+io-std = ["seam-core/io-std", "seam-std?/io-std", "seam-tokio?/io-std", "seam-test?/io-std"]
+signal = ["seam-core/signal", "seam-tokio?/signal", "seam-test?/signal"]
+# Usable without std: `Sleep`, `Now`, `RandomU64`, `FillRandom`.
 time = ["seam-core/time", "seam-std?/time", "seam-tokio?/time", "seam-test?/time"]
 random = ["seam-core/random", "seam-std?/random", "seam-tokio?/random", "seam-test?/random"]
 
-# Tokio runtime features, named as in Tokio.
-rt = ["tokio", "seam-tokio/rt"]
-rt-multi-thread = ["rt", "seam-tokio/rt-multi-thread"]
-test-util = ["tokio", "seam-tokio/test-util"]
+# Every capability group. Still no backend.
+full = ["fs", "net", "process", "env", "io-std", "signal", "time", "random"]
 
-full = [
-    "std", "tokio", "test",
-    "fs", "net", "process", "env", "io-std", "signal", "time", "random",
-    "rt", "rt-multi-thread",
-]
+# Tokio runtime options, named as in Tokio. They configure the Tokio
+# backend and do nothing unless `tokio` is also enabled.
+rt = ["seam-tokio?/rt"]
+rt-multi-thread = ["rt", "seam-tokio?/rt-multi-thread"]
+test-util = ["seam-tokio?/test-util"]
 
 [package.metadata.docs.rs]
 all-features = true

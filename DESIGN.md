@@ -73,6 +73,11 @@ the edge, and newtype handles that expose no std or Tokio I/O traits and no
 way back to the inner value. Every effect on them goes through
 `Perform`/`Inspect`.
 
+In the `seam` umbrella crate, capability-group features (`fs`, `time`, ...)
+never enable a backend; backends (`std`, `tokio`, `test`) are only ever
+enabled by the end user. Tokio's runtime options (`rt`, ...) do nothing
+without `tokio`.
+
 Feature flags: `seam-std` has `fs`, `net`, `time`, `env`, `process`,
 `random`, `io-std`. `seam-tokio` copies Tokio's names (`rt`,
 `rt-multi-thread`, `fs`, `net`, `time`, `process`, `io-std`, `signal`,

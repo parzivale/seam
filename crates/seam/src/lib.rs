@@ -11,9 +11,12 @@
 //!
 //! # Quick start
 //!
+//! Pick the capability groups the core uses, plus a backend to run it on.
+//! Backends are never turned on for you:
+//!
 //! ```toml
 //! [dependencies]
-//! seam = { version = "0.1", features = ["std", "fs", "io-std"] }
+//! seam = { version = "0.1", features = ["fs", "io-std", "std"] }
 //!
 //! [dev-dependencies]
 //! seam = { version = "0.1", features = ["test"] }
@@ -96,8 +99,8 @@
 //!
 //! Each example is a real program whose tests run its core in the
 //! simulation. Run one with `cargo run -p seam --example <name> --features
-//! full`, and test them all with `cargo test -p seam --examples --features
-//! full`.
+//! full,std,tokio,rt,test`, and test them all with `cargo test -p seam
+//! --examples --features full,std,tokio,rt,test`.
 //!
 //! - `guess`: a number guessing game. Randomness and stdio, with seeded,
 //!   scripted tests, including a test of a playing strategy.
@@ -113,18 +116,41 @@
 //! `seam` is `no_std` with no default features: you get the traits, the
 //! prelude and [`Push`].
 //!
-//! | Feature | Gives you |
+//! Features come in two independent kinds. **Capability groups** choose
+//! which operations exist; **backends** choose where effects really happen.
+//! No capability group turns on a backend, so a library crate can depend on
+//! `seam` with only the groups its core needs, and only the final binary
+//! (or its tests) picks a backend.
+//!
+//! | Capability group | Gives you |
 //! |---|---|
 //! | `time`, `random` | operation types; no std needed |
-//! | `fs`, `net`, `process`, `env`, `io-std` | operation types (pulls in std) |
+//! | `fs`, `net`, `process`, `env`, `io-std`, `signal` | operation types (links std for their types) |
+//! | `full` | every group above |
+//!
+//! | Backend | Gives you |
+//! |---|---|
 //! | `std` | the std backend, `seam::stdlib` |
 //! | `tokio` | the Tokio backend, `seam::tokio` |
 //! | `test` | the pure test backend, `seam::test`: a simulated world |
-//! | `signal` | `CtrlC` (Tokio and test backends) |
-//! | `rt`, `rt-multi-thread`, `test-util` | Tokio-only, as in Tokio |
-//! | `full` | everything |
+//! | `rt`, `rt-multi-thread`, `test-util` | Tokio runtime options, as in Tokio; only with `tokio` |
 //!
 //! Each backend implements exactly the capability groups that are enabled.
+//! A typical split:
+//!
+//! ```toml
+//! # The library holding the core: operations only.
+//! [dependencies]
+//! seam = { version = "0.1", features = ["fs", "time"] }
+//!
+//! # The binary: also picks the real backend...
+//! [dependencies]
+//! seam = { version = "0.1", features = ["fs", "time", "std"] }
+//!
+//! # ...and its tests pick the simulation.
+//! [dev-dependencies]
+//! seam = { version = "0.1", features = ["test"] }
+//! ```
 #![no_std]
 
 pub use seam_core::*;

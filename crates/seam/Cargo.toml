@@ -88,3 +88,8 @@ test = true
 name = "custom_ops"
 required-features = ["std", "test", "fs", "env"]
 test = true
+
+[[example]]
+name = "word_count"
+required-features = ["std", "test", "fs", "env", "io-std", "rt", "sync"]
+test = true

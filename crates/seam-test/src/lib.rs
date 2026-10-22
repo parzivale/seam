@@ -102,12 +102,17 @@
 //! the next task to run is chosen from a seed so that interleavings are
 //! reproducible, and a deadlock is reported rather than hanging.
 //!
+//! For sync cores that spawn threads, the `threads` module does the same
+//! with real threads, run one at a time: every effect is a scheduling point
+//! chosen from a seed, blocking operations block the simulated thread until
+//! another makes them possible, and `Sleep` uses the same virtual clock.
+//!
 //! # Features
 //!
 //! `time` and `random` work without std. `fs`, `net`, `env`, `process`,
 //! `io-std`, `signal` and `sync` need std's types, but still make no system
-//! calls of their own. `rt` adds the deterministic runtime. `full` turns on
-//! everything.
+//! calls of their own. `rt` adds the deterministic runtime and threads.
+//! `full` turns on everything.
 #![no_std]
 
 #[cfg(feature = "std")]
@@ -131,6 +136,8 @@ mod signal;
 mod stdio;
 #[cfg(feature = "sync")]
 pub mod sync;
+#[cfg(feature = "rt")]
+pub mod threads;
 #[cfg(feature = "time")]
 mod time;
 #[cfg(any(

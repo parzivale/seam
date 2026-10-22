@@ -155,8 +155,38 @@ behave identically in both modes. Those that would wait are native async:
 
 Handles outlive the borrow of the `Sim` that made them, so the world state
 they reach (filesystem, network, wall clock) is shared behind an
-`Arc<Mutex<_>>`. That is the crate's one use of shared state; it is linted
-with `templates/clippy.toml`, with an allow on that module alone.
+`Arc<Mutex<_>>`. That, the runtimes' own bookkeeping, and the simulated
+cells and channels are the crate's only shared state; it is linted with
+`templates/clippy.toml`, with an allow on each of those modules alone.
+
+### Deterministic threads
+
+`seam_test::threads::Threads` is the same idea for sync cores that spawn
+threads. Each simulated thread runs on a real OS thread, so a core's
+closures, blocking calls and stack all work as written, but a scheduler
+lets only one run at a time, handing over through a condvar.
+
+- **Scheduling points.** Every operation on `ThreadSim`, and on its
+  channels, cells, sockets and thread handles, first hands control to the
+  scheduler, which draws the next runnable thread from its seed. Cores
+  share state only through those operations, so switching at each one
+  reaches every interleaving that can change what a core observes, and
+  the same seed replays the same one.
+- **Blocking.** An operation that would block a real thread polls the
+  simulated world with a waker that marks its thread runnable, and leaves
+  the runnable set until woken: channel receives and sends to a full
+  channel, joins, reads, accepts, receives, and `CtrlC`. `Sleep` registers
+  a timer; with no thread runnable, the clock jumps to the earliest one.
+  With no timer either, the run halts as a deadlock.
+- **Cells behave as mutexes.** An `Update` holds its cell for the whole
+  closure, even if the closure performs effects (and so lets other threads
+  run); other threads touching the cell block until it is released. A cell
+  updated from inside its own update is a deadlock, as with a real mutex.
+- **Thread rules match `seam-std`.** No abort; a scope that fails or
+  panics joins its threads, unless detached; a panic is `Panicked`.
+- **Halting.** When the main closure returns, or on a deadlock, every
+  other thread is unwound with a private payload (via `resume_unwind`, so
+  no panic message), and drops that would block return at once instead.
 
 ## Resources: forced scopes
 
@@ -286,12 +316,6 @@ anything here.
 module's imports, like its bounds, show what it can do.
 
 ## Deferred
-
-- **Threaded sync cores in the simulation.** A sync core that spawns
-  threads moves a clone of its capability into each, but `Sim` is not
-  `Clone` (its state is owned, not shared), and plain `Sim` has no thread
-  provider. Async cores are fully testable on the runtime; sync threaded
-  ones are not yet.
 
 - **Allocation as a capability.** The plan was an explicit `A: Allocator`
   generic in the core, fallible APIs only, and clippy bans on the `Global`

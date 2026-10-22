@@ -112,6 +112,27 @@ rt.block_on(|sim| async move { serve(&mut sim.clone(), addr).await /* ... */ });
   `echo_server` example's whole accept loop is tested with concurrent
   clients under 16 schedules.
 
+For sync cores that spawn threads, `seam::test::threads::Threads` does the
+same with real threads run one at a time:
+
+```rust
+let threads = Threads::with_seed(sim, seed);
+threads.run(|mut sim| run(&mut sim)); // `sim` is a cloneable `ThreadSim`
+```
+
+- Every effect is a scheduling point, where the seed picks which runnable
+  thread continues. Threads can only share state through seam's cells and
+  channels, so this reaches every interleaving a core can observe.
+- Receives, sends to a full channel, joins, reads, accepts and `CtrlC`
+  block the simulated thread until another makes them possible; `Sleep`
+  uses the same jumping virtual clock; deadlocks are reported.
+- Thread handles follow `seam-std`'s rules: no abort, and a failed scope
+  joins its threads unless they were detached.
+- The `word_count` example runs one worker-pool core on `seam-std`'s OS
+  threads in `main` and on `Threads` in its tests, under 48 schedules. Its
+  queue pop is one `Update`; made a separate load and store, seed 0 counts
+  files twice.
+
 ## Resources and cancellation
 
 A core never owns a file, socket or task. It acquires one for the length of

@@ -23,6 +23,7 @@ impl Operation for Set {
 
 #[derive(Default)]
 struct Cell32(u32);
+impl seam_core::Capability for Cell32 {}
 
 impl Inspect<Get> for Cell32 {
     fn inspect(&self, _: Get) -> u32 {
@@ -142,6 +143,7 @@ fn block_on_parks_until_woken() {
 }
 
 /// A test provider that records what happened to each lease it hands out.
+impl seam_core::Capability for Leases {}
 #[derive(Default)]
 struct Leases {
     log: Vec<&'static str>,

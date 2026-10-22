@@ -104,3 +104,7 @@ impl<T> Perform<TryRecvMsg<T>> for Receiver<T> {
         self.0.perform(op)
     }
 }
+
+// Every capability type opts in to seam's lifts.
+impl<T> seam_core::Capability for Receiver<T> {}
+impl<T> seam_core::Capability for Sender<T> {}

@@ -36,3 +36,5 @@ operations! {
     RandomU64 => u64;
     FillRandom<'_> => ();
 }
+
+crate::root::in_kind!(crate::kinds::Random: [] RandomU64, ['a] FillRandom<'a>);

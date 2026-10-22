@@ -239,3 +239,7 @@ fn file_info(m: std::fs::Metadata) -> FileInfo {
         modified: m.modified().ok(),
     }
 }
+
+// Every capability type opts in to seam's lifts.
+impl seam_core::Capability for AtomicFile {}
+impl seam_core::Capability for File {}

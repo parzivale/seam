@@ -220,3 +220,5 @@ mod timeouts {
         }
     }
 }
+
+crate::root::in_kind!(crate::kinds::Net: [] Resolve, [S] TcpConnect<S>, [L] TcpBind<L>, [U] UdpBind<U>);

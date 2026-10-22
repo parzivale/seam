@@ -284,3 +284,7 @@ impl Inspect<AvailableParallelism> for Std {
         thread::available_parallelism().unwrap_or(NonZeroUsize::MIN)
     }
 }
+
+// Every capability type opts in to seam's lifts.
+impl<T> seam_core::Capability for JoinHandle<T> {}
+impl<T> seam_core::Capability for TaskSet<T> {}

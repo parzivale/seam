@@ -59,3 +59,5 @@ operations! {
     RunCommand => io::Result<Output>;
     Exit => Infallible;
 }
+
+crate::root::in_kind!(crate::kinds::Process: [] RunCommand, [] Exit);

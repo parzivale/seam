@@ -435,3 +435,9 @@ impl<F> crate::Acquisition for Open<F> {
     type Resource = F;
     type Error = io::Error;
 }
+
+crate::root::in_kind!(crate::kinds::Fs:
+    [] ReadFile, [] ReadToString, [] WriteFile, [] Metadata, [] ReadDir, [] CreateDir,
+    [] RemoveFile, [] RemoveDir, [] Rename, [] CopyFile, [] SweepAtomic,
+    [F] Open<F>, [F] CreateAtomic<F>,
+);

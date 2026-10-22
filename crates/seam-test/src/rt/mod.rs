@@ -511,3 +511,6 @@ impl fmt::Debug for AsyncSim {
         f.debug_struct("AsyncSim").finish_non_exhaustive()
     }
 }
+
+// Every capability type opts in to seam's lifts.
+impl seam_core::Capability for AsyncSim {}

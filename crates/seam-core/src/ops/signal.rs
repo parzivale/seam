@@ -24,3 +24,5 @@ impl crate::ops::time::TimesOut for CtrlC {
         Err(crate::ops::time::io_timed_out())
     }
 }
+
+crate::root::in_kind!(crate::kinds::Signal: [] CtrlC);

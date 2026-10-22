@@ -37,3 +37,5 @@ operations! {
     EPrint<'_> => io::Result<()>;
     ReadLine => io::Result<Option<String>>;
 }
+
+crate::root::in_kind!(crate::kinds::Stdio: ['a] Print<'a>, ['a] EPrint<'a>, [] ReadLine);

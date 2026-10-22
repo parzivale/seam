@@ -386,3 +386,5 @@ impl<T> crate::ops::time::TimesOut for RecvMsg<T> {
         Err(RecvError::Empty)
     }
 }
+
+crate::root::in_kind!(crate::kinds::Sync: [S, R] Channel<S, R>, [T, C] Share<T, C>);

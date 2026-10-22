@@ -176,3 +176,8 @@ where
         Ok(value)
     }))
 }
+
+// Every capability type opts in to seam's lifts.
+impl seam_core::Capability for TcpListener {}
+impl seam_core::Capability for TcpStream {}
+impl seam_core::Capability for UdpSocket {}

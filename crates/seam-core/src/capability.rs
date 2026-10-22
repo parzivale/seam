@@ -101,16 +101,53 @@ pub trait Inspect<Q: Query> {
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not have the capability to perform `{O}`",
     label = "missing capability `Perform<{O}>`",
-    note = "add a `Perform<{O}>` bound, or pass a value that implements it"
+    note = "add a `Perform<{O}>` bound, or pass a value that implements it",
+    note = "a query is also performed through `Inspect<{O}>`, if the type opts in to the lifts with `impl seam_core::Capability for {Self} {{}}`"
 )]
 pub trait Perform<O: Operation> {
     /// Runs the operation.
     fn perform(&mut self, op: O) -> O::Outcome;
 }
 
+/// Opts a type in to seam's lifts: every [`Inspect`] it implements is also
+/// a [`Perform`], and every sync operation also works from async code
+/// (`AsyncInspect`, `AsyncPerform`, `SendInspect`, `SendPerform`,
+/// `AsyncProvide`).
+///
+/// Implement it, with no body, on any capability type you write:
+///
+/// ```
+/// use seam_core::{Capability, Inspect, Operation, Perform, Query};
+///
+/// struct Now;
+/// impl Operation for Now {
+///     type Outcome = u64;
+/// }
+/// impl Query for Now {}
+///
+/// struct Fixed(u64);
+/// impl Capability for Fixed {}
+/// impl Inspect<Now> for Fixed {
+///     fn inspect(&self, _: Now) -> u64 {
+///         self.0
+///     }
+/// }
+///
+/// fn tick<C: Perform<Now>>(c: &mut C) -> u64 {
+///     c.perform(Now) // a query, performed: thanks to the lift
+/// }
+/// assert_eq!(tick(&mut Fixed(3)), 3);
+/// ```
+///
+/// The lifts are opt-in, rather than for every type, so that a
+/// [`Root`](crate::Root) can forward each form to its parts itself: a sync
+/// part's operations through the sync traits, an async part's through the
+/// async ones. Every capability type in seam's backends implements it.
+pub trait Capability {}
+
 /// Anything that can inspect can also perform the same query, the way
 /// `&mut T` reborrows as `&T`.
-impl<T: Inspect<Q> + ?Sized, Q: Query> Perform<Q> for T {
+impl<T: Inspect<Q> + Capability + ?Sized, Q: Query> Perform<Q> for T {
     fn perform(&mut self, query: Q) -> Q::Outcome {
         self.inspect(query)
     }

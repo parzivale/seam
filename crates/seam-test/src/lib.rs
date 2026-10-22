@@ -273,3 +273,6 @@ impl core::fmt::Debug for Sim {
 fn error(kind: std::io::ErrorKind, msg: &'static str) -> std::io::Error {
     std::io::Error::new(kind, msg)
 }
+
+// Every capability type opts in to seam's lifts.
+impl seam_core::Capability for Sim {}

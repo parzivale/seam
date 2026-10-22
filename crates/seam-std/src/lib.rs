@@ -144,3 +144,6 @@ macro_rules! io_ops {
 }
 #[cfg(any(feature = "fs", feature = "net"))]
 use io_ops;
+
+// Every capability type opts in to seam's lifts.
+impl seam_core::Capability for Std {}

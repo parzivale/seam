@@ -252,3 +252,12 @@ operations! {
 operations! {
     #[query] WallClock => std::time::SystemTime;
 }
+
+crate::root::in_kind!(crate::kinds::Time: [] Sleep, [] Now);
+#[cfg(feature = "std")]
+crate::root::in_kind!(crate::kinds::Time: [] WallClock);
+
+/// A timed operation is served by whatever serves the operation.
+impl<O: crate::InKind> crate::InKind for Timeout<O> {
+    type Kind = O::Kind;
+}

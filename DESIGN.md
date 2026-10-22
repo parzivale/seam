@@ -342,6 +342,47 @@ removed. Otherwise it would still move the clock when nothing else is left
 to run, and a deadlock would be reported later than it happened; the tests
 check for exactly that.
 
+## Roots
+
+A `Root<A>` is one capability made of parts: `A` is a struct of them, and
+each part serves one or more kinds of operation. Every operation that goes
+through a root names its kind (`InKind`); operations on handles (`Read`,
+`RecvMsg`, `Join`) never do, since the handle a part hands out implements
+them itself. A kind is a marker type, so a program's own kinds are as cheap
+to define as seam's (`kinds::Fs`, `kinds::Time`, ...).
+
+The root implements each capability trait once, generically: find the part
+serving the operation's kind (`<O::Kind as Pick<A>>::Part`) and forward to
+it in the same form. Two things make that legal in Rust:
+
+- **Routing by kind, through `Pick`.** Rust cannot express "forward to
+  whichever part implements this operation": two parts might, and
+  coherence rejects the rule outright, not just the duplicate. `Pick<A>` is
+  implemented on a kind, per root, naming the field that serves it. A kind
+  listed twice is then a plain "conflicting implementations" error, and a
+  missing one is "the root `App` has no part for `kinds::Fs`".
+- **Opt-in lifts.** seam's blanket impls (an `Inspect` is a `Perform`, a
+  sync operation is an async one) would collide with the root's own
+  forwarding impls: both would claim, say, `AsyncPerform<Sleep>` for the
+  root. So the lifts apply only to types that implement `Capability`, a
+  marker every backend type carries and `Root` does not. The root then
+  forwards each form itself, which is what lets a sync `Std` part and an
+  async `Tokio` part sit in one root. The cost is one line on each
+  capability type a program writes: `impl Capability for Memory {}`.
+
+The `Send` forms hand back the part's own future, so parts behind them are
+`'static`. A part can serve several kinds, which is how a whole backend
+(`Std`, `Tokio`, `Sim`, `ThreadSim`) is a part as it stands; nothing had to
+be split. `root!` is sugar for the struct and its `Pick` impls. A root has
+no singleton or lock: roots are built at the edge, and the clippy template
+is what keeps cores from reaching for effects directly.
+
+Alternatives explored and set aside are fixed per-domain slots
+(`Root<Env, Time, Fs, ...>`: no room for a program's own kinds), a tuple
+with type-level keys (two root types and bad errors), macro-generated roots
+that list every operation, and accessors (`c.part::<Fs>()`), which would
+lose plain `c.perform(op)` calls.
+
 ## Prelude
 
 `seam_core::prelude` (re-exported as `seam::prelude`) holds the traits and
@@ -356,20 +397,14 @@ module's imports, like its bounds, show what it can do.
   this waits.
 - **`Pin<Box<_>>` sink variant** for writers that are not `Unpin`.
 - **Child process handles** (only run-to-completion today).
-- **Composed roots.** A root built from smaller parts, so programs can mix
-  backends (Tokio networking with a simulated filesystem) and add their own
-  effects to it. Explored and set aside: it needs a macro, because Rust cannot
-  pick "whichever part implements this operation" from a tuple. The workable
-  version was `root! { seam_tokio: Sleep, Now; seam_std: Var }`, where each
-  backend publishes a macro table of the operations it provides (sync or
-  async) and `root!` writes one forwarding impl per listed operation. Std
-  and Tokio stay single types meanwhile; their small overlap (env, random,
-  wall clock, about 100 lines) can be shared internally without it.
 
 ## Open questions
 
 - How capability requirements are bundled in signatures. Long `where`
   clauses get unwieldy; a single requirements trait with a blanket impl, plus
   `impl Trait`, is one option.
+- Whether a root's kinds should be finer than one per ops module. Today a
+  root cannot take `Now` from one part and `Sleep` from another (both are
+  `kinds::Time`) without a small part combining the two.
 - Whether to add per-resource identity for conflict detection, or leave
   ordering to the caller.

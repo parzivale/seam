@@ -16,6 +16,9 @@ seam-std = { workspace = true, optional = true }
 seam-test = { workspace = true, optional = true }
 seam-tokio = { workspace = true, optional = true }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
+
 # `seam` is no_std by default: only the traits, `Push` and the no_std
 # operation types. std is pulled in when you enable a capability whose
 # operation types need it, or a backend.

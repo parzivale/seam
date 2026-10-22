@@ -37,8 +37,9 @@
 //!     a + &b
 //! }
 //!
-//! /// ...and tested against a plain sync fake.
+//! /// ...and tested against a plain sync fake, which opts in to the lifts.
 //! struct Fake;
+//! impl seam_core::Capability for Fake {}
 //! impl Perform<Fetch> for Fake {
 //!     fn perform(&mut self, op: Fetch) -> String {
 //!         format!("<{}>", op.0)
@@ -61,12 +62,13 @@ use core::pin::pin;
 use core::task::Waker;
 use core::task::{Context, Poll};
 
-use crate::{Inspect, Operation, Perform, Query};
+use crate::{Capability, Inspect, Operation, Perform, Query};
 
 /// Shared access, async: run a query and wait for the outcome.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not have the capability to inspect `{Q}` asynchronously",
-    label = "missing capability `AsyncInspect<{Q}>`"
+    label = "missing capability `AsyncInspect<{Q}>`",
+    note = "a sync `Inspect<{Q}>` also works here if the type opts in to the lifts with `impl seam_core::Capability for {Self} {{}}`"
 )]
 pub trait AsyncInspect<Q: Query> {
     /// Runs the query.
@@ -76,7 +78,8 @@ pub trait AsyncInspect<Q: Query> {
 /// Exclusive access, async: run an operation and wait for the outcome.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not have the capability to perform `{O}` asynchronously",
-    label = "missing capability `AsyncPerform<{O}>`"
+    label = "missing capability `AsyncPerform<{O}>`",
+    note = "a sync `Perform<{O}>` also works here if the type opts in to the lifts with `impl seam_core::Capability for {Self} {{}}`"
 )]
 pub trait AsyncPerform<O: Operation> {
     /// Runs the operation.
@@ -86,7 +89,8 @@ pub trait AsyncPerform<O: Operation> {
 /// [`AsyncInspect`] with a `Send` future, for multithreaded runtimes.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not have the capability to inspect `{Q}` from a `Send` future",
-    label = "missing capability `SendInspect<{Q}>`"
+    label = "missing capability `SendInspect<{Q}>`",
+    note = "a sync `Inspect<{Q}>` also works here if the type opts in to the lifts with `impl seam_core::Capability for {Self} {{}}`"
 )]
 pub trait SendInspect<Q: Query> {
     /// Runs the query.
@@ -96,32 +100,33 @@ pub trait SendInspect<Q: Query> {
 /// [`AsyncPerform`] with a `Send` future, for multithreaded runtimes.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not have the capability to perform `{O}` from a `Send` future",
-    label = "missing capability `SendPerform<{O}>`"
+    label = "missing capability `SendPerform<{O}>`",
+    note = "a sync `Perform<{O}>` also works here if the type opts in to the lifts with `impl seam_core::Capability for {Self} {{}}`"
 )]
 pub trait SendPerform<O: Operation> {
     /// Runs the operation.
     fn perform_send(&mut self, op: O) -> impl Future<Output = O::Outcome> + Send;
 }
 
-impl<T: Inspect<Q> + ?Sized, Q: Query> AsyncInspect<Q> for T {
+impl<T: Inspect<Q> + Capability + ?Sized, Q: Query> AsyncInspect<Q> for T {
     async fn inspect_async(&self, query: Q) -> Q::Outcome {
         self.inspect(query)
     }
 }
 
-impl<T: Perform<O> + ?Sized, O: Operation> AsyncPerform<O> for T {
+impl<T: Perform<O> + Capability + ?Sized, O: Operation> AsyncPerform<O> for T {
     async fn perform_async(&mut self, op: O) -> O::Outcome {
         self.perform(op)
     }
 }
 
-impl<T: Inspect<Q> + Sync + ?Sized, Q: Query + Send> SendInspect<Q> for T {
+impl<T: Inspect<Q> + Capability + Sync + ?Sized, Q: Query + Send> SendInspect<Q> for T {
     async fn inspect_send(&self, query: Q) -> Q::Outcome {
         self.inspect(query)
     }
 }
 
-impl<T: Perform<O> + Send + ?Sized, O: Operation + Send> SendPerform<O> for T {
+impl<T: Perform<O> + Capability + Send + ?Sized, O: Operation + Send> SendPerform<O> for T {
     async fn perform_send(&mut self, op: O) -> O::Outcome {
         self.perform(op)
     }
@@ -143,6 +148,7 @@ impl<T: Perform<O> + Send + ?Sized, O: Operation + Send> SendPerform<O> for T {
 /// }
 ///
 /// struct Calc;
+/// impl seam_core::Capability for Calc {} // so it works from async code
 /// impl Perform<Double> for Calc {
 ///     fn perform(&mut self, op: Double) -> u32 {
 ///         op.0 * 2

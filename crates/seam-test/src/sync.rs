@@ -236,3 +236,8 @@ impl<'a, T, R> Perform<Update<'a, T, R>> for Shared<T> {
         (op.0)(&mut lock(&self.0))
     }
 }
+
+// Every capability type opts in to seam's lifts.
+impl<T> seam_core::Capability for Receiver<T> {}
+impl<T> seam_core::Capability for Sender<T> {}
+impl<T> seam_core::Capability for Shared<T> {}

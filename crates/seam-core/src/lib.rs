@@ -47,6 +47,7 @@
 //! //    database; here it is a test fake.
 //! #[derive(Default)]
 //! struct Memory(Option<u64>);
+//! impl Capability for Memory {} // opts in to the lifts: its `Inspect` is a `Perform` too
 //! impl Inspect<Load> for Memory {
 //!     fn inspect(&self, _: Load) -> Option<u64> {
 //!         self.0
@@ -107,8 +108,10 @@ mod operation;
 pub mod ops;
 pub mod prelude;
 mod push;
+pub mod root;
 
 pub use acquire::{Acquire, Acquisition, AsyncAcquire, AsyncProvide, Provide, Token};
-pub use capability::{Inspect, Perform};
+pub use capability::{Capability, Inspect, Perform};
 pub use operation::{Operation, Query};
 pub use push::{Push, Rejected};
+pub use root::{InKind, Pick, Root, kinds};

@@ -71,6 +71,41 @@ A backend implements exactly the capability groups that are enabled, so
 `features = ["tokio", "rt", "net", "time"]` gives you Tokio-backed
 networking and clocks and nothing else.
 
+## Roots
+
+A program's edge can hand its core one capability built from parts: a
+`Root`. Each part serves one or more kinds of operation (`kinds::Fs`,
+`kinds::Time`, ...), so one root can mix backends, sync and async parts,
+simulated parts, and the program's own effects:
+
+```rust
+seam::root! {
+    struct App {
+        std: Std => [kinds::Env, kinds::Random],
+        tokio: Tokio => [kinds::Time, kinds::Fs, kinds::Net],
+        store: Redis => [Store],            // the program's own kind
+    }
+}
+let mut root = Root::new(App { std: Std::new(), tokio: Tokio::new(), store });
+serve(&mut root).await;                     // bounded as usual: SendPerform<Sleep>, ...
+```
+
+The root forwards each operation to the part serving its kind, in whichever
+form that part implements: sync parts through the sync traits, async parts
+through the async ones. Each kind is served once; listing two parts for one
+kind fails to compile. A program's own kind is a marker type, and each of
+its operations names it:
+
+```rust
+struct Store;
+impl InKind for Get { type Kind = Store; }
+```
+
+`root!` only writes a struct and one `Pick` impl per kind, which can also be
+written by hand. Capability types opt in to seam's lifts (an `Inspect` is
+also a `Perform`, a sync operation also works from async code) with
+`impl Capability for MyType {}`; every type in seam's backends does.
+
 ## Testing a core
 
 `seam-test`'s `Sim` stands in for a real backend. Set up the world, run the

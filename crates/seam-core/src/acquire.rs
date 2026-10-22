@@ -146,7 +146,8 @@ pub trait Provide<A: Acquisition> {
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot provide `{A}` asynchronously",
     label = "missing capability `AsyncProvide<{A}>`",
-    note = "add an `AsyncProvide<{A}>` bound, or pass a value that implements it"
+    note = "add an `AsyncProvide<{A}>` bound, or pass a value that implements it",
+    note = "a sync `Provide<{A}>` also works here if the type opts in to the lifts with `impl seam_core::Capability for {Self} {{}}`"
 )]
 pub trait AsyncProvide<A: Acquisition> {
     /// Opens the resource. Called only from a scope.
@@ -171,7 +172,7 @@ pub trait AsyncProvide<A: Acquisition> {
 
 impl<T, A> AsyncProvide<A> for T
 where
-    T: Provide<A> + Send,
+    T: Provide<A> + crate::Capability + Send,
     A: Acquisition + Send,
     A::Resource: Send,
 {

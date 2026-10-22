@@ -58,8 +58,9 @@
 //!
 //! **Capabilities** run operations. [`Inspect<Q>`] runs a query through
 //! `&self`; [`Perform<O>`] runs anything through `&mut self`. Every
-//! `Inspect` is also a `Perform`, so a stronger capability is accepted where
-//! a weaker one is asked for. A core asks for capabilities as bounds and
+//! `Inspect` is also a `Perform` (for types that opt in with
+//! [`Capability`], as every backend type does), so a stronger capability is
+//! accepted where a weaker one is asked for. A core asks for capabilities as bounds and
 //! receives one value that provides them.
 //!
 //! **Backends** provide capabilities over the real world, and are chosen
@@ -75,10 +76,32 @@
 //! Tokio I/O traits, so effects on those also go through the capability
 //! traits.
 //!
+//! A [`Root`] combines backends, and a program's own effects, into one
+//! capability: each part serves some [`kinds`] of operation.
+//!
+//! ```
+//! # #[cfg(all(feature = "std", feature = "test", feature = "env", feature = "time"))] {
+//! use seam::kinds;
+//! use seam::ops::env::Var;
+//! use seam::ops::time::Now;
+//! use seam::prelude::*;
+//!
+//! seam::root! {
+//!     struct App {
+//!         std: seam::stdlib::Std => [kinds::Env],
+//!         clock: seam::test::Sim => [kinds::Time], // a simulated clock
+//!     }
+//! }
+//! let root = Root::new(App { std: seam::stdlib::Std::new(), clock: seam::test::Sim::new() });
+//! let _home = root.inspect(Var::new("HOME"));
+//! assert_eq!(root.inspect(Now).since_epoch().as_secs(), 0);
+//! # }
+//! ```
+//!
 //! # Async
 //!
 //! Async capabilities are in [`future`]. Every sync capability is also an
-//! async one, so an async core runs on `Std`, `Sim` or a hand-written fake
+//! async one (again, for types that opt in with [`Capability`]), so an async core runs on `Std`, `Sim` or a hand-written fake
 //! through [`block_on`](future::block_on), and on Tokio through
 //! `seam::tokio::block_on`. Write `SendPerform`/`SendInspect` bounds for a
 //! core that must run on a multithreaded runtime.

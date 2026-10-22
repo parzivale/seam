@@ -67,6 +67,7 @@ dependencies = [
  "seam-rs-std",
  "seam-rs-test",
  "seam-rs-tokio",
+ "tokio",
 ]
 
 [[package]]

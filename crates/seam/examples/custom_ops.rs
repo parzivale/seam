@@ -13,6 +13,10 @@
 //!   goes through an atomic file in a scope, so a crash, an error or a
 //!   cancellation mid-write never leaves a half-written store.
 //!
+//! The store's operations are a kind of their own, `kv::Kv`, so `main` can
+//! put the store in a [`Root`](seam::Root) next to `Std`: one capability
+//! that serves both the program's own operations and seam's.
+//!
 //! ```text
 //! cargo run -p seam-rs --example custom_ops --features std,test,fs,env
 //! ```
@@ -31,7 +35,11 @@ use seam::prelude::*;
 mod kv {
     use std::io;
 
-    use seam::{Operation, Query};
+    use seam::{InKind, Operation, Query};
+
+    /// The kind of these operations, so a root can tell which part serves
+    /// them.
+    pub struct Kv;
 
     /// Read a key.
     pub struct Get(pub String);
@@ -46,6 +54,13 @@ mod kv {
 
     impl Operation for Put {
         type Outcome = io::Result<()>;
+    }
+
+    impl InKind for Get {
+        type Kind = Kv;
+    }
+    impl InKind for Put {
+        type Kind = Kv;
     }
 }
 use kv::{Get, Put};
@@ -70,6 +85,7 @@ fn visit<K: Inspect<Get> + Perform<Put>>(store: &mut K, page: &str) -> io::Resul
 #[derive(Default)]
 #[cfg_attr(not(test), allow(dead_code))] // used by the tests
 struct Memory(BTreeMap<String, String>);
+impl Capability for Memory {}
 
 impl Inspect<Get> for Memory {
     fn inspect(&self, op: Get) -> io::Result<Option<String>> {
@@ -91,6 +107,7 @@ struct FileStore<C, F> {
     path: PathBuf,
     atomic: PhantomData<fn() -> F>,
 }
+impl<C, F> Capability for FileStore<C, F> {}
 
 impl<C, F> FileStore<C, F> {
     fn new(fs: C, path: impl Into<PathBuf>) -> Self {
@@ -141,15 +158,29 @@ where
     }
 }
 
+use seam::stdlib::Std;
+use seam::stdlib::fs::AtomicFile;
+
+seam::root! {
+    /// The program's root: `Std` for the OS, the file store for `Kv`.
+    struct App {
+        std: Std => [seam::kinds::Env],
+        store: FileStore<Std, AtomicFile> => [kv::Kv],
+    }
+}
+
 fn main() -> io::Result<()> {
-    let std = seam::stdlib::Std::new();
+    let std = Std::new();
     let path = std.inspect(TempDir).join("seam-custom-ops.tsv");
-    let mut store = FileStore::<_, seam::stdlib::fs::AtomicFile>::new(std, path);
-    let n = visit(&mut store, "home")?;
+    let mut root = seam::Root::new(App {
+        std,
+        store: FileStore::new(Std::new(), path),
+    });
+    let n = visit(&mut root, "home")?;
     // `main` is the edge, so it may print directly.
     println!(
         "home has been visited {n} times (stored in {})",
-        store.path.display()
+        root.parts().store.path.display()
     );
     Ok(())
 }

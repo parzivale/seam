@@ -185,3 +185,7 @@ impl Inspect<AvailableParallelism> for Tokio {
         std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN)
     }
 }
+
+// Every capability type opts in to seam's lifts.
+impl<T> seam_core::Capability for JoinHandle<T> {}
+impl<T> seam_core::Capability for TaskSet<T> {}

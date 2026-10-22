@@ -566,3 +566,6 @@ impl fmt::Debug for ThreadSim {
         f.debug_struct("ThreadSim").finish_non_exhaustive()
     }
 }
+
+// Every capability type opts in to seam's lifts.
+impl seam_core::Capability for ThreadSim {}

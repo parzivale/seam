@@ -201,3 +201,6 @@ mod timeouts;
 pub use runtime::block_on;
 #[cfg(feature = "rt-multi-thread")]
 pub use runtime::block_on_multi_thread;
+
+// Every capability type opts in to seam's lifts.
+impl seam_core::Capability for Tokio {}

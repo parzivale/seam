@@ -53,3 +53,5 @@ operations! {
     #[query] CurrentDir => io::Result<PathBuf>;
     #[query] TempDir => PathBuf;
 }
+
+crate::root::in_kind!(crate::kinds::Env: [] Var, [] Args, [] CurrentDir, [] TempDir);

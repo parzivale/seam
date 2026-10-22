@@ -135,16 +135,28 @@ with generation counters (runtime detection of stale handles).
 - Sync lifts to async for free: blanket impls give every `Inspect`/`Perform`
   an `AsyncInspect`/`AsyncPerform`, and a `SendInspect`/`SendPerform` when
   it is thread-safe.
-- Async lowers to sync with `block_on`, built on `Waker::noop`. It busy-polls,
-  which is fine because core futures only suspend on operations the program
-  defines.
+- Async lowers to sync with `seam_core::future::block_on`, for cores whose
+  capabilities are all sync (`Std`, `Sim`, fakes); their futures are ready on
+  the first poll. With `std`, a pending future parks the thread until woken,
+  so a misuse with an externally woken future sleeps instead of spinning.
+  Without `std` it re-polls in a spin loop. Futures from a real runtime need
+  that runtime: `seam_tokio::block_on` starts a Tokio one.
 - Because the sync lift is a blanket impl, there is no second blanket from
   `AsyncInspect` to `AsyncPerform`. Native async query implementations
   implement both (`seam-tokio` does this with a macro).
 - `seam-tokio` futures are `Send` and are tested on Tokio's multithreaded
   runtime.
 
+## Prelude
+
+`seam_core::prelude` (re-exported as `seam::prelude`) holds the traits and
+`block_on`, but no operation types: those are imported one by one, so that a
+module's imports, like its bounds, show what it can do.
+
 ## Deferred
+
+- **Spawning** as an operation. Without it a core cannot start concurrent
+  tasks, so the `echo_server` example serves one connection at a time.
 
 - **Allocation as a capability.** The plan was an explicit `A: Allocator`
   generic in the core, fallible APIs only, and clippy bans on the `Global`

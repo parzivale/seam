@@ -30,12 +30,67 @@
 //! # }
 //! ```
 //!
+//! # Setting up and checking the world
+//!
+//! `Sim` has plain methods, outside the capability system, for the test to
+//! arrange the world before the core runs and inspect it afterwards:
+//!
+//! | Group | Arrange | Assert |
+//! |---|---|---|
+//! | time | `advance`, `set_wall_clock` | perform `Now` |
+//! | fs | `add_file`, `add_dir` | `file`, `exists` |
+//! | env | `set_var`, `set_args`, `set_current_dir` | |
+//! | net | `add_host` | bind and connect sockets |
+//! | io-std | `feed_stdin` | `stdout`, `take_stdout` |
+//! | process | `on_command` | `invocations`, `catch_exit` |
+//! | signal | `raise_ctrl_c` | |
+//!
+//! Each row needs its feature.
+//!
+//! ```
+//! # #[cfg(all(feature = "fs", feature = "env", feature = "io-std"))] {
+//! use std::io;
+//! use seam_core::prelude::*;
+//! use seam_core::ops::env::Var;
+//! use seam_core::ops::fs::{ReadToString, WriteFile};
+//! use seam_core::ops::stdio::Print;
+//! use seam_test::Sim;
+//!
+//! /// The core under test: greets `$USER` and remembers it did.
+//! fn greet<C>(c: &mut C) -> io::Result<()>
+//! where
+//!     C: Inspect<Var> + Inspect<ReadToString> + Perform<WriteFile> + for<'a> Perform<Print<'a>>,
+//! {
+//!     let user = c.inspect(Var::new("USER")).map(|u| u.to_string_lossy().into_owned());
+//!     let user = user.unwrap_or_else(|| "stranger".into());
+//!     let seen = c.inspect(ReadToString::new("/tmp/seen")).unwrap_or_default();
+//!     let word = if seen.lines().any(|l| l == user) { "Welcome back" } else { "Hello" };
+//!     c.perform(Print(format!("{word}, {user}!\n").as_bytes()))?;
+//!     c.perform(WriteFile::new("/tmp/seen", format!("{seen}{user}\n")))
+//! }
+//!
+//! let mut sim = Sim::new();
+//! sim.set_var("USER", "ada");
+//! greet(&mut sim).unwrap();
+//! greet(&mut sim).unwrap();
+//! assert_eq!(sim.stdout(), b"Hello, ada!\nWelcome back, ada!\n");
+//! assert_eq!(sim.file("/tmp/seen").unwrap(), b"ada\nada\n");
+//! # }
+//! ```
+//!
+//! # Async cores
+//!
+//! `Sim` is `Send + Sync`, and its operations are synchronous, so async cores
+//! (including ones with `Send` bounds, written for Tokio) run in it through
+//! seam's blanket impls and [`block_on`](seam_core::future::block_on). Every
+//! future is ready on its first poll.
+//!
 //! # Blocking operations
 //!
 //! Nothing in the simulation waits. An operation that would block on a real
 //! system (reading an empty socket, accepting with no pending connection,
 //! waiting for Ctrl-C that was never raised) fails with
-//! [`ErrorKind::WouldBlock`](std::io::ErrorKind::WouldBlock) instead.
+//! `io::ErrorKind::WouldBlock` instead.
 //! `Sleep` advances the virtual clock and returns.
 //!
 //! # Features
@@ -105,7 +160,7 @@ pub struct Sim {
 impl Sim {
     /// A fresh world with seed 0.
     ///
-    /// The clock reads [`Instant::EPOCH`](seam_core::ops::time::Instant),
+    /// The clock reads `Instant::EPOCH`,
     /// the wall clock reads the Unix epoch, the current directory is `/`, and
     /// the filesystem holds an empty `/` and `/tmp`.
     pub fn new() -> Self {

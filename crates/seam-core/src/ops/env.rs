@@ -1,4 +1,20 @@
 //! The process environment.
+//!
+//! All of these are queries.
+//!
+//! ```
+//! use std::path::PathBuf;
+//! use seam_core::Inspect;
+//! use seam_core::ops::env::{CurrentDir, Var};
+//!
+//! /// `$XDG_CONFIG_HOME`, or `./.config`.
+//! fn config_dir<C: Inspect<Var> + Inspect<CurrentDir>>(c: &C) -> std::io::Result<PathBuf> {
+//!     match c.inspect(Var::new("XDG_CONFIG_HOME")) {
+//!         Some(dir) => Ok(dir.into()),
+//!         None => Ok(c.inspect(CurrentDir)?.join(".config")),
+//!     }
+//! }
+//! ```
 
 use std::ffi::OsString;
 use std::io;

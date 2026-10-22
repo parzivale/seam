@@ -82,16 +82,60 @@ fn block_on_repolls_cooperative_yields() {
         type Output = u8;
         fn poll(
             mut self: std::pin::Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
+            cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<u8> {
             if std::mem::replace(&mut self.0, true) {
                 std::task::Poll::Ready(5)
             } else {
+                cx.waker().wake_by_ref();
                 std::task::Poll::Pending
             }
         }
     }
     assert_eq!(block_on(YieldOnce(false)), 5);
+}
+
+/// With std, a future woken from another thread parks `block_on` until then.
+#[cfg(feature = "std")]
+#[test]
+fn block_on_parks_until_woken() {
+    use std::sync::{Arc, Mutex};
+    use std::task::{Poll, Waker};
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct Slot {
+        value: Option<u8>,
+        waker: Option<Waker>,
+    }
+
+    struct Wait(Arc<Mutex<Slot>>);
+    impl Future for Wait {
+        type Output = u8;
+        fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<u8> {
+            let mut slot = self.0.lock().unwrap();
+            match slot.value {
+                Some(v) => Poll::Ready(v),
+                None => {
+                    slot.waker = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+        }
+    }
+
+    let slot = Arc::new(Mutex::new(Slot::default()));
+    let setter = Arc::clone(&slot);
+    let thread = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        let mut slot = setter.lock().unwrap();
+        slot.value = Some(9);
+        if let Some(w) = slot.waker.take() {
+            w.wake();
+        }
+    });
+    assert_eq!(block_on(Wait(slot)), 9);
+    thread.join().unwrap();
 }
 
 struct Tracked<'a>(&'a Cell<&'static str>);

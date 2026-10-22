@@ -1,6 +1,31 @@
 //! The filesystem.
 //!
-//! Handle operations on an open file are in [`io`](super::io).
+//! Whole-file operations ([`ReadFile`], [`WriteFile`], ...) are performed on
+//! the backend. [`Open`] produces a handle, and the operations on handles
+//! are in [`io`](super::io). Paths are owned, so operations can be sent to
+//! another thread or held across an `.await`.
+//!
+//! Reading operations are [`Query`](crate::Query)s, so a core that only
+//! reads can ask for `Inspect`:
+//!
+//! ```
+//! use std::io;
+//! use seam_core::Inspect;
+//! use seam_core::ops::fs::{Metadata, ReadToString};
+//!
+//! /// Reads a config file, if there is one.
+//! fn load_config<C>(c: &C, path: &str) -> io::Result<Option<String>>
+//! where
+//!     C: Inspect<Metadata> + Inspect<ReadToString>,
+//! {
+//!     match c.inspect(Metadata::new(path)) {
+//!         Ok(info) if info.is_file() => c.inspect(ReadToString::new(path)).map(Some),
+//!         Ok(_) => Err(io::Error::new(io::ErrorKind::InvalidInput, "config is not a file")),
+//!         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+//!         Err(e) => Err(e),
+//!     }
+//! }
+//! ```
 
 use core::marker::PhantomData;
 use std::io;

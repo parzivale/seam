@@ -1,7 +1,49 @@
 //! Clocks and waiting.
 //!
-//! [`Sleep`], [`Now`] and [`Instant`] need no std. [`WallClock`] produces a
+//! [`Sleep`], [`Now`] and [`Instant`] need no std. `WallClock` produces a
 //! `SystemTime` and needs the `std` feature.
+//!
+//! A core that takes its clock as a capability can be tested without
+//! waiting:
+//!
+//! ```
+//! use core::time::Duration;
+//! use seam_core::{Inspect, Perform};
+//! use seam_core::ops::time::{Instant, Now, Sleep};
+//!
+//! /// Polls `ready` every second, up to `timeout`. Returns whether it became
+//! /// ready.
+//! fn wait_until<C>(c: &mut C, timeout: Duration, mut ready: impl FnMut() -> bool) -> bool
+//! where
+//!     C: Inspect<Now> + Perform<Sleep>,
+//! {
+//!     let start = c.inspect(Now);
+//!     while c.inspect(Now) - start < timeout {
+//!         if ready() {
+//!             return true;
+//!         }
+//!         c.perform(Sleep(Duration::from_secs(1)));
+//!     }
+//!     false
+//! }
+//!
+//! /// A virtual clock: sleeping moves it forward instantly.
+//! struct Clock(Instant);
+//! impl Inspect<Now> for Clock {
+//!     fn inspect(&self, _: Now) -> Instant {
+//!         self.0
+//!     }
+//! }
+//! impl Perform<Sleep> for Clock {
+//!     fn perform(&mut self, op: Sleep) {
+//!         self.0 += op.0;
+//!     }
+//! }
+//!
+//! let mut clock = Clock(Instant::EPOCH);
+//! assert!(!wait_until(&mut clock, Duration::from_secs(30), || false));
+//! assert_eq!(clock.0.since_epoch(), Duration::from_secs(30)); // in no time
+//! ```
 
 use core::ops::{Add, AddAssign, Sub, SubAssign};
 use core::time::Duration;

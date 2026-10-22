@@ -10,7 +10,7 @@ all. Real implementations or test fakes are plugged in at the edge, the seam.
 A function's bounds are an audit of what it can do:
 
 ```rust
-use seam::Perform;
+use seam::prelude::*;
 use seam::ops::random::RandomU64;
 use seam::ops::time::Sleep;
 use core::time::Duration;
@@ -26,7 +26,7 @@ fn jitter<C: Perform<RandomU64> + Perform<Sleep>>(c: &mut C) {
 
 | Crate | What it is |
 |---|---|
-| [`seam-core`](crates/seam-core) | The traits (`Operation`, `Query`, `Inspect`, `Perform`, `Finalize`, `Scoped`, async variants, `block_on`) and the operation types. `no_std`. |
+| [`seam-core`](crates/seam-core) | The traits (`Operation`, `Query`, `Inspect`, `Perform`, `Finalize`, `Scoped`, async variants, `block_on`), the operation types, and a `prelude`. `no_std`. |
 | [`seam-std`](crates/seam-std) | The std backend: a `Std` root capability and newtype handles (`File`, `TcpStream`, ...) that expose no std I/O traits. |
 | [`seam-tokio`](crates/seam-tokio) | The Tokio backend: a `Tokio` root capability implementing the async and `Send` capability traits. |
 | [`seam-test`](crates/seam-test) | The pure test backend: a `Sim` world with a virtual clock, seeded randomness, in-memory filesystem and network, scripted commands and captured stdio. Its only real effect is allocation. |
@@ -79,6 +79,23 @@ the type system stops a core crate from calling `std::fs::read` directly.
 effect APIs (and shared-state types); copy it into each crate that should stay
 sans-effect.
 
+## Examples
+
+Real programs in [`crates/seam/examples`](crates/seam/examples), each with
+tests that run its core in the simulation:
+
+| Example | Shows |
+|---|---|
+| [`guess`](crates/seam/examples/guess.rs) | randomness and stdio; seeded, scripted tests, and a test of a playing strategy |
+| [`backup`](crates/seam/examples/backup.rs) | filesystem, clock and arguments; bundling many capabilities into one trait |
+| [`echo_server`](crates/seam/examples/echo_server.rs) | an async `Send` core on Tokio, tested on the in-memory network with no runtime |
+| [`custom_ops`](crates/seam/examples/custom_ops.rs) | defining your own operations; building a capability out of other capabilities |
+
+```text
+cargo run  -p seam --example guess --features full
+cargo test -p seam --examples --features full
+```
+
 ## Design
 
-See [DESIGN.md](DESIGN.md).
+See [DESIGN.md](DESIGN.md). API documentation: `cargo doc --open --all-features`.

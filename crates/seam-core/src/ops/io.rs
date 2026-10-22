@@ -1,4 +1,31 @@
 //! Reading and writing through an open handle (a file, a socket).
+//!
+//! These borrow their buffer, so bound them for every lifetime:
+//!
+//! ```
+//! use std::io;
+//! use seam_core::Perform;
+//! use seam_core::ops::io::{Flush, Read, WriteAll};
+//!
+//! /// Copies everything from `src` to `dst`, in 4 KiB chunks.
+//! fn pump<R, W>(src: &mut R, dst: &mut W) -> io::Result<u64>
+//! where
+//!     R: for<'a> Perform<Read<'a>>,
+//!     W: for<'a> Perform<WriteAll<'a>> + Perform<Flush>,
+//! {
+//!     let mut buf = [0; 4096];
+//!     let mut total = 0;
+//!     loop {
+//!         let n = src.perform(Read(&mut buf))?;
+//!         if n == 0 {
+//!             dst.perform(Flush)?;
+//!             return Ok(total);
+//!         }
+//!         dst.perform(WriteAll(&buf[..n]))?;
+//!         total += n as u64;
+//!     }
+//! }
+//! ```
 
 use std::io;
 use std::vec::Vec;

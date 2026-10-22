@@ -2,15 +2,64 @@
 //!
 //! [`Std`] is the root capability: it performs seam operations with real
 //! std calls. Construct it once at the edge of the program (usually `main`)
-//! and pass it, or narrower views of it, into the core as generic bounds.
+//! and pass it into the core, whose bounds decide what the core may do with
+//! it.
 //!
-//! Handles that std would hand out (files, sockets) are wrapped in newtypes
+//! ```no_run
+//! # #[cfg(all(feature = "fs", feature = "io-std", feature = "env"))] {
+//! use std::io;
+//! use seam_core::prelude::*;
+//! use seam_core::ops::env::Args;
+//! use seam_core::ops::fs::ReadToString;
+//! use seam_core::ops::stdio::Print;
+//! use seam_std::Std;
+//!
+//! /// The core: counts the lines of the file named on the command line.
+//! /// Pure apart from the capabilities in its bounds.
+//! fn count_lines<C>(c: &mut C) -> io::Result<()>
+//! where
+//!     C: Inspect<Args> + Inspect<ReadToString> + for<'a> Perform<Print<'a>>,
+//! {
+//!     let args = c.inspect(Args);
+//!     let path = args.get(1).ok_or(io::ErrorKind::InvalidInput)?;
+//!     let n = c.inspect(ReadToString::new(path))?.lines().count();
+//!     c.perform(Print(format!("{n}\n").as_bytes()))
+//! }
+//!
+//! /// The edge: the only place real effects are chosen.
+//! fn main() -> io::Result<()> {
+//!     count_lines(&mut Std::new())
+//! }
+//! # }
+//! ```
+//!
+//! Test the same core against `seam_test::Sim` instead of `Std`.
+//!
+//! # Handles
+//!
+//! Files and sockets are newtypes (`fs::File`, `net::TcpStream`, ...)
 //! that expose no std I/O traits and no way to get the std value back, so
-//! every effect on them goes through [`Perform`](seam_core::Perform) or
-//! [`Inspect`](seam_core::Inspect).
+//! every effect on them also goes through [`Perform`](seam_core::Perform)
+//! or [`Inspect`](seam_core::Inspect). They implement
+//! [`Finalize`](seam_core::Finalize): `close` flushes and syncs.
 //!
-//! Each capability group is a feature: `fs`, `net`, `time`, `env`,
-//! `process`, `random`, `io-std`, or `full` for all of them.
+//! # Async
+//!
+//! Everything here is synchronous and blocking. Through seam's blanket
+//! impls, `Std` also satisfies `AsyncPerform` and `SendPerform`, so an async
+//! core can run on it with [`block_on`](seam_core::future::block_on); each
+//! operation blocks the thread while it runs. For real async I/O, use
+//! `seam-tokio`.
+//!
+//! # Features
+//!
+//! One per capability group: `fs`, `net`, `time`, `env`, `process`,
+//! `random`, `io-std`, or `full`. `Std` implements only the groups that are
+//! enabled.
+//!
+//! `random` uses std's randomly keyed hasher, since std has no public random
+//! number generator. It is fine for jitter, sampling and seeds, and is not
+//! cryptographically secure.
 
 /// The root capability over std.
 ///

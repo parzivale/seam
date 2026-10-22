@@ -1,4 +1,25 @@
 //! Child processes and exiting.
+//!
+//! Building a `std::process::Command` is pure; running it is the effect.
+//! [`Exit`]'s outcome is `Infallible`, so the compiler knows it never
+//! returns.
+//!
+//! ```
+//! use std::io;
+//! use std::process::Command;
+//! use seam_core::Perform;
+//! use seam_core::ops::process::{Exit, RunCommand};
+//!
+//! /// The current git commit, or exit with status 2.
+//! fn head<C: Perform<RunCommand> + Perform<Exit>>(c: &mut C) -> String {
+//!     let mut cmd = Command::new("git");
+//!     cmd.args(["rev-parse", "HEAD"]);
+//!     match c.perform(RunCommand(cmd)) {
+//!         Ok(out) if out.success() => String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+//!         _ => match c.perform(Exit(2)) {},
+//!     }
+//! }
+//! ```
 
 use core::convert::Infallible;
 use std::io;

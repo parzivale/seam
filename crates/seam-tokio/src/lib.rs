@@ -1,17 +1,62 @@
 //! The Tokio backend for seam.
 //!
-//! [`Tokio`] is the root capability: it performs seam operations with Tokio
-//! and implements the async traits in [`seam_core::future`], including the
-//! `Send` variants needed on a multithreaded runtime. Operations Tokio has
-//! no async version of (clocks, environment, randomness) are implemented
-//! synchronously and lift to async through the blanket impls.
+//! [`Tokio`] is the root capability: it performs seam operations with Tokio.
+//! It implements the async traits in [`seam_core::future`], including the
+//! `Send` forms needed on a multithreaded runtime. Operations Tokio has no
+//! async version of (clocks, the environment, randomness) are implemented
+//! synchronously and lift to async through seam's blanket impls.
 //!
-//! As in `seam-std`, handles are newtypes that expose no Tokio I/O traits.
+//! ```no_run
+//! # #[cfg(all(feature = "rt", feature = "time", feature = "net"))] {
+//! use std::io;
+//! use std::time::Duration;
+//! use seam_core::prelude::*;
+//! use seam_core::ops::io::WriteAll;
+//! use seam_core::ops::net::{Resolve, TcpConnect};
+//! use seam_core::ops::time::Sleep;
 //!
-//! Feature names follow Tokio's (`rt`, `rt-multi-thread`, `fs`, `net`,
-//! `time`, `process`, `io-std`, `signal`, `test-util`, `full`), plus `env`
-//! and `random`. Operations must run inside a Tokio runtime; with `rt`,
-//! [`block_on`] starts one.
+//! /// The core: sends a heartbeat, retrying with backoff. `Send` bounds,
+//! /// so it can run on a multithreaded runtime.
+//! async fn heartbeat<C, S>(c: &mut C, host: &str) -> io::Result<()>
+//! where
+//!     C: SendInspect<Resolve> + SendPerform<TcpConnect<S>> + SendPerform<Sleep> + Send,
+//!     S: for<'a> SendPerform<WriteAll<'a>> + Send,
+//! {
+//!     let addr = c.inspect_send(Resolve::new(host, 9000)).await?[0];
+//!     for attempt in 0..5 {
+//!         match c.perform_send(TcpConnect::new(addr)).await {
+//!             Ok(mut stream) => return stream.perform_send(WriteAll(b"alive\n")).await,
+//!             Err(_) => c.perform_send(Sleep(Duration::from_millis(100 << attempt))).await,
+//!         }
+//!     }
+//!     Err(io::ErrorKind::TimedOut.into())
+//! }
+//!
+//! fn main() -> io::Result<()> {
+//!     seam_tokio::block_on(|mut tokio| async move {
+//!         heartbeat::<_, seam_tokio::net::TcpStream>(&mut tokio, "localhost").await
+//!     })
+//! }
+//! # }
+//! ```
+//!
+//! Every operation must run inside a Tokio runtime. With the `rt` feature,
+//! `seam_tokio::block_on` starts one and hands the core the root capability; or create
+//! `Tokio::new()` inside a runtime you already have.
+//!
+//! # Handles
+//!
+//! As in `seam-std`, files and sockets are newtypes that expose no Tokio I/O
+//! traits. Tokio files write in the background, so perform
+//! `Flush` before dropping one.
+//!
+//! # Features
+//!
+//! Names follow Tokio's: `rt`, `rt-multi-thread`, `fs`, `net`, `time`,
+//! `process`, `io-std`, `signal`, `io-util`, `test-util`, `full`. Each turns
+//! on the Tokio feature of the same name and the matching seam operations.
+//! `env` and `random` are seam additions. With `test-util`, `Now` follows
+//! Tokio's pausable clock.
 
 /// The root capability over Tokio.
 ///

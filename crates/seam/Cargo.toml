@@ -54,3 +54,24 @@ all-features = true
 
 [lints]
 workspace = true
+
+# Each example's tests run its core against `seam::test::Sim`.
+[[example]]
+name = "guess"
+required-features = ["std", "test", "io-std", "random"]
+test = true
+
+[[example]]
+name = "backup"
+required-features = ["std", "test", "fs", "env", "time", "io-std"]
+test = true
+
+[[example]]
+name = "echo_server"
+required-features = ["tokio", "rt", "net", "env", "io-std", "test"]
+test = true
+
+[[example]]
+name = "custom_ops"
+required-features = ["std", "test", "fs", "env"]
+test = true

@@ -1,20 +1,48 @@
 //! Operation types for common effects, one module per capability feature.
 //!
-//! Backends (`seam-std`, `seam-tokio`) implement [`Inspect`](crate::Inspect)
-//! and [`Perform`](crate::Perform) for these types, so a core written against
-//! them runs on any backend, or on test fakes.
+//! Backends (`seam-std`, `seam-tokio`, `seam-test`) implement
+//! [`Inspect`](crate::Inspect) and [`Perform`](crate::Perform) for these
+//! types, so a core written against them runs on any backend.
+//!
+//! | Module | Feature | Needs std | Examples |
+//! |---|---|---|---|
+//! | `time` | `time` | no (`WallClock`: yes) | `Now`, `Sleep`, `WallClock` |
+//! | `random` | `random` | no | `RandomU64`, `FillRandom` |
+//! | `fs` | `fs` | yes | `ReadFile`, `WriteFile`, `Open<F>` |
+//! | `io` | `fs` or `net` | yes | `Read`, `WriteAll`, `Flush` on handles |
+//! | `net` | `net` | yes | `TcpConnect<S>`, `TcpBind<L>`, `Resolve` |
+//! | `env` | `env` | yes | `Var`, `Args`, `CurrentDir` |
+//! | `process` | `process` | yes | `RunCommand`, `Exit` |
+//! | `stdio` | `io-std` | yes | `Print`, `ReadLine` |
+//! | `signal` | `signal` | yes | `CtrlC` |
+//!
+//! # Handles
 //!
 //! Operations that create a resource (opening a file, connecting a socket)
-//! are generic over the handle type, since each backend has its own. Bounds
-//! name the handle as a type parameter, and inference fills it in:
+//! are generic over the handle type, since each backend has its own. The
+//! core names the handle as a type parameter with the bounds it needs, and
+//! the operations on the handle are in `io` or `net`:
 //!
-//! ```ignore
-//! fn run<C, F>(c: &mut C) -> io::Result<()>
+//! ```
+//! # #[cfg(feature = "fs")] {
+//! use std::io;
+//! use seam_core::Perform;
+//! use seam_core::ops::fs::Open;
+//! use seam_core::ops::io::WriteAll;
+//!
+//! fn save<C, F>(c: &mut C, report: &str) -> io::Result<()>
 //! where
 //!     C: Perform<Open<F>>,
 //!     F: for<'a> Perform<WriteAll<'a>>,
-//! { /* ... */ }
+//! {
+//!     let mut file = c.perform(Open::create("report.txt"))?;
+//!     file.perform(WriteAll(report.as_bytes()))
+//! }
+//! # }
 //! ```
+//!
+//! The caller picks `F` by passing a backend: `save(&mut Std::new(), ..)`
+//! infers `seam_std::fs::File`.
 
 /// Implements `Operation` (and optionally `Query`) for a list of types.
 #[allow(unused_macros)]

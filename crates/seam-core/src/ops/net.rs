@@ -1,7 +1,31 @@
 //! Networking.
 //!
 //! Operations that create a socket are generic over the backend's socket
-//! types. Reading and writing a connected stream use [`io`](super::io).
+//! types. Reading and writing a connected stream use [`io`](super::io). DNS
+//! is an effect too: resolve names with [`Resolve`].
+//!
+//! ```
+//! use std::io;
+//! use seam_core::{Inspect, Perform};
+//! use seam_core::ops::io::WriteAll;
+//! use seam_core::ops::net::{Resolve, TcpConnect};
+//!
+//! /// Sends one line to `host:port`, trying each address it resolves to.
+//! fn notify<C, S>(c: &mut C, host: &str, port: u16, line: &str) -> io::Result<()>
+//! where
+//!     C: Inspect<Resolve> + Perform<TcpConnect<S>>,
+//!     S: for<'a> Perform<WriteAll<'a>>,
+//! {
+//!     let mut last = io::Error::new(io::ErrorKind::NotFound, "no addresses");
+//!     for addr in c.inspect(Resolve::new(host, port))? {
+//!         match c.perform(TcpConnect::new(addr)) {
+//!             Ok(mut stream) => return stream.perform(WriteAll(line.as_bytes())),
+//!             Err(e) => last = e,
+//!         }
+//!     }
+//!     Err(last)
+//! }
+//! ```
 
 use core::marker::PhantomData;
 use core::net::SocketAddr;

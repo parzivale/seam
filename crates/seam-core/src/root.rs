@@ -12,7 +12,7 @@
 //! # #[cfg(feature = "time")] {
 //! use seam_core::kinds;
 //! use seam_core::ops::time::{Instant, Now, Sleep};
-//! use seam_core::{Capability, InKind, Inspect, Operation, Perform, Query, Root};
+//! use seam_core::{Capability, InKind, Inspect, Operation, Perform, Query};
 //!
 //! // A program's own kind of operation: a plain marker type.
 //! struct Greeting;
@@ -47,12 +47,10 @@
 //! }
 //!
 //! // The root: one field per part, each with the kinds it serves.
-//! seam_core::root! {
-//!     struct App {
-//!         clock: Clock => [kinds::Time],
-//!         greeter: Polite => [Greeting],
-//!     }
-//! }
+//! let mut root = seam_core::root! {
+//!     clock: Clock(Instant::EPOCH) => [kinds::Time],
+//!     greeter: Polite => [Greeting],
+//! };
 //!
 //! /// The core asks for exactly what it uses, as always.
 //! fn core<C: Inspect<Greet> + Perform<Sleep>>(c: &mut C) -> String {
@@ -60,7 +58,6 @@
 //!     c.inspect(Greet("ada"))
 //! }
 //!
-//! let mut root = Root::new(App { clock: Clock(Instant::EPOCH), greeter: Polite });
 //! assert_eq!(core(&mut root), "good day, ada");
 //! assert_eq!(root.parts().clock.0.since_epoch().as_secs(), 1);
 //! # }
@@ -72,13 +69,11 @@
 //! ```compile_fail,E0119
 //! # #[cfg(feature = "time")] {
 //! # use seam_core::kinds;
-//! # pub struct A; pub struct B;
-//! seam_core::root! {
-//!     struct App {
-//!         a: A => [kinds::Time],
-//!         b: B => [kinds::Time], // error: `kinds::Time` is already served
-//!     }
-//! }
+//! # struct A; struct B;
+//! let root = seam_core::root! {
+//!     a: A => [kinds::Time],
+//!     b: B => [kinds::Time], // error: `kinds::Time` is already served
+//! };
 //! # }
 //! # #[cfg(not(feature = "time"))] compile_error!("E0119");
 //! ```
@@ -87,9 +82,9 @@
 //! capability, like any other: "the root `App` has no part for
 //! `kinds::Fs`".
 //!
-//! [`root!`](crate::root!) writes the struct and its [`Pick`] impls. It is
-//! only sugar: a root is any struct, with one `Pick` impl per kind saying
-//! which field serves it.
+//! [`root!`](crate::root!) builds the root: a struct of the parts, with one
+//! [`Pick`] impl per kind saying which field serves it. It is only sugar;
+//! a root is any struct with those impls, wrapped in [`Root::new`].
 //!
 //! Operations on handles (`Read` on a stream, `RecvMsg` on a channel,
 //! `Join` on a task) never go through the root, so they have no kind: the
@@ -308,9 +303,8 @@ where
     }
 }
 
-/// Defines a root's struct: one field per part, each with the kinds it
-/// serves. Writes the struct and one [`Pick`] impl per kind; wrap a value
-/// of it in [`Root::new`].
+/// Builds a root from its parts: one field per part, each with the kinds
+/// it serves. It evaluates to the [`Root`], ready to hand to a core:
 ///
 /// ```
 /// # #[cfg(feature = "time")] {
@@ -320,21 +314,42 @@ where
 /// # impl Capability for Clock {}
 /// # impl Inspect<Now> for Clock { fn inspect(&self, _: Now) -> Instant { Instant::EPOCH } }
 /// # impl Perform<Sleep> for Clock { fn perform(&mut self, _: Sleep) {} }
+/// let mut root = seam_core::root! {
+///     clock: Clock => [kinds::Time],
+/// };
+/// root.perform(Sleep(core::time::Duration::from_secs(1)));
+/// let _clock: &Clock = &root.parts().clock;
+/// # }
+/// ```
+///
+/// One part may serve several kinds (`std: Std::new() => [kinds::Env,
+/// kinds::Fs]`); each kind is served by one part. The root's struct is
+/// generated, and is `Clone`, `Copy`, `Debug` and `Default` whenever its
+/// parts are; its fields are named as given.
+///
+/// To name the root's type (to store it in a struct, say), define the
+/// struct instead, and wrap a value of it in [`Root::new`]:
+///
+/// ```
+/// # #[cfg(feature = "time")] {
+/// # use seam_core::{kinds, Capability, Inspect, Perform};
+/// # use seam_core::ops::time::{Instant, Now, Sleep};
+/// # #[derive(Clone, Default)] pub struct Clock;
+/// # impl Capability for Clock {}
+/// # impl Inspect<Now> for Clock { fn inspect(&self, _: Now) -> Instant { Instant::EPOCH } }
 /// seam_core::root! {
 ///     #[derive(Clone, Default)]
 ///     pub struct App {
 ///         pub clock: Clock => [kinds::Time],
 ///     }
 /// }
-/// let root = seam_core::Root::new(App::default());
+/// let root: seam_core::Root<App> = seam_core::Root::new(App::default());
 /// # let _ = root.inspect(Now);
 /// # }
 /// ```
-///
-/// One part may serve several kinds (`std: Std => [kinds::Env,
-/// kinds::Fs]`); each kind is served by one part.
 #[macro_export]
 macro_rules! root {
+    // A named struct.
     (
         $(#[$meta:meta])*
         $vis:vis struct $name:ident {
@@ -357,6 +372,33 @@ macro_rules! root {
                 }
             }
         )+)*
+    };
+
+    // A root value: the struct is generic over its parts' types, so they
+    // are inferred from the values.
+    ($($field:ident : $value:expr => [$($kind:path),+ $(,)?]),+ $(,)?) => {{
+        #[derive(Clone, Copy, Debug, Default)]
+        #[allow(non_camel_case_types)]
+        struct Parts<$($field),+> {
+            $($field: $field),+
+        }
+        $crate::root!(@picks [$($field),+] $($field [$($kind),+])+);
+        $crate::Root::new(Parts { $($field: $value),+ })
+    }};
+    (@picks $all:tt $($field:ident [$($kind:path),+])+) => {
+        $($($crate::root!(@pick $all $field $kind);)+)+
+    };
+    (@pick [$($all:ident),+] $field:ident $kind:path) => {
+        #[allow(non_camel_case_types)]
+        impl<$($all),+> $crate::Pick<Parts<$($all),+>> for $kind {
+            type Part = $field;
+            fn pick(parts: &Parts<$($all),+>) -> &$field {
+                &parts.$field
+            }
+            fn pick_mut(parts: &mut Parts<$($all),+>) -> &mut $field {
+                &mut parts.$field
+            }
+        }
     };
 }
 

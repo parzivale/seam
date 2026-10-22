@@ -181,3 +181,31 @@ fn a_root_on_simulated_threads() {
     });
     assert_eq!(got, 7);
 }
+
+/// A named root, for when its type must be written: here, a field.
+#[test]
+fn a_named_root() {
+    seam::root! {
+        #[derive(Default)]
+        struct App {
+            store: Memory => [Store],
+        }
+    }
+    struct Service {
+        root: Root<App>,
+    }
+    let mut service = Service {
+        root: Root::new(App::default()),
+    };
+    service.root.perform(Put("k".into(), "v".into()));
+    assert_eq!(service.root.inspect(Get("k".into())).as_deref(), Some("v"));
+}
+
+/// Two roots in one function do not clash.
+#[test]
+fn roots_side_by_side() {
+    let a = seam::root! { store: Memory::default() => [Store] };
+    let b = seam::root! { sim: Sim::new() => [kinds::Time], store: Memory::default() => [Store] };
+    assert_eq!(a.inspect(Get("x".into())), None);
+    assert_eq!(b.inspect(Now).since_epoch(), Duration::ZERO);
+}

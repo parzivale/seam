@@ -158,24 +158,16 @@ where
     }
 }
 
-use seam::stdlib::Std;
-use seam::stdlib::fs::AtomicFile;
-
-seam::root! {
-    /// The program's root: `Std` for the OS, the file store for `Kv`.
-    struct App {
-        std: Std => [seam::kinds::Env],
-        store: FileStore<Std, AtomicFile> => [kv::Kv],
-    }
-}
-
 fn main() -> io::Result<()> {
-    let std = Std::new();
-    let path = std.inspect(TempDir).join("seam-custom-ops.tsv");
-    let mut root = seam::Root::new(App {
-        std,
-        store: FileStore::new(Std::new(), path),
-    });
+    use seam::stdlib::Std;
+    use seam::stdlib::fs::AtomicFile;
+
+    let path = Std::new().inspect(TempDir).join("seam-custom-ops.tsv");
+    // The program's root: `Std` for the OS, the file store for `Kv`.
+    let mut root = seam::root! {
+        std: Std::new() => [seam::kinds::Env],
+        store: FileStore::<_, AtomicFile>::new(Std::new(), path) => [kv::Kv],
+    };
     let n = visit(&mut root, "home")?;
     // `main` is the edge, so it may print directly.
     println!(

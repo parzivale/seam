@@ -21,7 +21,7 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "fs",
 # same name and the matching seam-core operation types.
 [features]
 default = []
-full = ["fs", "net", "time", "process", "io-std", "signal", "sync", "rt", "rt-multi-thread", "env", "random"]
+full = ["fs", "net", "time", "process", "io-std", "signal", "sync", "rt", "rt-multi-thread"]
 
 rt = ["tokio/rt", "seam-core/rt"]
 rt-multi-thread = ["rt", "tokio/rt-multi-thread"]
@@ -35,9 +35,6 @@ signal = ["tokio/signal", "seam-core/signal"]
 sync = ["tokio/sync", "seam-core/sync"]
 test-util = ["tokio/test-util"]
 
-# Not in Tokio: these run synchronously and lift to async for free.
-env = ["seam-core/env"]
-random = ["seam-core/random"]
 
 [package.metadata.docs.rs]
 all-features = true

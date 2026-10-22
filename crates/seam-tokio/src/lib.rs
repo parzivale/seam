@@ -2,9 +2,15 @@
 //!
 //! [`Tokio`] is the root capability: it performs seam operations with Tokio.
 //! It implements the async traits in [`seam_core::future`], including the
-//! `Send` forms needed on a multithreaded runtime. Operations Tokio has no
-//! async version of (clocks, the environment, randomness) are implemented
-//! synchronously and lift to async through seam's blanket impls.
+//! `Send` forms needed on a multithreaded runtime.
+//!
+//! It covers what Tokio is for: time, the filesystem, the network, stdio,
+//! processes, signals, tasks and channels. Operations with nothing to do
+//! with Tokio, the environment (`Var`, `Args`, ...) and randomness, are not
+//! here: take them from `seam-std`'s `Std` in the same root, as
+//! `seam::root! { std: Std::new() => [kinds::Env, kinds::Random], tokio:
+//! Tokio::new() => [kinds::Time, kinds::Net] }`. Both are zero-sized, and
+//! so is the root.
 //!
 //! ```no_run
 //! # #[cfg(all(feature = "rt", feature = "time", feature = "net"))] {
@@ -74,8 +80,7 @@
 //! Names follow Tokio's: `rt`, `rt-multi-thread`, `fs`, `net`, `time`,
 //! `process`, `io-std`, `signal`, `sync`, `io-util`, `test-util`, `full`. Each turns
 //! on the Tokio feature of the same name and the matching seam operations.
-//! `env` and `random` are seam additions. With `test-util`, `Now` follows
-//! Tokio's pausable clock.
+//! With `test-util`, `Now` follows Tokio's pausable clock.
 
 /// The root capability over Tokio.
 ///
@@ -172,16 +177,12 @@ macro_rules! io_ops {
     };
 }
 
-#[cfg(feature = "env")]
-mod env;
 #[cfg(feature = "fs")]
 pub mod fs;
 #[cfg(feature = "net")]
 pub mod net;
 #[cfg(feature = "process")]
 mod process;
-#[cfg(feature = "random")]
-mod random;
 #[cfg(feature = "rt")]
 mod runtime;
 #[cfg(feature = "signal")]

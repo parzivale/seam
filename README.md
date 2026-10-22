@@ -79,16 +79,17 @@ A program's edge can hand its core one capability built from parts: a
 simulated parts, and the program's own effects:
 
 ```rust
-seam::root! {
-    struct App {
-        std: Std => [kinds::Env, kinds::Random],
-        tokio: Tokio => [kinds::Time, kinds::Fs, kinds::Net],
-        store: Redis => [Store],            // the program's own kind
-    }
-}
-let mut root = Root::new(App { std: Std::new(), tokio: Tokio::new(), store });
+let mut root = seam::root! {
+    std: Std::new() => [kinds::Env, kinds::Random],
+    tokio: Tokio::new() => [kinds::Time, kinds::Fs, kinds::Net],
+    store: redis => [Store],                // the program's own kind
+};
 serve(&mut root).await;                     // bounded as usual: SendPerform<Sleep>, ...
 ```
+
+Each backend covers only what it is for: Tokio has no environment or
+randomness, so a Tokio program takes those from `Std`. `Std` and `Tokio`
+are zero-sized, and so is a root of them.
 
 The root forwards each operation to the part serving its kind, in whichever
 form that part implements: sync parts through the sync traits, async parts
@@ -101,8 +102,9 @@ struct Store;
 impl InKind for Get { type Kind = Store; }
 ```
 
-`root!` only writes a struct and one `Pick` impl per kind, which can also be
-written by hand. Capability types opt in to seam's lifts (an `Inspect` is
+`root!` evaluates to the root. It writes a struct of the parts and one
+`Pick` impl per kind; a named form (`root! { struct App { ... } }`) gives
+the struct a name, for when the root's type must be written out. Capability types opt in to seam's lifts (an `Inspect` is
 also a `Perform`, a sync operation also works from async code) with
 `impl Capability for MyType {}`; every type in seam's backends does.
 

@@ -373,7 +373,13 @@ it in the same form. Two things make that legal in Rust:
 The `Send` forms hand back the part's own future, so parts behind them are
 `'static`. A part can serve several kinds, which is how a whole backend
 (`Std`, `Tokio`, `Sim`, `ThreadSim`) is a part as it stands; nothing had to
-be split. `root!` is sugar for the struct and its `Pick` impls. A root has
+be split. `root!` is sugar: it evaluates to the root, defining a struct
+generic over its parts' types (so they are inferred from the values) with
+its `Pick` impls; a named form defines a plain struct instead.
+
+Each backend covers only what it is for. `seam-tokio` has no environment
+or randomness, since Tokio has nothing to add to them; a Tokio program
+takes `kinds::Env` and `kinds::Random` from `Std` in the same root. A root has
 no singleton or lock: roots are built at the edge, and the clippy template
 is what keeps cores from reaching for effects directly.
 

@@ -1,7 +1,7 @@
 //! A TCP echo server on Tokio.
 //!
 //! ```text
-//! cargo run -p seam-rs --example echo_server --features tokio,rt,rt-multi-thread,net,env,io-std,test -- 127.0.0.1:7878
+//! cargo run -p seam-rs --example echo_server --features tokio,std,rt,rt-multi-thread,net,env,io-std,test -- 127.0.0.1:7878
 //! ```
 //!
 //! The server spawns a task per connection, through `SpawnWith`,
@@ -10,6 +10,10 @@
 //! succeeds. The per-connection logic is an async
 //! core with `Send` bounds, and the same function is tested against the
 //! in-memory network in `seam::test`, with no sockets and no runtime.
+//!
+//! `main` builds a root of two backends: Tokio for the network and stdio,
+//! and std for the command-line arguments, which have nothing to do with
+//! Tokio.
 
 use std::io;
 use std::net::SocketAddr;
@@ -122,9 +126,13 @@ fn main() -> io::Result<()> {
     use seam::tokio::net::{TcpListener, TcpStream};
     use seam::tokio::task::JoinHandle;
 
-    seam::tokio::block_on_multi_thread(|mut tokio| async move {
-        let addr = listen_addr(&tokio)?;
-        serve::<_, TcpListener, TcpStream, JoinHandle<io::Result<()>>>(&mut tokio, addr).await
+    seam::tokio::block_on_multi_thread(|tokio| async move {
+        let mut root = seam::root! {
+            std: seam::stdlib::Std::new() => [seam::kinds::Env],
+            tokio: tokio => [seam::kinds::Net, seam::kinds::Stdio],
+        };
+        let addr = listen_addr(&root)?;
+        serve::<_, TcpListener, TcpStream, JoinHandle<io::Result<()>>>(&mut root, addr).await
     })
 }
 

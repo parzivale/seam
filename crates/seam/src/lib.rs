@@ -86,13 +86,10 @@
 //! use seam::ops::time::Now;
 //! use seam::prelude::*;
 //!
-//! seam::root! {
-//!     struct App {
-//!         std: seam::stdlib::Std => [kinds::Env],
-//!         clock: seam::test::Sim => [kinds::Time], // a simulated clock
-//!     }
-//! }
-//! let root = Root::new(App { std: seam::stdlib::Std::new(), clock: seam::test::Sim::new() });
+//! let root = seam::root! {
+//!     std: seam::stdlib::Std::new() => [kinds::Env],
+//!     clock: seam::test::Sim::new() => [kinds::Time], // a simulated clock
+//! };
 //! let _home = root.inspect(Var::new("HOME"));
 //! assert_eq!(root.inspect(Now).since_epoch().as_secs(), 0);
 //! # }

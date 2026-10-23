@@ -275,7 +275,17 @@ listener accept a connection into a new task that owns it, running a named
 joined or aborted together. None of the task API allocates in seam itself;
 `alloc` only adds boxed conveniences (`Spawn::boxed`, `SpawnWith::boxed`).
 Temporary files left by a process that was killed outright are cleaned up
-with `SweepAtomic`.
+with `SweepAtomic`. Listing a directory works the same way: `ReadDir` lends
+a listing that `NextEntry` steps through one path at a time.
+
+Operations borrow their inputs (paths, contents, names), so describing one
+allocates nothing. Bounds name them for every lifetime, as for buffers:
+
+```rust
+fn load<C: for<'a> Inspect<ReadToString<'a>>>(c: &C, path: &Path) -> io::Result<String> {
+    c.inspect(ReadToString::new(path))
+}
+```
 
 ## World files
 

@@ -10,7 +10,9 @@ use std::task::Poll;
 use std::time::Duration;
 
 use seam_core::future::{SendInspect, SendPerform};
-use seam_core::ops::fs::{CreateAtomic, CreateDir, Open, ReadDir, ReadFile, RemoveDir, WriteFile};
+use seam_core::ops::fs::{
+    CreateAtomic, CreateDir, NextEntry, Open, ReadDir, ReadFile, RemoveDir, WriteFile,
+};
 use seam_core::ops::io::{ReadExact, ReadToEnd, WriteAll};
 use seam_core::ops::net::{Accept, LocalAddr, ResolveInto, TcpBind, TcpConnect};
 use seam_core::ops::time::{Now, Sleep};
@@ -19,24 +21,40 @@ use seam_tokio::Tokio;
 use seam_tokio::fs::AtomicFile;
 use seam_tokio::net::{TcpListener, TcpStream};
 
+/// Lists `dir` through `ReadDir`, one entry at a time.
+async fn list<C, D>(c: &mut C, dir: &Path) -> io::Result<Vec<PathBuf>>
+where
+    C: for<'a> AsyncProvide<ReadDir<'a, D>> + Send,
+    D: SendPerform<NextEntry> + Send,
+{
+    c.acquire_async(ReadDir::new(dir), async |_, entries| {
+        let mut paths = Vec::new();
+        while let Some(path) = entries.perform_send(NextEntry).await? {
+            paths.push(path);
+        }
+        Ok(paths)
+    })
+    .await
+}
+
 async fn scratch_dir(tokio: &mut Tokio, name: &str) -> io::Result<PathBuf> {
     let mut dir = std::env::temp_dir();
     dir.push(format!("seam-tokio-{name}-{}", std::process::id()));
-    let _ = tokio.perform_send(RemoveDir::all(dir.clone())).await;
-    tokio.perform_send(CreateDir::all(dir.clone())).await?;
+    let _ = tokio.perform_send(RemoveDir::all(&dir)).await;
+    tokio.perform_send(CreateDir::all(&dir)).await?;
     Ok(dir)
 }
 
 /// A core written only against capability bounds.
 async fn copy_file<C, F>(c: &mut C, from: PathBuf, to: PathBuf) -> io::Result<()>
 where
-    C: AsyncProvide<Open<F>> + Send,
+    C: for<'a> AsyncProvide<Open<'a, F>> + Send,
     F: for<'a> SendPerform<ReadToEnd<'a>> + for<'a> SendPerform<WriteAll<'a>> + Send,
 {
-    c.acquire_async(Open::read(from), async |c, src| {
+    c.acquire_async(Open::read(&from), async |c, src| {
         let mut bytes = Vec::new();
         src.perform_send(ReadToEnd(&mut bytes)).await?;
-        c.acquire_async(Open::create(to), async |_, dst| {
+        c.acquire_async(Open::create(&to), async |_, dst| {
             dst.perform_send(WriteAll(&bytes)).await
         })
         .await
@@ -49,7 +67,7 @@ where
 #[allow(dead_code)]
 fn copy_file_is_send<C, F>(c: &mut C)
 where
-    C: AsyncProvide<Open<F>> + Send,
+    C: for<'a> AsyncProvide<Open<'a, F>> + Send,
     F: for<'a> SendPerform<ReadToEnd<'a>> + for<'a> SendPerform<WriteAll<'a>> + Send,
 {
     fn assert_send<T: Future + Send>(_: T) {}
@@ -66,10 +84,10 @@ async fn spawned_core_on_multithreaded_runtime() -> io::Result<()> {
     let copied = tokio::spawn(async move {
         let mut tokio = Tokio::new();
         copy_file(&mut tokio, a, b.clone()).await?;
-        tokio.inspect_send(ReadFile::new(b)).await
+        tokio.inspect_send(ReadFile::new(&b)).await
     });
     assert_eq!(copied.await.unwrap()?, b"hello");
-    tokio.perform_send(RemoveDir::all(dir)).await
+    tokio.perform_send(RemoveDir::all(&dir)).await
 }
 
 #[tokio::test]
@@ -192,7 +210,7 @@ async fn atomic_write_is_safe_to_cancel_at_every_poll() -> io::Result<()> {
         cut_points += 1;
     }
     assert!(cut_points >= 5, "only {cut_points} points to cancel at");
-    tokio.perform_send(RemoveDir::all(dir)).await
+    tokio.perform_send(RemoveDir::all(&dir)).await
 }
 
 #[tokio::test]
@@ -206,9 +224,6 @@ async fn atomic_file_listing_is_clean_after_success() -> io::Result<()> {
         })
         .await?;
     assert_eq!(tokio.inspect_send(ReadFile::new(&path)).await?, b"new");
-    assert_eq!(
-        tokio.inspect_send(ReadDir::new(&dir)).await?,
-        std::slice::from_ref(&path)
-    );
-    tokio.perform_send(RemoveDir::all(dir)).await
+    assert_eq!(list(&mut tokio, &dir).await?, std::slice::from_ref(&path));
+    tokio.perform_send(RemoveDir::all(&dir)).await
 }

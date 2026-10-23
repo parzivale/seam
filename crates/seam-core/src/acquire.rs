@@ -14,7 +14,7 @@
 //!
 //! fn read_all<C, F>(c: &mut C, path: &str) -> io::Result<Vec<u8>>
 //! where
-//!     C: Provide<Open<F>>,
+//!     C: for<'a> Provide<Open<'a, F>>,
 //!     F: for<'a> Perform<ReadToEnd<'a>>,
 //! {
 //!     c.acquire(Open::read(path), |_c, file| {

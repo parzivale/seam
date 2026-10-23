@@ -1,4 +1,5 @@
-//! Filesystem operations, and the [`File`] and [`AtomicFile`] handles.
+//! Filesystem operations, and the [`File`], [`AtomicFile`] and [`Dir`]
+//! handles.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -6,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use seam_core::ops::fs::{
-    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Open, ReadDir, ReadFile,
-    ReadToString, RemoveDir, RemoveFile, Rename, SweepAtomic, WriteFile,
+    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, NextEntry, Open, ReadDir,
+    ReadFile, ReadToString, RemoveDir, RemoveFile, Rename, SweepAtomic, WriteFile,
 };
 use seam_core::{Inspect, Perform, Provide, Token};
 
@@ -101,8 +102,8 @@ fn temp_path(target: &Path) -> PathBuf {
     target.with_file_name(format!(".{name}.seam-{salt:016x}.tmp"))
 }
 
-impl Provide<Open<File>> for Std {
-    fn provide(&mut self, op: Open<File>, _: Token) -> seam_core::io::Result<File> {
+impl Provide<Open<'_, File>> for Std {
+    fn provide(&mut self, op: Open<'_, File>, _: Token) -> seam_core::io::Result<File> {
         let o = op.options;
         crate::sio(
             std::fs::OpenOptions::new()
@@ -122,17 +123,17 @@ impl Provide<Open<File>> for Std {
     }
 }
 
-impl Provide<CreateAtomic<AtomicFile>> for Std {
+impl Provide<CreateAtomic<'_, AtomicFile>> for Std {
     fn close(&mut self, file: AtomicFile) -> seam_core::io::Result<()> {
         file.commit()
     }
 
     fn provide(
         &mut self,
-        op: CreateAtomic<AtomicFile>,
+        op: CreateAtomic<'_, AtomicFile>,
         _: Token,
     ) -> seam_core::io::Result<AtomicFile> {
-        let temp = temp_path(&op.path);
+        let temp = temp_path(op.path);
         let file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -141,46 +142,60 @@ impl Provide<CreateAtomic<AtomicFile>> for Std {
             file,
             Pending {
                 temp: Some(temp),
-                target: op.path,
+                // Kept for the rename on close, after the operation is gone.
+                target: op.path.to_path_buf(),
             },
         ))
     }
 }
 
-impl Inspect<ReadFile> for Std {
-    fn inspect(&self, op: ReadFile) -> seam_core::io::Result<Vec<u8>> {
+impl Inspect<ReadFile<'_>> for Std {
+    fn inspect(&self, op: ReadFile<'_>) -> seam_core::io::Result<Vec<u8>> {
         crate::sio(std::fs::read(op.path))
     }
 }
 
-impl Inspect<ReadToString> for Std {
-    fn inspect(&self, op: ReadToString) -> seam_core::io::Result<String> {
+impl Inspect<ReadToString<'_>> for Std {
+    fn inspect(&self, op: ReadToString<'_>) -> seam_core::io::Result<String> {
         crate::sio(std::fs::read_to_string(op.path))
     }
 }
 
-impl Inspect<Metadata> for Std {
-    fn inspect(&self, op: Metadata) -> seam_core::io::Result<FileInfo> {
+impl Inspect<Metadata<'_>> for Std {
+    fn inspect(&self, op: Metadata<'_>) -> seam_core::io::Result<FileInfo> {
         crate::sio(std::fs::metadata(op.path).map(file_info))
     }
 }
 
-impl Inspect<ReadDir> for Std {
-    fn inspect(&self, op: ReadDir) -> seam_core::io::Result<Vec<PathBuf>> {
-        std::fs::read_dir(op.path)?
-            .map(|entry| entry.map(|e| e.path()).map_err(Into::into))
-            .collect()
+/// A directory being listed, acquired with [`ReadDir`]. Perform
+/// [`NextEntry`] on it for each path.
+#[derive(Debug)]
+pub struct Dir(std::fs::ReadDir);
+
+impl Provide<ReadDir<'_, Dir>> for Std {
+    fn provide(&mut self, op: ReadDir<'_, Dir>, _: Token) -> seam_core::io::Result<Dir> {
+        crate::sio(std::fs::read_dir(op.path).map(Dir))
+    }
+
+    fn close(&mut self, _: Dir) -> seam_core::io::Result<()> {
+        Ok(())
     }
 }
 
-impl Perform<WriteFile> for Std {
-    fn perform(&mut self, op: WriteFile) -> seam_core::io::Result<()> {
+impl Perform<NextEntry> for Dir {
+    fn perform(&mut self, _: NextEntry) -> seam_core::io::Result<Option<PathBuf>> {
+        crate::sio(self.0.next().transpose().map(|e| e.map(|e| e.path())))
+    }
+}
+
+impl Perform<WriteFile<'_>> for Std {
+    fn perform(&mut self, op: WriteFile<'_>) -> seam_core::io::Result<()> {
         crate::sio(std::fs::write(op.path, op.contents))
     }
 }
 
-impl Perform<CreateDir> for Std {
-    fn perform(&mut self, op: CreateDir) -> seam_core::io::Result<()> {
+impl Perform<CreateDir<'_>> for Std {
+    fn perform(&mut self, op: CreateDir<'_>) -> seam_core::io::Result<()> {
         if op.recursive {
             crate::sio(std::fs::create_dir_all(op.path))
         } else {
@@ -189,14 +204,14 @@ impl Perform<CreateDir> for Std {
     }
 }
 
-impl Perform<RemoveFile> for Std {
-    fn perform(&mut self, op: RemoveFile) -> seam_core::io::Result<()> {
+impl Perform<RemoveFile<'_>> for Std {
+    fn perform(&mut self, op: RemoveFile<'_>) -> seam_core::io::Result<()> {
         crate::sio(std::fs::remove_file(op.path))
     }
 }
 
-impl Perform<RemoveDir> for Std {
-    fn perform(&mut self, op: RemoveDir) -> seam_core::io::Result<()> {
+impl Perform<RemoveDir<'_>> for Std {
+    fn perform(&mut self, op: RemoveDir<'_>) -> seam_core::io::Result<()> {
         if op.recursive {
             crate::sio(std::fs::remove_dir_all(op.path))
         } else {
@@ -205,23 +220,23 @@ impl Perform<RemoveDir> for Std {
     }
 }
 
-impl Perform<Rename> for Std {
-    fn perform(&mut self, op: Rename) -> seam_core::io::Result<()> {
+impl Perform<Rename<'_>> for Std {
+    fn perform(&mut self, op: Rename<'_>) -> seam_core::io::Result<()> {
         crate::sio(std::fs::rename(op.from, op.to))
     }
 }
 
-impl Perform<CopyFile> for Std {
-    fn perform(&mut self, op: CopyFile) -> seam_core::io::Result<u64> {
+impl Perform<CopyFile<'_>> for Std {
+    fn perform(&mut self, op: CopyFile<'_>) -> seam_core::io::Result<u64> {
         crate::sio(std::fs::copy(op.from, op.to))
     }
 }
 
-impl Perform<SweepAtomic> for Std {
-    fn perform(&mut self, op: SweepAtomic) -> seam_core::io::Result<u64> {
+impl Perform<SweepAtomic<'_>> for Std {
+    fn perform(&mut self, op: SweepAtomic<'_>) -> seam_core::io::Result<u64> {
         let now = SystemTime::now();
         let mut removed = 0;
-        for entry in std::fs::read_dir(&op.dir)? {
+        for entry in std::fs::read_dir(op.dir)? {
             let entry = entry?;
             if !SweepAtomic::is_temp_name(&entry.file_name()) {
                 continue;
@@ -262,4 +277,5 @@ fn file_info(m: std::fs::Metadata) -> FileInfo {
 
 // Every capability type opts in to seam's lifts.
 impl seam_core::Capability for AtomicFile {}
+impl seam_core::Capability for Dir {}
 impl seam_core::Capability for File {}

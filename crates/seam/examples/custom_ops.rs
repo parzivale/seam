@@ -119,7 +119,7 @@ impl<C, F> FileStore<C, F> {
     }
 }
 
-impl<C: Inspect<ReadToString>, F> FileStore<C, F> {
+impl<C: for<'a> Inspect<ReadToString<'a>>, F> FileStore<C, F> {
     fn load(&self) -> io::Result<BTreeMap<String, String>> {
         match self.fs.inspect(ReadToString::new(&self.path)) {
             Ok(text) => Ok(text
@@ -133,7 +133,7 @@ impl<C: Inspect<ReadToString>, F> FileStore<C, F> {
     }
 }
 
-impl<C: Inspect<ReadToString>, F> Inspect<Get> for FileStore<C, F> {
+impl<C: for<'a> Inspect<ReadToString<'a>>, F> Inspect<Get> for FileStore<C, F> {
     fn inspect(&self, op: Get) -> io::Result<Option<String>> {
         Ok(self.load()?.remove(&op.0))
     }
@@ -141,7 +141,7 @@ impl<C: Inspect<ReadToString>, F> Inspect<Get> for FileStore<C, F> {
 
 impl<C, F> Perform<Put> for FileStore<C, F>
 where
-    C: Inspect<ReadToString> + Provide<CreateAtomic<F>>,
+    C: for<'a> Inspect<ReadToString<'a>> + for<'a> Provide<CreateAtomic<'a, F>>,
     F: for<'a> Perform<WriteAll<'a>>,
 {
     /// Rewrites the whole file, atomically: the new file is renamed into
@@ -179,7 +179,7 @@ fn main() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use seam::ops::fs::ReadDir;
+    use seam::ops::fs::{NextEntry, ReadDir};
     use seam::test::Sim;
     use seam::test::fs::AtomicFile;
 
@@ -206,10 +206,10 @@ mod tests {
             b"visits:about\t1\nvisits:home\t2\n"
         );
         // The temporary file behind each atomic write is gone.
-        assert_eq!(
-            store.fs.inspect(ReadDir::new("/tmp")).unwrap(),
-            [PathBuf::from("/tmp/kv.tsv")]
-        );
+        let listed = store.fs.acquire(ReadDir::new("/tmp"), |_, d| {
+            std::iter::from_fn(|| d.perform(NextEntry).transpose()).collect::<io::Result<Vec<_>>>()
+        });
+        assert_eq!(listed.unwrap(), [PathBuf::from("/tmp/kv.tsv")]);
     }
 
     #[test]

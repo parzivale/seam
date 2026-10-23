@@ -9,7 +9,7 @@ use std::task::Poll;
 use std::time::Duration;
 
 use seam_core::future::{SendInspect, SendPerform};
-use seam_core::ops::fs::{CreateAtomic, ReadDir, ReadToString, WriteFile};
+use seam_core::ops::fs::{CreateAtomic, NextEntry, ReadDir, ReadToString, WriteFile};
 use seam_core::ops::io::{Read, ReadToEnd, WriteAll};
 use seam_core::ops::net::{Accept, RecvFrom, SendTo, Shutdown, TcpBind, TcpConnect, UdpBind};
 use seam_core::ops::signal::CtrlC;
@@ -23,6 +23,21 @@ use seam_test::Sim;
 use seam_test::fs::AtomicFile;
 use seam_test::rt::net::{TcpListener, TcpStream, UdpSocket};
 use seam_test::rt::{AsyncSim, Deadlock, JoinHandle, Runtime, TaskSet};
+
+/// Lists `dir` through `ReadDir`, one entry at a time.
+fn list<C, D>(c: &mut C, dir: impl AsRef<std::path::Path>) -> io::Result<Vec<std::path::PathBuf>>
+where
+    C: for<'a> seam_core::Provide<ReadDir<'a, D>>,
+    D: seam_core::Perform<NextEntry>,
+{
+    seam_core::Acquire::acquire(c, ReadDir::new(dir.as_ref()), |_, entries| {
+        let mut paths = Vec::new();
+        while let Some(path) = seam_core::Perform::perform(entries, NextEntry)? {
+            paths.push(path);
+        }
+        Ok(paths)
+    })
+}
 
 fn addr(port: u16) -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], port))
@@ -147,7 +162,7 @@ fn seeds_find_and_replay_a_race() {
                                 .parse()
                                 .unwrap();
                             sim.perform_send(YieldNow).await; // the window
-                            sim.perform_send(WriteFile::new("/counter", (n + 1).to_string()))
+                            sim.perform_send(WriteFile::new("/counter", &(n + 1).to_string()))
                                 .await
                         };
                         let _ = set.perform_send(SpawnInto::new(increment)).await;
@@ -368,7 +383,7 @@ fn a_timeout_cancels_an_atomic_write_cleanly() {
     rt.with_sim(|s| {
         assert_eq!(s.file("/etc/app.conf").unwrap(), b"old");
         assert_eq!(
-            s.inspect(ReadDir::new("/etc")).unwrap(),
+            list(s, "/etc").unwrap(),
             [std::path::PathBuf::from("/etc/app.conf")]
         );
     });
@@ -383,7 +398,7 @@ fn the_world_carries_over() {
     let rt = Runtime::new(sim);
     rt.block_on(|mut sim| async move {
         let text = sim.inspect_send(ReadToString::new("/in")).await.unwrap();
-        sim.perform_send(WriteFile::new("/out", text.to_uppercase()))
+        sim.perform_send(WriteFile::new("/out", &text.to_uppercase()))
             .await
             .unwrap();
     });
@@ -393,4 +408,22 @@ fn the_world_carries_over() {
 #[allow(dead_code)]
 fn reads_are_send(stream: &mut TcpStream) -> impl Future + Send + '_ {
     stream.perform_send(Read(&mut []))
+}
+
+#[test]
+fn files_through_the_runtime() {
+    let mut sim = Sim::new();
+    sim.add_file("/d/a", "1");
+    let rt = Runtime::new(sim);
+    let listed = rt.block_on(|mut sim| async move {
+        seam_core::Perform::perform(&mut sim, WriteFile::new("/d/b", "2")).unwrap();
+        list(&mut sim, "/d").unwrap()
+    });
+    assert_eq!(
+        listed,
+        [
+            std::path::PathBuf::from("/d/a"),
+            std::path::PathBuf::from("/d/b")
+        ]
+    );
 }

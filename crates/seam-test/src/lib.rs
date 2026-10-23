@@ -62,14 +62,14 @@
 //! /// The core under test: greets `$USER` and remembers it did.
 //! fn greet<C>(c: &mut C) -> io::Result<()>
 //! where
-//!     C: Inspect<Var> + Inspect<ReadToString> + Perform<WriteFile> + for<'a> Perform<Print<'a>>,
+//!     C: for<'a> Inspect<Var<'a>> + for<'a> Inspect<ReadToString<'a>> + for<'a> Perform<WriteFile<'a>> + for<'a> Perform<Print<'a>>,
 //! {
 //!     let user = c.inspect(Var::new("USER")).map(|u| u.to_string_lossy().into_owned());
 //!     let user = user.unwrap_or_else(|| "stranger".into());
 //!     let seen = c.inspect(ReadToString::new("/tmp/seen")).unwrap_or_default();
 //!     let word = if seen.lines().any(|l| l == user) { "Welcome back" } else { "Hello" };
 //!     c.perform(Print(format!("{word}, {user}!\n").as_bytes()))?;
-//!     c.perform(WriteFile::new("/tmp/seen", format!("{seen}{user}\n")))
+//!     c.perform(WriteFile::new("/tmp/seen", &format!("{seen}{user}\n")))
 //! }
 //!
 //! let mut sim = Sim::new();

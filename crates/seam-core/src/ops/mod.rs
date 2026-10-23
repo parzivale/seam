@@ -36,7 +36,7 @@
 //!
 //! fn save<C, F>(c: &mut C, report: &str) -> io::Result<()>
 //! where
-//!     C: Provide<Open<F>>,
+//!     C: for<'a> Provide<Open<'a, F>>,
 //!     F: for<'a> Perform<WriteAll<'a>>,
 //! {
 //!     c.acquire(Open::create("report.txt"), |_c, file| {

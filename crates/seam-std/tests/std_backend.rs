@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use seam_core::ops::fs::{
-    CreateAtomic, CreateDir, Open, ReadDir, ReadFile, RemoveDir, SweepAtomic, WriteFile,
+    CreateAtomic, CreateDir, NextEntry, Open, ReadDir, ReadFile, RemoveDir, SweepAtomic, WriteFile,
 };
 use seam_core::ops::io::{Read, ReadExact, ReadToEnd, WriteAll};
 use seam_core::ops::net::{Accept, LocalAddr, ResolveInto, TcpBind, TcpConnect};
@@ -16,6 +16,21 @@ use seam_core::ops::time::Now;
 use seam_core::{Acquire, Inspect, Perform, Provide};
 use seam_std::Std;
 use seam_std::fs::AtomicFile;
+
+/// Lists `dir` through `ReadDir`, one entry at a time.
+fn list<C, D>(c: &mut C, dir: impl AsRef<std::path::Path>) -> io::Result<Vec<std::path::PathBuf>>
+where
+    C: for<'a> seam_core::Provide<ReadDir<'a, D>>,
+    D: seam_core::Perform<NextEntry>,
+{
+    seam_core::Acquire::acquire(c, ReadDir::new(dir.as_ref()), |_, entries| {
+        let mut paths = Vec::new();
+        while let Some(path) = seam_core::Perform::perform(entries, NextEntry)? {
+            paths.push(path);
+        }
+        Ok(paths)
+    })
+}
 
 fn scratch_dir(std: &mut Std, name: &str) -> io::Result<PathBuf> {
     let mut dir = std.inspect(seam_core::ops::env::TempDir);
@@ -29,7 +44,7 @@ fn scratch_dir(std: &mut Std, name: &str) -> io::Result<PathBuf> {
 /// read and write them, and nothing else.
 fn copy_through_handle<C, F>(c: &mut C, from: &Path, to: &Path) -> io::Result<()>
 where
-    C: Provide<Open<F>>,
+    C: for<'a> Provide<Open<'a, F>>,
     F: for<'a> Perform<ReadToEnd<'a>> + for<'a> Perform<WriteAll<'a>>,
 {
     c.acquire(Open::read(from), |c, src| {
@@ -48,7 +63,7 @@ fn filesystem_roundtrip() -> io::Result<()> {
     copy_through_handle(&mut std, &a, &b)?;
 
     assert_eq!(std.inspect(ReadFile::new(&b))?, b"hello");
-    let mut listed = std.inspect(ReadDir::new(&dir))?;
+    let mut listed = list(&mut std, &dir)?;
     listed.sort();
     assert_eq!(listed, [a, b]);
     std.perform(RemoveDir::all(&dir))
@@ -134,17 +149,14 @@ mod atomic {
         assert!(panicked.is_err());
         assert_eq!(std.inspect(ReadFile::new(&path))?, b"old");
         assert_eq!(
-            std.inspect(ReadDir::new(&dir))?,
+            list(&mut std, &dir)?,
             std::slice::from_ref(&path),
             "no temporary files left"
         );
 
         replace(&mut std, &path, false)?;
         assert_eq!(std.inspect(ReadFile::new(&path))?, b"new");
-        assert_eq!(
-            std.inspect(ReadDir::new(&dir))?,
-            std::slice::from_ref(&path)
-        );
+        assert_eq!(list(&mut std, &dir)?, std::slice::from_ref(&path));
         std.perform(RemoveDir::all(&dir))
     }
 
@@ -165,7 +177,7 @@ mod atomic {
             "too recent"
         );
         assert_eq!(std.perform(SweepAtomic::new(&dir, Duration::ZERO))?, 1);
-        assert_eq!(std.inspect(ReadDir::new(&dir))?, [unrelated]);
+        assert_eq!(list(&mut std, &dir)?, [unrelated]);
         std.perform(RemoveDir::all(&dir))
     }
 }

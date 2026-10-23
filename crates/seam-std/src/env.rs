@@ -6,8 +6,8 @@ use seam_core::ops::env::{Args, CurrentDir, TempDir, Var};
 
 use crate::Std;
 
-impl Inspect<Var> for Std {
-    fn inspect(&self, op: Var) -> Option<OsString> {
+impl Inspect<Var<'_>> for Std {
+    fn inspect(&self, op: Var<'_>) -> Option<OsString> {
         std::env::var_os(op.name)
     }
 }

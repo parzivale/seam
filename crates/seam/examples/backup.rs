@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use seam::ops::env::Args;
-use seam::ops::fs::{CopyFile, CreateAtomic, CreateDir, Metadata, ReadDir, RemoveDir};
+use seam::ops::fs::{CopyFile, CreateAtomic, CreateDir, Metadata, NextEntry, ReadDir, RemoveDir};
 use seam::ops::io::WriteAll;
 use seam::ops::stdio::Print;
 use seam::ops::time::WallClock;
@@ -34,29 +34,30 @@ const MANIFEST: &str = "MANIFEST";
 /// copy and delete files, write files atomically, and print. It cannot touch
 /// the network, run commands, or read environment variables.
 ///
-/// `F` is the backend's atomic file type; it is inferred from the backend.
-trait BackupEnv<F: AtomicWrite>:
+/// `F` is the backend's atomic file type and `D` its directory listing
+/// type; both are inferred from the backend.
+trait BackupEnv<F: AtomicWrite, D: Listing>:
     Inspect<Args>
     + Inspect<WallClock>
-    + Inspect<ReadDir>
-    + Inspect<Metadata>
-    + Perform<CreateDir>
-    + Perform<CopyFile>
-    + Perform<RemoveDir>
-    + Provide<CreateAtomic<F>>
+    + for<'a> Provide<ReadDir<'a, D>>
+    + for<'a> Inspect<Metadata<'a>>
+    + for<'a> Perform<CreateDir<'a>>
+    + for<'a> Perform<CopyFile<'a>>
+    + for<'a> Perform<RemoveDir<'a>>
+    + for<'a> Provide<CreateAtomic<'a, F>>
     + for<'a> Perform<Print<'a>>
 {
 }
 
-impl<T, F: AtomicWrite> BackupEnv<F> for T where
+impl<T, F: AtomicWrite, D: Listing> BackupEnv<F, D> for T where
     T: Inspect<Args>
         + Inspect<WallClock>
-        + Inspect<ReadDir>
-        + Inspect<Metadata>
-        + Perform<CreateDir>
-        + Perform<CopyFile>
-        + Perform<RemoveDir>
-        + Provide<CreateAtomic<F>>
+        + for<'a> Provide<ReadDir<'a, D>>
+        + for<'a> Inspect<Metadata<'a>>
+        + for<'a> Perform<CreateDir<'a>>
+        + for<'a> Perform<CopyFile<'a>>
+        + for<'a> Perform<RemoveDir<'a>>
+        + for<'a> Provide<CreateAtomic<'a, F>>
         + for<'a> Perform<Print<'a>>
 {
 }
@@ -65,8 +66,12 @@ impl<T, F: AtomicWrite> BackupEnv<F> for T where
 trait AtomicWrite: for<'a> Perform<WriteAll<'a>> {}
 impl<F: for<'a> Perform<WriteAll<'a>>> AtomicWrite for F {}
 
+/// What the backup tool does with a directory listing: step through it.
+trait Listing: Perform<NextEntry> {}
+impl<D: Perform<NextEntry>> Listing for D {}
+
 /// Parses the arguments and runs one backup.
-fn run<F: AtomicWrite>(env: &mut impl BackupEnv<F>) -> io::Result<()> {
+fn run<F: AtomicWrite, D: Listing>(env: &mut impl BackupEnv<F, D>) -> io::Result<()> {
     let args = env.inspect(Args);
     let usage = || {
         io::Error::new(
@@ -96,8 +101,8 @@ fn run<F: AtomicWrite>(env: &mut impl BackupEnv<F>) -> io::Result<()> {
 /// last, through an atomic file acquired for a scope, so it exists completely or not
 /// at all: a run that crashes, fails or is killed partway leaves a snapshot
 /// with no manifest, which the next run removes.
-fn backup<F: AtomicWrite>(
-    env: &mut impl BackupEnv<F>,
+fn backup<F: AtomicWrite, D: Listing>(
+    env: &mut impl BackupEnv<F, D>,
     source: &Path,
     dest: &Path,
     keep: usize,
@@ -118,23 +123,29 @@ fn backup<F: AtomicWrite>(
     let mut copied = Vec::new();
     copy_tree(env, source, &snapshot, Path::new(""), &mut copied)?;
 
-    env.acquire(CreateAtomic::new(snapshot.join(MANIFEST)), |_, manifest| {
-        for (path, bytes) in &copied {
-            let line = format!("{bytes}\t{}\n", path.display());
-            manifest.perform(WriteAll(line.as_bytes()))?;
-        }
-        io::Result::Ok(())
-    })?;
+    env.acquire(
+        CreateAtomic::new(&snapshot.join(MANIFEST)),
+        |_, manifest| {
+            for (path, bytes) in &copied {
+                let line = format!("{bytes}\t{}\n", path.display());
+                manifest.perform(WriteAll(line.as_bytes()))?;
+            }
+            io::Result::Ok(())
+        },
+    )?;
 
-    let mut complete = Vec::new();
-    for dir in env.inspect(ReadDir::new(dest))? {
-        if env.inspect(Metadata::new(dir.join(MANIFEST))).is_ok() {
-            complete.push(dir);
-        } else {
-            env.perform(RemoveDir::all(&dir))?;
-            say(env, &format!("removed incomplete {}\n", dir.display()))?;
+    let mut complete = env.acquire(ReadDir::new(dest), |env, snapshots| {
+        let mut complete = Vec::new();
+        while let Some(dir) = snapshots.perform(NextEntry)? {
+            if env.inspect(Metadata::new(&dir.join(MANIFEST))).is_ok() {
+                complete.push(dir);
+            } else {
+                env.perform(RemoveDir::all(&dir))?;
+                say(env, &format!("removed incomplete {}\n", dir.display()))?;
+            }
         }
-    }
+        io::Result::Ok(complete)
+    })?;
     complete.sort();
     let excess = complete.len().saturating_sub(keep);
     for old in &complete[..excess] {
@@ -146,28 +157,31 @@ fn backup<F: AtomicWrite>(
 
 /// Copies the tree under `from` to `to`, recording each file's path
 /// (relative to the snapshot) and size.
-fn copy_tree<F: AtomicWrite>(
-    env: &mut impl BackupEnv<F>,
+fn copy_tree<F: AtomicWrite, D: Listing>(
+    env: &mut impl BackupEnv<F, D>,
     from: &Path,
     to: &Path,
     rel: &Path,
     copied: &mut Vec<(PathBuf, u64)>,
 ) -> io::Result<()> {
-    for entry in env.inspect(ReadDir::new(from))? {
-        let name = entry.file_name().expect("directory entries have names");
-        let target = to.join(name);
-        if env.inspect(Metadata::new(&entry))?.is_dir() {
-            env.perform(CreateDir::new(&target))?;
-            copy_tree(env, &entry, &target, &rel.join(name), copied)?;
-        } else {
-            let bytes = env.perform(CopyFile::new(&entry, &target))?;
-            copied.push((rel.join(name), bytes));
+    // One entry at a time: the listing holds no more than the next path.
+    env.acquire(ReadDir::new(from), |env, entries| {
+        while let Some(entry) = entries.perform(NextEntry)? {
+            let name = entry.file_name().expect("directory entries have names");
+            let target = to.join(name);
+            if env.inspect(Metadata::new(&entry))?.is_dir() {
+                env.perform(CreateDir::new(&target))?;
+                copy_tree(env, &entry, &target, &rel.join(name), copied)?;
+            } else {
+                let bytes = env.perform(CopyFile::new(&entry, &target))?;
+                copied.push((rel.join(name), bytes));
+            }
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
-fn say<F: AtomicWrite>(env: &mut impl BackupEnv<F>, text: &str) -> io::Result<()> {
+fn say<F: AtomicWrite, D: Listing>(env: &mut impl BackupEnv<F, D>, text: &str) -> io::Result<()> {
     env.perform(Print(text.as_bytes()))
 }
 
@@ -231,7 +245,12 @@ mod tests {
             run(&mut sim).unwrap();
             sim.advance(Duration::from_secs(3600));
         }
-        let snaps = sim.inspect(ReadDir::new("/backups")).unwrap();
+        let snaps = sim
+            .acquire(ReadDir::new("/backups"), |_, d| {
+                std::iter::from_fn(|| d.perform(NextEntry).transpose())
+                    .collect::<io::Result<Vec<_>>>()
+            })
+            .unwrap();
         assert_eq!(
             snaps,
             [

@@ -18,7 +18,7 @@
 //! /// Pure apart from the capabilities in its bounds.
 //! fn count_lines<C>(c: &mut C) -> io::Result<()>
 //! where
-//!     C: Inspect<Args> + Inspect<ReadToString> + for<'a> Perform<Print<'a>>,
+//!     C: Inspect<Args> + for<'a> Inspect<ReadToString<'a>> + for<'a> Perform<Print<'a>>,
 //! {
 //!     let args = c.inspect(Args);
 //!     let path = args.get(1).ok_or(io::ErrorKind::InvalidInput)?;

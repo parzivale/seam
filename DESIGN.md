@@ -40,9 +40,11 @@ tracks it. Control effects (errors, early return, async suspension) use
 feature, so a core written against them runs on any backend:
 
 - `io`: `Read`, `ReadExact`, `ReadToEnd`, `Write`, `WriteAll`, `Flush` (on handles)
-- `fs`: `ReadFile`, `ReadToString`, `Metadata`, `ReadDir` (queries);
-  `WriteFile`, `CreateDir`, `RemoveFile`, `RemoveDir`, `Rename`, `CopyFile`,
-  `SweepAtomic`; acquisitions `Open<F>` and `CreateAtomic<F>`
+- `fs`: `ReadFile`, `ReadToString`, `Metadata` (queries); `WriteFile`,
+  `CreateDir`, `RemoveFile`, `RemoveDir`, `Rename`, `CopyFile`,
+  `SweepAtomic`; acquisitions `Open<'a, F>`, `CreateAtomic<'a, F>` and
+  `ReadDir<'a, D>`, a directory listing that `NextEntry` steps through one
+  path at a time
 - `net`: `ResolveInto` and `Resolve` (DNS is an effect), `SendTo`, `RecvFrom`, `Shutdown(How)`;
   `LocalAddr` and `PeerAddr` queries; acquisitions `TcpConnect<S>`,
   `TcpBind<L>`, `Accept<S>` (from a listener) and `UdpBind<U>`
@@ -96,7 +98,18 @@ piece at a time (`Line::complete`). `Resolve` borrows its host name, so
 neither form allocates for its input; `fs`, `process` and `env` need std for
 `Path`, `Command` and `OsString`.
 
-Acquisitions are generic over the backend's handle type (`Open<F>`), since
+Operations borrow their inputs: paths are `&Path`, `WriteFile`'s contents
+`&[u8]`, `Var`'s name `&OsStr`, `Resolve`'s host `&str`. Describing an
+operation then allocates nothing, and a caller that already holds a
+`PathBuf` lends it instead of cloning it. The cost is in bounds, which name
+the operation for every lifetime: `for<'a> Inspect<ReadFile<'a>>`, as the
+`io` operations' buffers already did. A provider that must keep an input
+past the call copies it: an atomic file keeps its target path for the
+rename on close, and Tokio's blocking pool needs owned paths, which Tokio
+itself copies. Listing a directory is an acquisition rather than a query
+returning a `Vec`, so a core holds one entry at a time and can stop early.
+
+Acquisitions are generic over the backend's handle type (`Open<'a, F>`), since
 each backend has its own. Bounds name the handle as a type parameter and
 inference fills it in.
 

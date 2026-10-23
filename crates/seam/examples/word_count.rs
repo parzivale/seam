@@ -34,7 +34,7 @@ type Worker = Box<dyn FnOnce() -> io::Result<Counts> + Send>;
 /// Takes paths from `queue` until it is empty, counting each file's words.
 fn worker<C, Q>(c: C, mut queue: Q) -> io::Result<Counts>
 where
-    C: Inspect<ReadToString>,
+    C: for<'a> Inspect<ReadToString<'a>>,
     Q: for<'a> Perform<Update<'a, Vec<String>, Option<String>>>,
 {
     let mut counts = Vec::new();
@@ -52,7 +52,7 @@ fn run<C, Q, S>(c: &mut C) -> io::Result<()>
 where
     C: Inspect<Args>
         + Inspect<AvailableParallelism>
-        + Inspect<ReadToString>
+        + for<'a> Inspect<ReadToString<'a>>
         + for<'a> Perform<Print<'a>>
         + Perform<Share<Vec<String>, Q>>
         + Provide<SpawnSet<S>>

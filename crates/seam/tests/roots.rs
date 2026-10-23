@@ -60,7 +60,7 @@ impl Perform<Put> for Memory {
 /// Remembers who visited, using the store, the environment and the clock.
 fn visit<C>(c: &mut C) -> String
 where
-    C: Inspect<Var> + Inspect<Now> + Perform<Sleep> + Inspect<Get> + Perform<Put>,
+    C: for<'a> Inspect<Var<'a>> + Inspect<Now> + Perform<Sleep> + Inspect<Get> + Perform<Put>,
 {
     let user = c
         .inspect(Var::new("SEAM_ROOT_TEST_USER"))
@@ -79,8 +79,8 @@ where
 async fn save<C>(c: &mut C, path: &str) -> io::Result<String>
 where
     C: SendPerform<Sleep>
-        + SendPerform<WriteFile>
-        + SendInspect<ReadToString>
+        + for<'a> SendPerform<WriteFile<'a>>
+        + for<'a> SendInspect<ReadToString<'a>>
         + Inspect<Now>
         + Send,
 {

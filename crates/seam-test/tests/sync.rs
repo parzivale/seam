@@ -261,8 +261,8 @@ fn a_worker_pool() {
                                 sim.perform_send(Sleep(Duration::from_millis(u64::from(n))))
                                     .await;
                                 sim.perform_send(WriteFile::new(
-                                    format!("/tmp/{n}"),
-                                    (n * n).to_string(),
+                                    &format!("/tmp/{n}"),
+                                    &(n * n).to_string(),
                                 ))
                                 .await
                                 .unwrap();
@@ -291,7 +291,7 @@ fn a_worker_pool() {
         .unwrap();
         for n in 1..=6u32 {
             let out = sim
-                .inspect_send(ReadToString::new(format!("/tmp/{n}")))
+                .inspect_send(ReadToString::new(&format!("/tmp/{n}")))
                 .await
                 .unwrap();
             assert_eq!(out, (n * n).to_string());

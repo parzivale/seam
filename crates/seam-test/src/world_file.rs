@@ -648,7 +648,8 @@ impl Sim {
             if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
                 self.perform(CreateDir::all(dir)).map_err(failed)?;
             }
-            self.perform(WriteFile::new(&path, bytes)).map_err(failed)?;
+            self.perform(WriteFile::new(&path, &bytes))
+                .map_err(failed)?;
         }
         Ok(())
     }

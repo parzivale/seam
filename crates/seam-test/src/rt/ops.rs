@@ -35,8 +35,8 @@ macro_rules! delegate {
             }
         }
     )*};
-    (provide $($op:ty;)*) => {$(
-        impl Provide<$op> for AsyncSim {
+    (provide $([$($gen:tt)*] $op:ty;)*) => {$(
+        impl<$($gen)*> Provide<$op> for AsyncSim {
             fn provide(
                 &mut self,
                 op: $op,
@@ -97,7 +97,7 @@ mod env {
 
     use super::*;
 
-    delegate! { inspect [] Var; [] Args; [] CurrentDir; [] TempDir; }
+    delegate! { inspect ['a] Var<'a>; [] Args; [] CurrentDir; [] TempDir; }
 }
 
 #[cfg(feature = "fs")]
@@ -108,14 +108,14 @@ mod fs {
     };
 
     use super::*;
-    use crate::fs::{AtomicFile, File};
+    use crate::fs::{AtomicFile, Dir, File};
 
-    delegate! { inspect [] ReadFile; [] ReadToString; [] Metadata; [] ReadDir; }
+    delegate! { inspect ['a] ReadFile<'a>; ['a] ReadToString<'a>; ['a] Metadata<'a>; }
     delegate! {
-        perform [] WriteFile; [] CreateDir; [] RemoveFile; [] RemoveDir; [] Rename; [] CopyFile;
-        [] SweepAtomic;
+        perform ['a] WriteFile<'a>; ['a] CreateDir<'a>; ['a] RemoveFile<'a>; ['a] RemoveDir<'a>;
+        ['a] Rename<'a>; ['a] CopyFile<'a>; ['a] SweepAtomic<'a>;
     }
-    delegate! { provide Open<File>; CreateAtomic<AtomicFile>; }
+    delegate! { provide ['a] Open<'a, File>; ['a] CreateAtomic<'a, AtomicFile>; ['a] ReadDir<'a, Dir>; }
 }
 
 #[cfg(feature = "process")]
@@ -127,7 +127,7 @@ mod process {
 
     delegate! { perform [] RunCommand; [] Exit; }
     // The child is the plain simulation's: nothing about it waits.
-    delegate! { provide SpawnChild<Child>; }
+    delegate! { provide [] SpawnChild<Child>; }
 }
 
 #[cfg(feature = "io-std")]

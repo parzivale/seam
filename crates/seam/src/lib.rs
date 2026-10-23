@@ -32,7 +32,7 @@
 //! /// The core. It can read files and print, and nothing else.
 //! fn shout<C>(c: &mut C, path: &str) -> io::Result<()>
 //! where
-//!     C: Inspect<ReadToString> + for<'a> Perform<Print<'a>>,
+//!     C: for<'a> Inspect<ReadToString<'a>> + for<'a> Perform<Print<'a>>,
 //! {
 //!     let text = c.inspect(ReadToString::new(path))?;
 //!     c.perform(Print(text.to_uppercase().as_bytes()))
@@ -118,7 +118,7 @@
 //!
 //! fn save<C, F>(c: &mut C, text: &str) -> io::Result<()>
 //! where
-//!     C: Provide<CreateAtomic<F>>,
+//!     C: for<'a> Provide<CreateAtomic<'a, F>>,
 //!     F: for<'a> Perform<WriteAll<'a>>,
 //! {
 //!     c.acquire(CreateAtomic::new("notes.txt"), |_c, file| {

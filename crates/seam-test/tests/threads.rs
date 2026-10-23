@@ -5,7 +5,7 @@ use seam_core::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use seam_core::ops::fs::{ReadToString, WriteFile};
+use seam_core::ops::fs::{NextEntry, ReadDir, ReadToString, WriteFile};
 use seam_core::ops::io::{ReadToEnd, WriteAll};
 use seam_core::ops::net::{Accept, TcpBind, TcpConnect};
 use seam_core::ops::signal::CtrlC;
@@ -20,6 +20,21 @@ use seam_test::Sim;
 use seam_test::threads::net::{TcpListener, TcpStream};
 use seam_test::threads::sync::{Receiver, Sender, Shared};
 use seam_test::threads::{Deadlock, JoinHandle, ThreadSet, ThreadSim, Threads};
+
+/// Lists `dir` through `ReadDir`, one entry at a time.
+fn list<C, D>(c: &mut C, dir: impl AsRef<std::path::Path>) -> io::Result<Vec<std::path::PathBuf>>
+where
+    C: for<'a> seam_core::Provide<ReadDir<'a, D>>,
+    D: seam_core::Perform<NextEntry>,
+{
+    seam_core::Acquire::acquire(c, ReadDir::new(dir.as_ref()), |_, entries| {
+        let mut paths = Vec::new();
+        while let Some(path) = seam_core::Perform::perform(entries, NextEntry)? {
+            paths.push(path);
+        }
+        Ok(paths)
+    })
+}
 
 /// Spawns `n` threads that each print their number, and returns what
 /// was printed.
@@ -409,5 +424,22 @@ fn threads_share_the_world() {
     assert_eq!(
         threads.with_sim(|s| s.file("/note").unwrap().to_vec()),
         b"hi"
+    );
+}
+
+#[test]
+fn files_through_threads() {
+    let mut sim = Sim::new();
+    sim.add_file("/d/a", "1");
+    let listed = Threads::new(sim).run(|mut sim| {
+        sim.perform(WriteFile::new("/d/b", "2")).unwrap();
+        list(&mut sim, "/d").unwrap()
+    });
+    assert_eq!(
+        listed,
+        [
+            std::path::PathBuf::from("/d/a"),
+            std::path::PathBuf::from("/d/b")
+        ]
     );
 }

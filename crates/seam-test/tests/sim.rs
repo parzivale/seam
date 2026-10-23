@@ -11,8 +11,8 @@ use std::time::Duration;
 use seam_core::future::{SendPerform, block_on};
 use seam_core::ops::env::{Args, Var};
 use seam_core::ops::fs::{
-    CreateDir, Metadata, Open, ReadDir, ReadFile, ReadToString, RemoveDir, RemoveFile, Rename,
-    WriteFile,
+    CreateDir, Metadata, NextEntry, Open, ReadDir, ReadFile, ReadToString, RemoveDir, RemoveFile,
+    Rename, WriteFile,
 };
 use seam_core::ops::io::{Read, ReadExact, ReadToEnd, WriteAll};
 use seam_core::ops::net::{
@@ -28,6 +28,21 @@ use seam_core::{Acquire, AsyncAcquire, Inspect, Perform, Provide};
 use seam_test::fs::File;
 use seam_test::net::{TcpListener, TcpStream, UdpSocket};
 use seam_test::{Sim, catch_exit};
+
+/// Lists `dir` through `ReadDir`, one entry at a time.
+fn list<C, D>(c: &mut C, dir: impl AsRef<std::path::Path>) -> io::Result<Vec<std::path::PathBuf>>
+where
+    C: for<'a> seam_core::Provide<ReadDir<'a, D>>,
+    D: seam_core::Perform<NextEntry>,
+{
+    seam_core::Acquire::acquire(c, ReadDir::new(dir.as_ref()), |_, entries| {
+        let mut paths = Vec::new();
+        while let Some(path) = seam_core::Perform::perform(entries, NextEntry)? {
+            paths.push(path);
+        }
+        Ok(paths)
+    })
+}
 
 fn kind<T: std::fmt::Debug>(r: io::Result<T>) -> ErrorKind {
     r.unwrap_err().kind()
@@ -66,13 +81,16 @@ fn clocks_are_virtual() {
 /// A core: an append-only log with rotation, written only against bounds.
 fn append_log<C, F>(c: &mut C, dir: &Path, line: &str, max: u64) -> io::Result<()>
 where
-    C: Provide<Open<F>> + Inspect<Metadata> + Perform<Rename> + Perform<CreateDir>,
+    C: for<'a> Provide<Open<'a, F>>
+        + for<'a> Inspect<Metadata<'a>>
+        + for<'a> Perform<Rename<'a>>
+        + for<'a> Perform<CreateDir<'a>>,
     F: for<'a> Perform<WriteAll<'a>>,
 {
     c.perform(CreateDir::all(dir))?;
     let log = dir.join("app.log");
     if c.inspect(Metadata::new(&log)).is_ok_and(|m| m.len >= max) {
-        c.perform(Rename::new(&log, dir.join("app.log.1")))?;
+        c.perform(Rename::new(&log, &dir.join("app.log.1")))?;
     }
     c.acquire(Open::append(&log), |_, f| {
         f.perform(WriteAll(line.as_bytes()))
@@ -89,7 +107,7 @@ fn filesystem_core() {
     assert_eq!(sim.file("/var/log/app.log.1").unwrap(), b"one\ntwo\n");
     assert_eq!(sim.file("/var/log/app.log").unwrap(), b"three\n");
     assert_eq!(
-        sim.inspect(ReadDir::new("/var/log")).unwrap(),
+        list(&mut sim, "/var/log").unwrap(),
         [
             PathBuf::from("/var/log/app.log"),
             PathBuf::from("/var/log/app.log.1")
@@ -344,7 +362,9 @@ fn env_and_signals() {
 /// the simulation through the blanket lifts.
 #[test]
 fn async_send_core() {
-    async fn retry<C: SendPerform<RandomU64> + SendPerform<Sleep> + SendPerform<WriteFile>>(
+    async fn retry<
+        C: SendPerform<RandomU64> + SendPerform<Sleep> + for<'a> SendPerform<WriteFile<'a>>,
+    >(
         c: &mut C,
     ) -> io::Result<()> {
         for attempt in 0.. {
@@ -378,11 +398,11 @@ mod atomic {
         sim
     }
 
-    fn listing(sim: &Sim) -> Vec<PathBuf> {
-        sim.inspect(ReadDir::new("/etc")).unwrap()
+    fn listing(sim: &mut Sim) -> Vec<PathBuf> {
+        list(sim, "/etc").unwrap()
     }
 
-    fn create() -> CreateAtomic<AtomicFile> {
+    fn create() -> CreateAtomic<'static, AtomicFile> {
         CreateAtomic::new("/etc/app.conf")
     }
 
@@ -402,7 +422,7 @@ mod atomic {
             io::Result::Ok(())
         })
         .unwrap();
-        assert_eq!(listing(&sim), [PathBuf::from("/etc/app.conf")]);
+        assert_eq!(listing(&mut sim), [PathBuf::from("/etc/app.conf")]);
         assert_eq!(sim.file("/etc/app.conf").unwrap(), b"new");
     }
 
@@ -424,7 +444,7 @@ mod atomic {
         assert!(panicked.is_err());
 
         assert_eq!(sim.file("/etc/app.conf").unwrap(), b"old");
-        assert_eq!(listing(&sim), [PathBuf::from("/etc/app.conf")]);
+        assert_eq!(listing(&mut sim), [PathBuf::from("/etc/app.conf")]);
     }
 
     /// Dropping the scope's future at an `.await` is a rollback.
@@ -457,7 +477,7 @@ mod atomic {
             assert!(fut.as_mut().poll(&mut cx).is_pending());
         }
         assert_eq!(sim.file("/etc/app.conf").unwrap(), b"old");
-        assert_eq!(listing(&sim), [PathBuf::from("/etc/app.conf")]);
+        assert_eq!(listing(&mut sim), [PathBuf::from("/etc/app.conf")]);
     }
 
     /// A leftover from a process killed mid-write is swept once it is old
@@ -476,7 +496,7 @@ mod atomic {
             Ok::<_, io::Error>(())
         })
         .unwrap();
-        assert_eq!(listing(&sim), [PathBuf::from("/etc/app.conf")]);
+        assert_eq!(listing(&mut sim), [PathBuf::from("/etc/app.conf")]);
         assert_eq!(sim.file("/etc/app.conf").unwrap(), b"new");
     }
 }
@@ -570,4 +590,26 @@ fn read_exact_fills_or_fails() -> io::Result<()> {
             )
         },
     )
+}
+
+#[test]
+fn listing_a_directory_one_entry_at_a_time() -> io::Result<()> {
+    let mut sim = Sim::new();
+    sim.add_file("/d/a", "1")
+        .add_file("/d/b", "2")
+        .add_dir("/d/sub");
+    // A core can stop after any entry.
+    let first = sim.acquire(ReadDir::new("/d"), |_, d| d.perform(NextEntry))?;
+    assert_eq!(first, Some(PathBuf::from("/d/a")));
+    assert_eq!(
+        list(&mut sim, "/d")?,
+        [
+            PathBuf::from("/d/a"),
+            PathBuf::from("/d/b"),
+            PathBuf::from("/d/sub")
+        ]
+    );
+    assert_eq!(kind(list(&mut sim, "/nope")), ErrorKind::NotFound);
+    assert_eq!(kind(list(&mut sim, "/d/a")), ErrorKind::NotADirectory);
+    Ok(())
 }

@@ -27,7 +27,7 @@ disallowed-methods = [
     { path = "std::fs::read_to_string", reason = "take `Inspect<ReadToString>` instead" },
     { path = "std::fs::write", reason = "take `Perform<WriteFile>` instead" },
     { path = "std::fs::metadata", reason = "take `Inspect<Metadata>` instead" },
-    { path = "std::fs::read_dir", reason = "take `Inspect<ReadDir>` instead" },
+    { path = "std::fs::read_dir", reason = "acquire `ReadDir` and perform `NextEntry` instead" },
     { path = "std::fs::create_dir", reason = "take `Perform<CreateDir>` instead" },
     { path = "std::fs::create_dir_all", reason = "take `Perform<CreateDir>` instead" },
     { path = "std::fs::remove_file", reason = "take `Perform<RemoveFile>` instead" },

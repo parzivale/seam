@@ -4,8 +4,9 @@
 //! the backend. [`Open`] and [`CreateAtomic`] are acquisitions: a core
 //! acquires the file for the length of a scope (see
 //! [`acquire`](crate::acquire)), and performs the operations in
-//! [`io`](super::io) on it there. Paths are owned, so operations can be sent to
-//! another thread or held across an `.await`.
+//! [`io`](super::io) on it there. Operations borrow their paths and
+//! contents, so describing one allocates nothing. [`ReadDir`] is an
+//! acquisition too, listing a directory one entry at a time.
 //!
 //! Reading operations are [`Query`](crate::Query)s, so a core that only
 //! reads can ask for `Inspect`:
@@ -18,7 +19,7 @@
 //! /// Reads a config file, if there is one.
 //! fn load_config<C>(c: &C, path: &str) -> io::Result<Option<String>>
 //! where
-//!     C: Inspect<Metadata> + Inspect<ReadToString>,
+//!     C: for<'a> Inspect<Metadata<'a>> + for<'a> Inspect<ReadToString<'a>>,
 //! {
 //!     match c.inspect(Metadata::new(path)) {
 //!         Ok(info) if info.is_file() => c.inspect(ReadToString::new(path)).map(Some),
@@ -31,96 +32,125 @@
 
 use crate::io;
 use core::marker::PhantomData;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::string::String;
 use std::vec::Vec;
 
 /// Read a whole file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReadFile {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadFile<'a> {
     /// The file to read.
-    pub path: PathBuf,
+    pub path: &'a Path,
 }
 
 /// Read a whole file as UTF-8.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReadToString {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadToString<'a> {
     /// The file to read.
-    pub path: PathBuf,
+    pub path: &'a Path,
 }
 
 /// Replace a file's contents, creating it if needed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WriteFile {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteFile<'a> {
     /// The file to write.
-    pub path: PathBuf,
+    pub path: &'a Path,
     /// The new contents.
-    pub contents: Vec<u8>,
+    pub contents: &'a [u8],
 }
 
 /// Look up a path's metadata, following symlinks. Produces a [`FileInfo`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Metadata {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Metadata<'a> {
     /// The path to look up.
-    pub path: PathBuf,
+    pub path: &'a Path,
 }
 
-/// List the paths in a directory.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReadDir {
+/// Open a directory to list it, producing a handle of type `D`. Perform
+/// [`NextEntry`] on the handle for each path in it, in no particular
+/// order.
+///
+/// ```
+/// use seam_core::io;
+/// use seam_core::prelude::*;
+/// use seam_core::ops::fs::{NextEntry, ReadDir};
+///
+/// /// Counts the `.log` files in `dir`, one entry at a time.
+/// fn count_logs<C, D>(c: &mut C, dir: &str) -> io::Result<usize>
+/// where
+///     C: for<'a> Provide<ReadDir<'a, D>>,
+///     D: Perform<NextEntry>,
+/// {
+///     c.acquire(ReadDir::new(dir), |_c, entries| {
+///         let mut n = 0;
+///         while let Some(path) = entries.perform(NextEntry)? {
+///             n += usize::from(path.extension().is_some_and(|e| e == "log"));
+///         }
+///         Ok(n)
+///     })
+/// }
+/// ```
+pub struct ReadDir<'a, D> {
     /// The directory to list.
-    pub path: PathBuf,
+    pub path: &'a Path,
+    handle: PhantomData<fn() -> D>,
 }
+
+/// The next path in a directory opened with [`ReadDir`], or `None` once
+/// every one has been listed. The path is the directory's path joined with
+/// the entry's name.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NextEntry;
 
 /// Create a directory.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CreateDir {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreateDir<'a> {
     /// The directory to create.
-    pub path: PathBuf,
+    pub path: &'a Path,
     /// Also create missing parents, and succeed if it already exists.
     pub recursive: bool,
 }
 
 /// Remove a file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RemoveFile {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoveFile<'a> {
     /// The file to remove.
-    pub path: PathBuf,
+    pub path: &'a Path,
 }
 
 /// Remove a directory.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RemoveDir {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoveDir<'a> {
     /// The directory to remove.
-    pub path: PathBuf,
+    pub path: &'a Path,
     /// Also remove everything inside it. Otherwise it must be empty.
     pub recursive: bool,
 }
 
 /// Rename or move a file or directory.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Rename {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rename<'a> {
     /// The current path.
-    pub from: PathBuf,
+    pub from: &'a Path,
     /// The new path.
-    pub to: PathBuf,
+    pub to: &'a Path,
 }
 
 /// Copy a file's contents. Returns the number of bytes copied.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CopyFile {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CopyFile<'a> {
     /// The file to copy.
-    pub from: PathBuf,
+    pub from: &'a Path,
     /// Where to copy it.
-    pub to: PathBuf,
+    pub to: &'a Path,
 }
 
 /// Open a file, producing a handle of type `F`.
 ///
 /// `F` is the backend's file type, for example `seam_std::fs::File`.
-pub struct Open<F> {
+pub struct Open<'a, F> {
     /// The file to open.
-    pub path: PathBuf,
+    pub path: &'a Path,
     /// How to open it.
     pub options: OpenOptions,
     handle: PhantomData<fn() -> F>,
@@ -147,7 +177,7 @@ pub struct Open<F> {
 /// /// Saves settings. A crash or error halfway leaves the old file intact.
 /// fn save<C, F>(c: &mut C, settings: &[(&str, &str)]) -> io::Result<()>
 /// where
-///     C: Provide<CreateAtomic<F>>,
+///     C: for<'a> Provide<CreateAtomic<'a, F>>,
 ///     F: for<'a> Perform<WriteAll<'a>>,
 /// {
 ///     c.acquire(CreateAtomic::new("settings.conf"), |_c, file| {
@@ -158,39 +188,20 @@ pub struct Open<F> {
 ///     })
 /// }
 /// ```
-pub struct CreateAtomic<F> {
+pub struct CreateAtomic<'a, F> {
     /// The file to replace.
-    pub path: PathBuf,
+    pub path: &'a Path,
     handle: PhantomData<fn() -> F>,
 }
 
-impl<F> CreateAtomic<F> {
+impl<'a, F> CreateAtomic<'a, F> {
     /// Describes atomically replacing `path`.
-    pub fn new(path: impl Into<PathBuf>) -> Self {
+    pub fn new(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
         Self {
-            path: path.into(),
+            path: path.as_ref(),
             handle: PhantomData,
         }
     }
-}
-
-impl<F> Clone for CreateAtomic<F> {
-    fn clone(&self) -> Self {
-        Self::new(self.path.clone())
-    }
-}
-
-impl<F> core::fmt::Debug for CreateAtomic<F> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("CreateAtomic")
-            .field("path", &self.path)
-            .finish()
-    }
-}
-
-impl<F> crate::Acquisition for CreateAtomic<F> {
-    type Resource = F;
-    type Error = io::Error;
 }
 
 /// Delete temporary files left in `dir` by [`CreateAtomic`] writes that
@@ -200,23 +211,25 @@ impl<F> crate::Acquisition for CreateAtomic<F> {
 /// Only files whose last modification is at least `older_than` ago are
 /// removed, so that writes still in progress, in this process or another,
 /// are left alone. Pick an age longer than any write takes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SweepAtomic {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SweepAtomic<'a> {
     /// The directory to sweep. Subdirectories are not visited.
-    pub dir: PathBuf,
+    pub dir: &'a Path,
     /// How old a temporary file must be to count as abandoned.
     pub older_than: core::time::Duration,
 }
 
-impl SweepAtomic {
+impl<'a> SweepAtomic<'a> {
     /// Describes sweeping `dir` of temporary files at least `older_than` old.
-    pub fn new(dir: impl Into<PathBuf>, older_than: core::time::Duration) -> Self {
+    pub fn new(dir: &'a (impl AsRef<Path> + ?Sized), older_than: core::time::Duration) -> Self {
         Self {
-            dir: dir.into(),
+            dir: dir.as_ref(),
             older_than,
         }
     }
+}
 
+impl SweepAtomic<'_> {
     /// Whether `name` is a temporary file name from [`CreateAtomic`].
     pub fn is_temp_name(name: &std::ffi::OsStr) -> bool {
         name.to_str()
@@ -279,94 +292,107 @@ impl FileInfo {
 
 macro_rules! path_ops {
     ($($ty:ident),*) => {$(
-        impl $ty {
+        impl<'a> $ty<'a> {
             /// Describes the operation on `path`.
-            pub fn new(path: impl Into<PathBuf>) -> Self {
-                Self { path: path.into() }
+            pub fn new(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
+                Self { path: path.as_ref() }
             }
         }
     )*};
 }
-path_ops!(ReadFile, ReadToString, Metadata, ReadDir, RemoveFile);
+path_ops!(ReadFile, ReadToString, Metadata, RemoveFile);
 
-impl WriteFile {
+impl<'a> WriteFile<'a> {
     /// Describes writing `contents` to `path`.
-    pub fn new(path: impl Into<PathBuf>, contents: impl Into<Vec<u8>>) -> Self {
+    pub fn new(
+        path: &'a (impl AsRef<Path> + ?Sized),
+        contents: &'a (impl AsRef<[u8]> + ?Sized),
+    ) -> Self {
         Self {
-            path: path.into(),
-            contents: contents.into(),
+            path: path.as_ref(),
+            contents: contents.as_ref(),
         }
     }
 }
 
-impl CreateDir {
+impl<'a> CreateDir<'a> {
     /// Describes creating `path`. Fails if a parent is missing.
-    pub fn new(path: impl Into<PathBuf>) -> Self {
+    pub fn new(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
         Self {
-            path: path.into(),
+            path: path.as_ref(),
             recursive: false,
         }
     }
 
     /// Describes creating `path` and any missing parents.
-    pub fn all(path: impl Into<PathBuf>) -> Self {
+    pub fn all(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
         Self {
-            path: path.into(),
+            path: path.as_ref(),
             recursive: true,
         }
     }
 }
 
-impl RemoveDir {
+impl<'a> RemoveDir<'a> {
     /// Describes removing the empty directory `path`.
-    pub fn new(path: impl Into<PathBuf>) -> Self {
+    pub fn new(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
         Self {
-            path: path.into(),
+            path: path.as_ref(),
             recursive: false,
         }
     }
 
     /// Describes removing `path` and everything inside it.
-    pub fn all(path: impl Into<PathBuf>) -> Self {
+    pub fn all(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
         Self {
-            path: path.into(),
+            path: path.as_ref(),
             recursive: true,
         }
     }
 }
 
-impl Rename {
+impl<'a> Rename<'a> {
     /// Describes renaming `from` to `to`.
-    pub fn new(from: impl Into<PathBuf>, to: impl Into<PathBuf>) -> Self {
+    pub fn new(from: &'a (impl AsRef<Path> + ?Sized), to: &'a (impl AsRef<Path> + ?Sized)) -> Self {
         Self {
-            from: from.into(),
-            to: to.into(),
+            from: from.as_ref(),
+            to: to.as_ref(),
         }
     }
 }
 
-impl CopyFile {
+impl<'a> CopyFile<'a> {
     /// Describes copying `from` to `to`.
-    pub fn new(from: impl Into<PathBuf>, to: impl Into<PathBuf>) -> Self {
+    pub fn new(from: &'a (impl AsRef<Path> + ?Sized), to: &'a (impl AsRef<Path> + ?Sized)) -> Self {
         Self {
-            from: from.into(),
-            to: to.into(),
+            from: from.as_ref(),
+            to: to.as_ref(),
         }
     }
 }
 
-impl<F> Open<F> {
-    /// Describes opening `path` with `options`.
-    pub fn new(path: impl Into<PathBuf>, options: OpenOptions) -> Self {
+impl<'a, D> ReadDir<'a, D> {
+    /// Describes listing `path`.
+    pub fn new(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
         Self {
-            path: path.into(),
+            path: path.as_ref(),
+            handle: PhantomData,
+        }
+    }
+}
+
+impl<'a, F> Open<'a, F> {
+    /// Describes opening `path` with `options`.
+    pub fn new(path: &'a (impl AsRef<Path> + ?Sized), options: OpenOptions) -> Self {
+        Self {
+            path: path.as_ref(),
             options,
             handle: PhantomData,
         }
     }
 
     /// Describes opening `path` for reading.
-    pub fn read(path: impl Into<PathBuf>) -> Self {
+    pub fn read(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
         Self::new(
             path,
             OpenOptions {
@@ -377,7 +403,7 @@ impl<F> Open<F> {
     }
 
     /// Describes creating or truncating `path` for writing.
-    pub fn create(path: impl Into<PathBuf>) -> Self {
+    pub fn create(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
         Self::new(
             path,
             OpenOptions {
@@ -390,7 +416,7 @@ impl<F> Open<F> {
     }
 
     /// Describes opening `path` for appending, creating it if needed.
-    pub fn append(path: impl Into<PathBuf>) -> Self {
+    pub fn append(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
         Self::new(
             path,
             OpenOptions {
@@ -402,42 +428,53 @@ impl<F> Open<F> {
     }
 }
 
-impl<F> Clone for Open<F> {
-    fn clone(&self) -> Self {
-        Self::new(self.path.clone(), self.options)
-    }
-}
+/// `Clone`, `Copy` and `Debug` for the acquisitions, whatever their handle
+/// type.
+macro_rules! handle_ops {
+    ($($ty:ident { $($field:ident),* }),*) => {$(
+        impl<F> Clone for $ty<'_, F> {
+            fn clone(&self) -> Self {
+                *self
+            }
+        }
 
-impl<F> core::fmt::Debug for Open<F> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Open")
-            .field("path", &self.path)
-            .field("options", &self.options)
-            .finish()
-    }
+        impl<F> Copy for $ty<'_, F> {}
+
+        impl<F> core::fmt::Debug for $ty<'_, F> {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.debug_struct(stringify!($ty))$(.field(stringify!($field), &self.$field))*.finish()
+            }
+        }
+
+        impl<F> crate::Acquisition for $ty<'_, F> {
+            type Resource = F;
+            type Error = io::Error;
+        }
+    )*};
 }
+handle_ops!(
+    Open { path, options },
+    CreateAtomic { path },
+    ReadDir { path }
+);
 
 operations! {
-    #[query] ReadFile => io::Result<Vec<u8>>;
-    #[query] ReadToString => io::Result<String>;
-    #[query] Metadata => io::Result<FileInfo>;
-    #[query] ReadDir => io::Result<Vec<PathBuf>>;
-    WriteFile => io::Result<()>;
-    CreateDir => io::Result<()>;
-    RemoveFile => io::Result<()>;
-    RemoveDir => io::Result<()>;
-    Rename => io::Result<()>;
-    CopyFile => io::Result<u64>;
-    SweepAtomic => io::Result<u64>;
-}
-
-impl<F> crate::Acquisition for Open<F> {
-    type Resource = F;
-    type Error = io::Error;
+    #[query] ReadFile<'_> => io::Result<Vec<u8>>;
+    #[query] ReadToString<'_> => io::Result<String>;
+    #[query] Metadata<'_> => io::Result<FileInfo>;
+    NextEntry => io::Result<Option<PathBuf>>;
+    WriteFile<'_> => io::Result<()>;
+    CreateDir<'_> => io::Result<()>;
+    RemoveFile<'_> => io::Result<()>;
+    RemoveDir<'_> => io::Result<()>;
+    Rename<'_> => io::Result<()>;
+    CopyFile<'_> => io::Result<u64>;
+    SweepAtomic<'_> => io::Result<u64>;
 }
 
 crate::root::in_kind!(crate::kinds::Fs:
-    [] ReadFile, [] ReadToString, [] WriteFile, [] Metadata, [] ReadDir, [] CreateDir,
-    [] RemoveFile, [] RemoveDir, [] Rename, [] CopyFile, [] SweepAtomic,
-    [F] Open<F>, [F] CreateAtomic<F>,
+    ['a] ReadFile<'a>, ['a] ReadToString<'a>, ['a] WriteFile<'a>, ['a] Metadata<'a>,
+    ['a] CreateDir<'a>, ['a] RemoveFile<'a>, ['a] RemoveDir<'a>, ['a] Rename<'a>,
+    ['a] CopyFile<'a>, ['a] SweepAtomic<'a>,
+    ['a, F] Open<'a, F>, ['a, F] CreateAtomic<'a, F>, ['a, D] ReadDir<'a, D>,
 );

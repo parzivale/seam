@@ -1,12 +1,13 @@
-//! Filesystem operations, and the [`File`] and [`AtomicFile`] handles.
+//! Filesystem operations, and the [`File`], [`AtomicFile`] and [`Dir`]
+//! handles.
 
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use seam_core::ops::fs::{
-    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Open, ReadDir, ReadFile,
-    ReadToString, RemoveDir, RemoveFile, Rename, SweepAtomic, WriteFile,
+    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, NextEntry, Open, ReadDir,
+    ReadFile, ReadToString, RemoveDir, RemoveFile, Rename, SweepAtomic, WriteFile,
 };
 use seam_core::{AsyncProvide, Token};
 use tokio::io::AsyncWriteExt;
@@ -30,8 +31,8 @@ io_ops!(File);
 #[derive(Debug, Clone, Copy)]
 struct Writable(bool);
 
-impl AsyncProvide<Open<File>> for Tokio {
-    async fn provide_async(&mut self, op: Open<File>, _: Token) -> seam_core::io::Result<File> {
+impl AsyncProvide<Open<'_, File>> for Tokio {
+    async fn provide_async(&mut self, op: Open<'_, File>, _: Token) -> seam_core::io::Result<File> {
         let o = op.options;
         crate::sio(
             tokio::fs::OpenOptions::new()
@@ -123,15 +124,17 @@ async fn blocking<T: Send + 'static>(
         .map_err(io::Error::other)?
 }
 
-impl AsyncProvide<CreateAtomic<AtomicFile>> for Tokio {
+impl AsyncProvide<CreateAtomic<'_, AtomicFile>> for Tokio {
     async fn provide_async(
         &mut self,
-        op: CreateAtomic<AtomicFile>,
+        op: CreateAtomic<'_, AtomicFile>,
         _: Token,
     ) -> seam_core::io::Result<AtomicFile> {
         // Created together with its guard, in one blocking task: see `Pending`.
+        // The target is kept for the rename on close.
+        let target = op.path.to_path_buf();
         let (file, pending) = blocking(move || {
-            let temp = temp_path(&op.path);
+            let temp = temp_path(&target);
             let file = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -140,7 +143,7 @@ impl AsyncProvide<CreateAtomic<AtomicFile>> for Tokio {
                 file,
                 Pending {
                     temp: Some(temp),
-                    target: op.path,
+                    target,
                 },
             ))
         })
@@ -168,17 +171,19 @@ impl AsyncProvide<CreateAtomic<AtomicFile>> for Tokio {
     }
 }
 
-async_op!(perform [] Tokio, SweepAtomic, |_s, op| {
+async_op!(perform ['a] Tokio, SweepAtomic<'a>, |_s, op| {
+    // The blocking task needs its own copy of the directory's path.
+    let (dir, older_than) = (op.dir.to_path_buf(), op.older_than);
     blocking(move || {
         let now = SystemTime::now();
         let mut removed = 0;
-        for entry in std::fs::read_dir(&op.dir)? {
+        for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             if !SweepAtomic::is_temp_name(&entry.file_name()) {
                 continue;
             }
             let age = now.duration_since(entry.metadata()?.modified()?).unwrap_or_default();
-            if age >= op.older_than {
+            if age >= older_than {
                 match std::fs::remove_file(entry.path()) {
                     Ok(()) => removed += 1,
                     // Finished or cleaned up by its writer in the meantime.
@@ -192,36 +197,51 @@ async_op!(perform [] Tokio, SweepAtomic, |_s, op| {
     .await
 });
 
-async_op!(inspect [] Tokio, ReadFile, |_s, op| tokio::fs::read(op.path).await);
-async_op!(inspect [] Tokio, ReadToString, |_s, op| tokio::fs::read_to_string(op.path).await);
-async_op!(inspect [] Tokio, Metadata, |_s, op| tokio::fs::metadata(op.path).await.map(file_info));
-async_op!(inspect [] Tokio, ReadDir, |_s, op| {
-    let mut dir = tokio::fs::read_dir(op.path).await?;
-    let mut paths = Vec::new();
-    while let Some(entry) = dir.next_entry().await? {
-        paths.push(entry.path());
+async_op!(inspect ['a] Tokio, ReadFile<'a>, |_s, op| tokio::fs::read(op.path).await);
+async_op!(inspect ['a] Tokio, ReadToString<'a>, |_s, op| tokio::fs::read_to_string(op.path).await);
+async_op!(inspect ['a] Tokio, Metadata<'a>, |_s, op| tokio::fs::metadata(op.path).await.map(file_info));
+
+/// A directory being listed, acquired with [`ReadDir`]. Perform
+/// [`NextEntry`] on it for each path.
+#[derive(Debug)]
+pub struct Dir(tokio::fs::ReadDir);
+
+impl AsyncProvide<ReadDir<'_, Dir>> for Tokio {
+    async fn provide_async(
+        &mut self,
+        op: ReadDir<'_, Dir>,
+        _: Token,
+    ) -> seam_core::io::Result<Dir> {
+        crate::sio(tokio::fs::read_dir(op.path).await.map(Dir))
     }
-    seam_core::io::Result::Ok(paths)
+
+    async fn close_async(&mut self, _: Dir) -> seam_core::io::Result<()> {
+        Ok(())
+    }
+}
+
+async_op!(perform [] Dir, NextEntry, |s, _op| {
+    s.0.next_entry().await.map(|e| e.map(|e| e.path()))
 });
 
-async_op!(perform [] Tokio, WriteFile, |_s, op| tokio::fs::write(op.path, op.contents).await);
-async_op!(perform [] Tokio, CreateDir, |_s, op| {
+async_op!(perform ['a] Tokio, WriteFile<'a>, |_s, op| tokio::fs::write(op.path, op.contents).await);
+async_op!(perform ['a] Tokio, CreateDir<'a>, |_s, op| {
     if op.recursive {
         tokio::fs::create_dir_all(op.path).await
     } else {
         tokio::fs::create_dir(op.path).await
     }
 });
-async_op!(perform [] Tokio, RemoveFile, |_s, op| tokio::fs::remove_file(op.path).await);
-async_op!(perform [] Tokio, RemoveDir, |_s, op| {
+async_op!(perform ['a] Tokio, RemoveFile<'a>, |_s, op| tokio::fs::remove_file(op.path).await);
+async_op!(perform ['a] Tokio, RemoveDir<'a>, |_s, op| {
     if op.recursive {
         tokio::fs::remove_dir_all(op.path).await
     } else {
         tokio::fs::remove_dir(op.path).await
     }
 });
-async_op!(perform [] Tokio, Rename, |_s, op| tokio::fs::rename(op.from, op.to).await);
-async_op!(perform [] Tokio, CopyFile, |_s, op| tokio::fs::copy(op.from, op.to).await);
+async_op!(perform ['a] Tokio, Rename<'a>, |_s, op| tokio::fs::rename(op.from, op.to).await);
+async_op!(perform ['a] Tokio, CopyFile<'a>, |_s, op| tokio::fs::copy(op.from, op.to).await);
 
 fn file_info(m: std::fs::Metadata) -> FileInfo {
     let t = m.file_type();
@@ -244,4 +264,5 @@ fn file_info(m: std::fs::Metadata) -> FileInfo {
 
 // Every capability type opts in to seam's lifts.
 impl seam_core::Capability for AtomicFile {}
+impl seam_core::Capability for Dir {}
 impl seam_core::Capability for File {}

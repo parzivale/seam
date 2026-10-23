@@ -14,8 +14,8 @@ use std::time::SystemTime;
 use std::vec::Vec;
 
 use seam_core::ops::fs::{
-    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Open, ReadDir, ReadFile,
-    ReadToString, RemoveDir, RemoveFile, Rename, SweepAtomic, WriteFile,
+    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, NextEntry, Open, ReadDir,
+    ReadFile, ReadToString, RemoveDir, RemoveFile, Rename, SweepAtomic, WriteFile,
 };
 use seam_core::ops::io::{Flush, Read, ReadExact, ReadToEnd, Write, WriteAll};
 use seam_core::{Inspect, Perform, Provide, Token};
@@ -266,62 +266,79 @@ impl Sim {
     }
 }
 
-impl Inspect<ReadFile> for Sim {
-    fn inspect(&self, op: ReadFile) -> io::Result<Vec<u8>> {
-        self.fs_op(&op.path, |w, key| {
+impl Inspect<ReadFile<'_>> for Sim {
+    fn inspect(&self, op: ReadFile<'_>) -> io::Result<Vec<u8>> {
+        self.fs_op(op.path, |w, key| {
             Ok(w.fs.inodes[w.fs.file(&key)?].bytes.clone())
         })
     }
 }
 
-impl Inspect<ReadToString> for Sim {
-    fn inspect(&self, op: ReadToString) -> io::Result<String> {
+impl Inspect<ReadToString<'_>> for Sim {
+    fn inspect(&self, op: ReadToString<'_>) -> io::Result<String> {
         let bytes = self.inspect(ReadFile { path: op.path })?;
         String::from_utf8(bytes)
             .map_err(|_| error(ErrorKind::InvalidData, "stream did not contain valid UTF-8"))
     }
 }
 
-impl Inspect<Metadata> for Sim {
-    fn inspect(&self, op: Metadata) -> io::Result<FileInfo> {
-        self.fs_op(&op.path, |w, key| w.fs.info(&key))
+impl Inspect<Metadata<'_>> for Sim {
+    fn inspect(&self, op: Metadata<'_>) -> io::Result<FileInfo> {
+        self.fs_op(op.path, |w, key| w.fs.info(&key))
     }
 }
 
-impl Inspect<ReadDir> for Sim {
-    fn inspect(&self, op: ReadDir) -> io::Result<Vec<PathBuf>> {
-        self.fs_op(&op.path, |w, key| {
+/// A directory being listed, acquired with [`ReadDir`]: the paths in it
+/// when it was opened, in sorted order. Perform [`NextEntry`] on it for
+/// each.
+#[derive(Debug)]
+pub struct Dir(std::vec::IntoIter<PathBuf>);
+
+impl Provide<ReadDir<'_, Dir>> for Sim {
+    fn provide(&mut self, op: ReadDir<'_, Dir>, _: Token) -> io::Result<Dir> {
+        let paths: Vec<PathBuf> = self.fs_op(op.path, |w, key| {
             w.fs.require_dir(&key)?;
             Ok(w.fs
                 .children(&key)
                 .filter(|k| k.len() == key.len() + 1)
                 .map(|k| op.path.join(&k[key.len()]))
                 .collect())
-        })
+        })?;
+        Ok(Dir(paths.into_iter()))
+    }
+
+    fn close(&mut self, _: Dir) -> io::Result<()> {
+        Ok(())
     }
 }
 
-impl Perform<WriteFile> for Sim {
-    fn perform(&mut self, op: WriteFile) -> io::Result<()> {
-        self.fs_op(&op.path, |w, key| {
+impl Perform<NextEntry> for Dir {
+    fn perform(&mut self, _: NextEntry) -> io::Result<Option<PathBuf>> {
+        Ok(self.0.next())
+    }
+}
+
+impl Perform<WriteFile<'_>> for Sim {
+    fn perform(&mut self, op: WriteFile<'_>) -> io::Result<()> {
+        self.fs_op(op.path, |w, key| {
             let now = w.wall;
-            w.fs.write(&key, op.contents, now).map(drop)
+            w.fs.write(&key, op.contents.to_vec(), now).map(drop)
         })
     }
 }
 
-impl Perform<CreateDir> for Sim {
-    fn perform(&mut self, op: CreateDir) -> io::Result<()> {
-        self.fs_op(&op.path, |w, key| {
+impl Perform<CreateDir<'_>> for Sim {
+    fn perform(&mut self, op: CreateDir<'_>) -> io::Result<()> {
+        self.fs_op(op.path, |w, key| {
             let now = w.wall;
             w.fs.create_dir(&key, op.recursive, now)
         })
     }
 }
 
-impl Perform<RemoveFile> for Sim {
-    fn perform(&mut self, op: RemoveFile) -> io::Result<()> {
-        self.fs_op(&op.path, |w, key| {
+impl Perform<RemoveFile<'_>> for Sim {
+    fn perform(&mut self, op: RemoveFile<'_>) -> io::Result<()> {
+        self.fs_op(op.path, |w, key| {
             w.fs.file(&key)?;
             w.fs.nodes.remove(&key);
             let now = w.wall;
@@ -331,9 +348,9 @@ impl Perform<RemoveFile> for Sim {
     }
 }
 
-impl Perform<RemoveDir> for Sim {
-    fn perform(&mut self, op: RemoveDir) -> io::Result<()> {
-        self.fs_op(&op.path, |w, key| {
+impl Perform<RemoveDir<'_>> for Sim {
+    fn perform(&mut self, op: RemoveDir<'_>) -> io::Result<()> {
+        self.fs_op(op.path, |w, key| {
             w.fs.require_dir(&key)?;
             if key.is_empty() {
                 return Err(error(ErrorKind::PermissionDenied, "cannot remove the root"));
@@ -353,10 +370,10 @@ impl Perform<RemoveDir> for Sim {
     }
 }
 
-impl Perform<Rename> for Sim {
-    fn perform(&mut self, op: Rename) -> io::Result<()> {
-        self.fs_op(&op.from, |w, from| {
-            let to = w.fs.resolve(&self.cwd, &op.to)?;
+impl Perform<Rename<'_>> for Sim {
+    fn perform(&mut self, op: Rename<'_>) -> io::Result<()> {
+        self.fs_op(op.from, |w, from| {
+            let to = w.fs.resolve(&self.cwd, op.to)?;
             let fs = &mut w.fs;
             let node = fs.node(&from)?;
             if from == to {
@@ -403,9 +420,9 @@ impl Perform<Rename> for Sim {
     }
 }
 
-impl Perform<SweepAtomic> for Sim {
-    fn perform(&mut self, op: SweepAtomic) -> io::Result<u64> {
-        self.fs_op(&op.dir, |w, dir| {
+impl Perform<SweepAtomic<'_>> for Sim {
+    fn perform(&mut self, op: SweepAtomic<'_>) -> io::Result<u64> {
+        self.fs_op(op.dir, |w, dir| {
             w.fs.require_dir(&dir)?;
             let now = w.wall;
             let doomed: Vec<Key> = w
@@ -429,10 +446,10 @@ impl Perform<SweepAtomic> for Sim {
     }
 }
 
-impl Perform<CopyFile> for Sim {
-    fn perform(&mut self, op: CopyFile) -> io::Result<u64> {
-        self.fs_op(&op.from, |w, from| {
-            let to = w.fs.resolve(&self.cwd, &op.to)?;
+impl Perform<CopyFile<'_>> for Sim {
+    fn perform(&mut self, op: CopyFile<'_>) -> io::Result<u64> {
+        self.fs_op(op.from, |w, from| {
+            let to = w.fs.resolve(&self.cwd, op.to)?;
             let bytes = w.fs.inodes[w.fs.file(&from)?].bytes.clone();
             let len = bytes.len() as u64;
             let now = w.wall;
@@ -443,12 +460,12 @@ impl Perform<CopyFile> for Sim {
 }
 
 /// Writes land immediately, so closing has nothing left to do.
-impl Provide<Open<File>> for Sim {
+impl Provide<Open<'_, File>> for Sim {
     fn close(&mut self, _: File) -> io::Result<()> {
         Ok(())
     }
 
-    fn provide(&mut self, op: Open<File>, _: Token) -> io::Result<File> {
+    fn provide(&mut self, op: Open<'_, File>, _: Token) -> io::Result<File> {
         let o = op.options;
         let writable = o.write || o.append;
         if !(o.read || writable) || ((o.truncate || o.create || o.create_new) && !writable) {
@@ -460,7 +477,7 @@ impl Provide<Open<File>> for Sim {
                 "cannot truncate in append mode",
             ));
         }
-        let inode = self.fs_op(&op.path, |w, key| {
+        let inode = self.fs_op(op.path, |w, key| {
             let now = w.wall;
             match w.fs.nodes.get(&key) {
                 Some(_) if o.create_new => Err(error(ErrorKind::AlreadyExists, "already exists")),
@@ -604,13 +621,13 @@ pub struct AtomicFile {
     committed: bool,
 }
 
-impl Provide<CreateAtomic<AtomicFile>> for Sim {
+impl Provide<CreateAtomic<'_, AtomicFile>> for Sim {
     fn close(&mut self, file: AtomicFile) -> io::Result<()> {
         file.commit()
     }
 
-    fn provide(&mut self, op: CreateAtomic<AtomicFile>, _: Token) -> io::Result<AtomicFile> {
-        let (temp, target, inode) = self.fs_op(&op.path, |w, target| {
+    fn provide(&mut self, op: CreateAtomic<'_, AtomicFile>, _: Token) -> io::Result<AtomicFile> {
+        let (temp, target, inode) = self.fs_op(op.path, |w, target| {
             let Some(name) = target.last() else {
                 return Err(error(ErrorKind::IsADirectory, "is a directory"));
             };
@@ -697,3 +714,4 @@ delegate_io! {
 // Every capability type opts in to seam's lifts.
 impl seam_core::Capability for AtomicFile {}
 impl seam_core::Capability for File {}
+impl seam_core::Capability for Dir {}

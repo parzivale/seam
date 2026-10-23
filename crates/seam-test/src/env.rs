@@ -60,9 +60,9 @@ impl Sim {
     }
 }
 
-impl Inspect<Var> for Sim {
-    fn inspect(&self, op: Var) -> Option<OsString> {
-        self.env.vars.get(&op.name).cloned()
+impl Inspect<Var<'_>> for Sim {
+    fn inspect(&self, op: Var<'_>) -> Option<OsString> {
+        self.env.vars.get(op.name).cloned()
     }
 }
 

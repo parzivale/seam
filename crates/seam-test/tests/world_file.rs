@@ -7,7 +7,7 @@ use std::process::Command;
 use std::time::{Duration, UNIX_EPOCH};
 
 use seam_core::ops::env::{Args, CurrentDir, TempDir, Var};
-use seam_core::ops::fs::{ReadDir, WriteFile};
+use seam_core::ops::fs::{NextEntry, ReadDir, WriteFile};
 use seam_core::ops::net::Resolve;
 use seam_core::ops::process::RunCommand;
 use seam_core::ops::random::RandomU64;
@@ -16,6 +16,21 @@ use seam_core::ops::stdio::{Print, ReadLine};
 use seam_core::ops::time::{Now, Sleep, WallClock};
 use seam_core::{Inspect, Perform};
 use seam_test::Sim;
+
+/// Lists `dir` through `ReadDir`, one entry at a time.
+fn list<C, D>(c: &mut C, dir: impl AsRef<std::path::Path>) -> io::Result<Vec<std::path::PathBuf>>
+where
+    C: for<'a> seam_core::Provide<ReadDir<'a, D>>,
+    D: seam_core::Perform<NextEntry>,
+{
+    seam_core::Acquire::acquire(c, ReadDir::new(dir.as_ref()), |_, entries| {
+        let mut paths = Vec::new();
+        while let Some(path) = seam_core::Perform::perform(entries, NextEntry)? {
+            paths.push(path);
+        }
+        Ok(paths)
+    })
+}
 
 const WORLD: &str = r#"
 // A world with one of everything.
@@ -164,12 +179,9 @@ fn later_wins_and_worlds_layer() {
 
 #[test]
 fn order_of_files_does_not_change_listings() {
-    let a = Sim::from_world(r#"fs { file "/d/b" "2"; file "/d/a" "1" }"#).unwrap();
-    let b = Sim::from_world(r#"fs { file "/d/a" "1"; file "/d/b" "2" }"#).unwrap();
-    assert_eq!(
-        a.inspect(ReadDir::new("/d")).unwrap(),
-        b.inspect(ReadDir::new("/d")).unwrap()
-    );
+    let mut a = Sim::from_world(r#"fs { file "/d/b" "2"; file "/d/a" "1" }"#).unwrap();
+    let mut b = Sim::from_world(r#"fs { file "/d/a" "1"; file "/d/b" "2" }"#).unwrap();
+    assert_eq!(list(&mut a, "/d").unwrap(), list(&mut b, "/d").unwrap());
 }
 
 fn load_error(text: &str) -> String {

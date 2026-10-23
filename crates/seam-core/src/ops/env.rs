@@ -8,7 +8,10 @@
 //! use seam_core::ops::env::{CurrentDir, Var};
 //!
 //! /// `$XDG_CONFIG_HOME`, or `./.config`.
-//! fn config_dir<C: Inspect<Var> + Inspect<CurrentDir>>(c: &C) -> std::io::Result<PathBuf> {
+//! fn config_dir<C>(c: &C) -> seam_core::io::Result<PathBuf>
+//! where
+//!     C: for<'a> Inspect<Var<'a>> + Inspect<CurrentDir>,
+//! {
 //!     match c.inspect(Var::new("XDG_CONFIG_HOME")) {
 //!         Some(dir) => Ok(dir.into()),
 //!         None => Ok(c.inspect(CurrentDir)?.join(".config")),
@@ -17,15 +20,15 @@
 //! ```
 
 use crate::io;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::vec::Vec;
 
 /// Read an environment variable.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Var {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Var<'a> {
     /// The variable's name.
-    pub name: OsString,
+    pub name: &'a OsStr,
 }
 
 /// Read the command-line arguments, including the program name.
@@ -40,18 +43,20 @@ pub struct CurrentDir;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TempDir;
 
-impl Var {
+impl<'a> Var<'a> {
     /// Describes reading the variable `name`.
-    pub fn new(name: impl Into<OsString>) -> Self {
-        Self { name: name.into() }
+    pub fn new(name: &'a (impl AsRef<OsStr> + ?Sized)) -> Self {
+        Self {
+            name: name.as_ref(),
+        }
     }
 }
 
 operations! {
-    #[query] Var => Option<OsString>;
+    #[query] Var<'_> => Option<OsString>;
     #[query] Args => Vec<OsString>;
     #[query] CurrentDir => io::Result<PathBuf>;
     #[query] TempDir => PathBuf;
 }
 
-crate::root::in_kind!(crate::kinds::Env: [] Var, [] Args, [] CurrentDir, [] TempDir);
+crate::root::in_kind!(crate::kinds::Env: ['a] Var<'a>, [] Args, [] CurrentDir, [] TempDir);

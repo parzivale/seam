@@ -17,7 +17,8 @@ use seam_core::ops::fs::{
     CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, NextEntry, Open, ReadDir,
     ReadFile, ReadToString, RemoveDir, RemoveFile, Rename, SweepAtomic, WriteFile,
 };
-use seam_core::ops::io::{Flush, Read, ReadExact, ReadToEnd, Write, WriteAll};
+use seam_core::ops::fs::{SetLen, Stat, SyncAll, SyncData};
+use seam_core::ops::io::{Flush, Read, ReadExact, ReadToEnd, Seek, SeekFrom, Write, WriteAll};
 use seam_core::{Inspect, Perform, Provide, Token};
 
 use crate::world::{Shared, World};
@@ -606,6 +607,73 @@ impl Perform<Flush> for File {
     }
 }
 
+impl Perform<Seek> for File {
+    fn perform(&mut self, op: Seek) -> io::Result<u64> {
+        let len = self.world.lock().fs.inodes[self.inode].bytes.len() as u64;
+        let pos = match op.0 {
+            SeekFrom::Start(n) => Some(n),
+            SeekFrom::End(d) => len.checked_add_signed(d),
+            SeekFrom::Current(d) => (self.pos as u64).checked_add_signed(d),
+        }
+        .ok_or_else(|| {
+            error(
+                ErrorKind::InvalidInput,
+                "seek to before the start of the file",
+            )
+        })?;
+        self.pos = usize::try_from(pos)
+            .map_err(|_| error(ErrorKind::InvalidInput, "seek past what memory can hold"))?;
+        Ok(pos)
+    }
+}
+
+/// Fails with `InvalidInput` unless the file is open for writing, as on
+/// Linux.
+impl Perform<SetLen> for File {
+    fn perform(&mut self, op: SetLen) -> io::Result<()> {
+        if !self.write {
+            return Err(error(ErrorKind::InvalidInput, "not open for writing"));
+        }
+        let len = usize::try_from(op.0)
+            .map_err(|_| error(ErrorKind::InvalidInput, "longer than memory can hold"))?;
+        let mut world = self.world.lock();
+        let now = world.wall;
+        let inode = &mut world.fs.inodes[self.inode];
+        inode.bytes.resize(len, 0);
+        inode.modified = now;
+        Ok(())
+    }
+}
+
+/// Nothing in the simulation is lost in a crash, so there is nothing to
+/// sync.
+impl Perform<SyncAll> for File {
+    fn perform(&mut self, _: SyncAll) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// As for `SyncAll`.
+impl Perform<SyncData> for File {
+    fn perform(&mut self, _: SyncData) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The file's metadata, even once its path is renamed or removed.
+impl Inspect<Stat> for File {
+    fn inspect(&self, _: Stat) -> io::Result<FileInfo> {
+        let world = self.world.lock();
+        let inode = &world.fs.inodes[self.inode];
+        Ok(FileInfo {
+            kind: FileKind::File,
+            len: inode.bytes.len() as u64,
+            readonly: false,
+            modified: Some(inode.modified),
+        })
+    }
+}
+
 /// A file that replaces its target when its scope succeeds, acquired with
 /// [`CreateAtomic`].
 ///
@@ -708,7 +776,17 @@ macro_rules! delegate_io {
 delegate_io! {
     Write<'_> => io::Result<usize>,
     WriteAll<'_> => io::Result<()>,
-    Flush => io::Result<()>
+    Flush => io::Result<()>,
+    Seek => io::Result<u64>,
+    SetLen => io::Result<()>,
+    SyncAll => io::Result<()>,
+    SyncData => io::Result<()>
+}
+
+impl Inspect<Stat> for AtomicFile {
+    fn inspect(&self, op: Stat) -> io::Result<FileInfo> {
+        self.file.inspect(op)
+    }
 }
 
 // Every capability type opts in to seam's lifts.

@@ -116,6 +116,7 @@
 //! `io-std`, `signal` and `sync` need std's types, but still make no system
 //! calls of their own. `rt` adds the deterministic runtime and threads.
 //! `full` turns on everything.
+#![forbid(unsafe_code)]
 #![no_std]
 
 #[cfg(feature = "std")]

@@ -90,7 +90,10 @@ serve(&mut root).await;                     // bounded as usual: SendPerform<Sle
 
 Each backend covers only what it is for: Tokio has no environment or
 randomness, so a Tokio program takes those from `Std`. `Std` and `Tokio`
-are zero-sized, and so is a root of them.
+are zero-sized, and so is a root of them. `Std` only reads the
+environment; to change it (`SetVar`, `RemoveVar`), serve `kinds::Env` with
+`seam_std::env::WritableEnv` instead, which is `unsafe` to create, as
+`std::env::set_var` is to call.
 
 The root forwards each operation to the part serving its kind, in whichever
 form that part implements: sync parts through the sync traits, async parts

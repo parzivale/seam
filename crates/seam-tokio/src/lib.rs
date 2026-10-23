@@ -88,6 +88,7 @@
 //! `process`, `io-std`, `signal`, `sync`, `io-util`, `test-util`, `full`. Each turns
 //! on the Tokio feature of the same name and the matching seam operations.
 //! With `test-util`, `Now` follows Tokio's pausable clock.
+#![forbid(unsafe_code)]
 
 /// The Tokio backend's capability.
 ///

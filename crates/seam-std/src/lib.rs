@@ -88,7 +88,7 @@ impl Std {
 }
 
 #[cfg(feature = "env")]
-mod env;
+pub mod env;
 #[cfg(feature = "fs")]
 pub mod fs;
 #[cfg(feature = "net")]

@@ -44,6 +44,8 @@ disallowed-methods = [
     { path = "std::env::args_os", reason = "take `Inspect<Args>` instead" },
     { path = "std::env::current_dir", reason = "take `Inspect<CurrentDir>` instead" },
     { path = "std::env::temp_dir", reason = "take `Inspect<TempDir>` instead" },
+    { path = "std::env::set_var", reason = "take `Perform<SetVar>` instead" },
+    { path = "std::env::remove_var", reason = "take `Perform<RemoveVar>` instead" },
     { path = "std::process::exit", reason = "take `Perform<Exit>` instead" },
     { path = "std::io::stdin", reason = "take `Perform<ReadLine>` instead" },
     { path = "std::io::stdout", reason = "take `Perform<Print>` instead" },

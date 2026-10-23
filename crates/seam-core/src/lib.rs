@@ -94,6 +94,7 @@
 //! `io-std`, `signal` (these need std's types and turn on `std`), and `full`.
 //! With `std`, [`block_on`](future::block_on) parks the thread instead of
 //! spinning.
+#![forbid(unsafe_code)]
 #![no_std]
 
 #[cfg(feature = "alloc")]

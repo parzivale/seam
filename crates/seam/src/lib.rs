@@ -206,6 +206,7 @@
 //! [dev-dependencies]
 //! seam = { package = "seam-rs", version = "0.1", features = ["test"] }
 //! ```
+#![forbid(unsafe_code)]
 #![no_std]
 
 pub use seam_core::*;

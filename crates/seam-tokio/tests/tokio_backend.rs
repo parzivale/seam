@@ -13,13 +13,75 @@ use seam_core::future::{SendInspect, SendPerform};
 use seam_core::ops::fs::{
     CreateAtomic, CreateDir, NextEntry, Open, ReadDir, ReadFile, RemoveDir, WriteFile,
 };
+use seam_core::ops::fs::{OpenOptions, SetLen, Stat, SyncAll, SyncData};
 use seam_core::ops::io::{ReadExact, ReadToEnd, WriteAll};
+use seam_core::ops::io::{Seek, SeekFrom};
 use seam_core::ops::net::{Accept, LocalAddr, ResolveInto, TcpBind, TcpConnect};
 use seam_core::ops::time::{Now, Sleep};
 use seam_core::{AsyncAcquire, AsyncProvide, Inspect};
 use seam_tokio::Tokio;
 use seam_tokio::fs::AtomicFile;
 use seam_tokio::net::{TcpListener, TcpStream};
+
+/// Edits a file in place through one handle: every file handle operation.
+/// Generic, so it runs on any backend.
+async fn edit_in_place<C, F>(c: &mut C, path: &std::path::Path) -> io::Result<()>
+where
+    C: for<'a> AsyncProvide<Open<'a, F>> + for<'a> SendInspect<ReadFile<'a>> + Send,
+    F: SendPerform<Seek>
+        + for<'a> SendPerform<WriteAll<'a>>
+        + for<'a> SendPerform<ReadExact<'a>>
+        + SendPerform<SetLen>
+        + SendPerform<SyncAll>
+        + SendPerform<SyncData>
+        + SendInspect<Stat>
+        + Send,
+{
+    let options = OpenOptions {
+        read: true,
+        write: true,
+        create: true,
+        truncate: true,
+        ..OpenOptions::default()
+    };
+    c.acquire_async(Open::new(path, options), async |_, f| {
+        f.perform_send(WriteAll(b"hello world")).await?;
+        assert_eq!(f.perform_send(Seek(SeekFrom::Start(6))).await?, 6);
+        let mut word = [0; 5];
+        f.perform_send(ReadExact(&mut word)).await?;
+        assert_eq!(&word, b"world");
+        assert_eq!(f.perform_send(Seek(SeekFrom::End(-5))).await?, 6);
+        f.perform_send(WriteAll(b"WORLD")).await?;
+        assert_eq!(f.perform_send(Seek(SeekFrom::Current(-11))).await?, 0);
+        f.perform_send(SetLen(5)).await?;
+        assert_eq!(f.inspect_send(Stat).await?.len, 5);
+        // Past the end: the gap fills with zeros.
+        assert_eq!(f.perform_send(Seek(SeekFrom::End(2))).await?, 7);
+        f.perform_send(WriteAll(b"!")).await?;
+        f.perform_send(SyncData).await?;
+        f.perform_send(SyncAll).await?;
+        let err = f
+            .perform_send(Seek(SeekFrom::Current(-100)))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        let info = f.inspect_send(Stat).await?;
+        assert!(info.is_file());
+        assert_eq!(info.len, 8);
+        io::Result::Ok(())
+    })
+    .await?;
+    assert_eq!(c.inspect_send(ReadFile::new(path)).await?, b"hello\0\0!");
+    // Truncating needs a handle open for writing.
+    let err = c
+        .acquire_async(Open::read(path), async |_, f| {
+            f.perform_send(SetLen(0)).await
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    Ok(())
+}
 
 /// Lists `dir` through `ReadDir`, one entry at a time.
 async fn list<C, D>(c: &mut C, dir: &Path) -> io::Result<Vec<PathBuf>>
@@ -225,5 +287,13 @@ async fn atomic_file_listing_is_clean_after_success() -> io::Result<()> {
         .await?;
     assert_eq!(tokio.inspect_send(ReadFile::new(&path)).await?, b"new");
     assert_eq!(list(&mut tokio, &dir).await?, std::slice::from_ref(&path));
+    tokio.perform_send(RemoveDir::all(&dir)).await
+}
+
+#[tokio::test]
+async fn file_handles() -> io::Result<()> {
+    let mut tokio = Tokio::new();
+    let dir = scratch_dir(&mut tokio, "handles").await?;
+    edit_in_place(&mut tokio, &dir.join("f")).await?;
     tokio.perform_send(RemoveDir::all(&dir)).await
 }

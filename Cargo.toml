@@ -19,5 +19,7 @@ seam-tokio = { package = "seam-rs-tokio", path = "crates/seam-tokio", version = 
 tokio = { version = "1.54", default-features = false }
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# Forbidden in every crate root but seam-std, which allows it only where it
+# must: changing the process environment.
+unsafe_code = "deny"
 missing_docs = "warn"

@@ -84,11 +84,12 @@ mod random {
 
 #[cfg(feature = "env")]
 mod env {
-    use seam_core::ops::env::{Args, CurrentDir, TempDir, Var};
+    use seam_core::ops::env::{Args, CurrentDir, RemoveVar, SetVar, TempDir, Var};
 
     use super::*;
 
     delegate! { inspect ['a] Var<'a>; [] Args; [] CurrentDir; [] TempDir; }
+    delegate! { perform ['a] SetVar<'a>; ['a] RemoveVar<'a>; }
 }
 
 #[cfg(feature = "fs")]

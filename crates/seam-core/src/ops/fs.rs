@@ -4,7 +4,8 @@
 //! the backend. [`Open`] and [`CreateAtomic`] are acquisitions: a core
 //! acquires the file for the length of a scope (see
 //! [`acquire`](crate::acquire)), and performs the operations in
-//! [`io`](super::io) on it there. Operations borrow their paths and
+//! [`io`](super::io) on it there, along with the file operations here:
+//! [`Stat`], [`SetLen`], [`SyncAll`] and [`SyncData`]. Operations borrow their paths and
 //! contents, so describing one allocates nothing. [`ReadDir`] is an
 //! acquisition too, listing a directory one entry at a time.
 //!
@@ -101,6 +102,25 @@ pub struct ReadDir<'a, D> {
 /// the entry's name.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NextEntry;
+
+/// Truncate or extend an open file to `len` bytes. Extending fills with
+/// zeros. The position is unchanged. The file must be open for writing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetLen(pub u64);
+
+/// Write an open file's data and metadata through to the disk.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SyncAll;
+
+/// Write an open file's data through to the disk, with only the metadata
+/// needed to read it back (not, for example, its modification time).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SyncData;
+
+/// Look up an open file's metadata. Produces a [`FileInfo`], as
+/// [`Metadata`] does for a path.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Stat;
 
 /// Create a directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -463,6 +483,10 @@ operations! {
     #[query] ReadToString<'_> => io::Result<String>;
     #[query] Metadata<'_> => io::Result<FileInfo>;
     NextEntry => io::Result<Option<PathBuf>>;
+    SetLen => io::Result<()>;
+    SyncAll => io::Result<()>;
+    SyncData => io::Result<()>;
+    #[query] Stat => io::Result<FileInfo>;
     WriteFile<'_> => io::Result<()>;
     CreateDir<'_> => io::Result<()>;
     RemoveFile<'_> => io::Result<()>;

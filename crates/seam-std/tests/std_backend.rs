@@ -9,13 +9,67 @@ use std::time::Duration;
 use seam_core::ops::fs::{
     CreateAtomic, CreateDir, NextEntry, Open, ReadDir, ReadFile, RemoveDir, SweepAtomic, WriteFile,
 };
+use seam_core::ops::fs::{OpenOptions, SetLen, Stat, SyncAll, SyncData};
 use seam_core::ops::io::{Read, ReadExact, ReadToEnd, WriteAll};
+use seam_core::ops::io::{Seek, SeekFrom};
 use seam_core::ops::net::{Accept, LocalAddr, ResolveInto, TcpBind, TcpConnect};
 use seam_core::ops::random::FillRandom;
 use seam_core::ops::time::Now;
 use seam_core::{Acquire, Inspect, Perform, Provide};
 use seam_std::Std;
 use seam_std::fs::AtomicFile;
+
+/// Edits a file in place through one handle: every file handle operation.
+/// Generic, so it runs on any backend.
+fn edit_in_place<C, F>(c: &mut C, path: &std::path::Path) -> io::Result<()>
+where
+    C: for<'a> Provide<Open<'a, F>> + for<'a> Inspect<ReadFile<'a>>,
+    F: Perform<Seek>
+        + for<'a> Perform<WriteAll<'a>>
+        + for<'a> Perform<ReadExact<'a>>
+        + Perform<SetLen>
+        + Perform<SyncAll>
+        + Perform<SyncData>
+        + Inspect<Stat>,
+{
+    let options = OpenOptions {
+        read: true,
+        write: true,
+        create: true,
+        truncate: true,
+        ..OpenOptions::default()
+    };
+    c.acquire(Open::new(path, options), |_, f| {
+        f.perform(WriteAll(b"hello world"))?;
+        assert_eq!(f.perform(Seek(SeekFrom::Start(6)))?, 6);
+        let mut word = [0; 5];
+        f.perform(ReadExact(&mut word))?;
+        assert_eq!(&word, b"world");
+        assert_eq!(f.perform(Seek(SeekFrom::End(-5)))?, 6);
+        f.perform(WriteAll(b"WORLD"))?;
+        assert_eq!(f.perform(Seek(SeekFrom::Current(-11)))?, 0);
+        f.perform(SetLen(5))?;
+        assert_eq!(f.inspect(Stat)?.len, 5);
+        // Past the end: the gap fills with zeros.
+        assert_eq!(f.perform(Seek(SeekFrom::End(2)))?, 7);
+        f.perform(WriteAll(b"!"))?;
+        f.perform(SyncData)?;
+        f.perform(SyncAll)?;
+        let err = f.perform(Seek(SeekFrom::Current(-100))).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        let info = f.inspect(Stat)?;
+        assert!(info.is_file());
+        assert_eq!(info.len, 8);
+        io::Result::Ok(())
+    })?;
+    assert_eq!(c.inspect(ReadFile::new(path))?, b"hello\0\0!");
+    // Truncating needs a handle open for writing.
+    let err = c
+        .acquire(Open::read(path), |_, f| f.perform(SetLen(0)))
+        .unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    Ok(())
+}
 
 /// Lists `dir` through `ReadDir`, one entry at a time.
 fn list<C, D>(c: &mut C, dir: impl AsRef<std::path::Path>) -> io::Result<Vec<std::path::PathBuf>>
@@ -438,4 +492,12 @@ mod threads {
     }
 
     use std::thread;
+}
+
+#[test]
+fn file_handles() -> io::Result<()> {
+    let mut std = Std::new();
+    let dir = scratch_dir(&mut std, "handles")?;
+    edit_in_place(&mut std, &dir.join("f"))?;
+    std.perform(RemoveDir::all(&dir))
 }

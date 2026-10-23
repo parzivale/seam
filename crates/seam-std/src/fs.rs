@@ -12,7 +12,45 @@ use seam_core::ops::fs::{
 };
 use seam_core::{Inspect, Perform, Provide, Token};
 
+use seam_core::ops::fs::{SetLen, Stat, SyncAll, SyncData};
+
 use crate::Std;
+
+/// Implements the file handle operations for a wrapper around a
+/// `std::fs::File`.
+macro_rules! file_ops {
+    ($ty:ty) => {
+        impl Perform<seam_core::ops::io::Seek> for $ty {
+            fn perform(&mut self, op: seam_core::ops::io::Seek) -> seam_core::io::Result<u64> {
+                crate::sio(io::Seek::seek(&mut self.0, op.0.into()))
+            }
+        }
+
+        impl Perform<SetLen> for $ty {
+            fn perform(&mut self, op: SetLen) -> seam_core::io::Result<()> {
+                crate::sio(self.0.set_len(op.0))
+            }
+        }
+
+        impl Perform<SyncAll> for $ty {
+            fn perform(&mut self, _: SyncAll) -> seam_core::io::Result<()> {
+                crate::sio(self.0.sync_all())
+            }
+        }
+
+        impl Perform<SyncData> for $ty {
+            fn perform(&mut self, _: SyncData) -> seam_core::io::Result<()> {
+                crate::sio(self.0.sync_data())
+            }
+        }
+
+        impl Inspect<Stat> for $ty {
+            fn inspect(&self, _: Stat) -> seam_core::io::Result<FileInfo> {
+                crate::sio(self.0.metadata().map(file_info))
+            }
+        }
+    };
+}
 
 /// An open file, acquired with [`Open`]. Read and write it with the `io`
 /// operations.
@@ -24,6 +62,7 @@ use crate::Std;
 pub struct File(std::fs::File, Writable);
 
 crate::io_ops!(File);
+file_ops!(File);
 
 impl File {
     fn commit(mut self) -> seam_core::io::Result<()> {
@@ -50,6 +89,7 @@ struct Writable(bool);
 pub struct AtomicFile(std::fs::File, Pending);
 
 crate::io_ops!(AtomicFile);
+file_ops!(AtomicFile);
 
 /// The temporary file of an [`AtomicFile`], deleted on drop unless it was
 /// renamed into place. Declared after the `File` in `AtomicFile`, so the

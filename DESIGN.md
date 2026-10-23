@@ -39,17 +39,28 @@ tracks it. Control effects (errors, early return, async suspension) use
 `seam-core::ops` defines the operation types, one module per capability
 feature, so a core written against them runs on any backend:
 
-- `io`: `Read`, `ReadExact`, `ReadToEnd`, `Write`, `WriteAll`, `Flush` (on handles)
+- `io`: `Read`, `ReadExact`, `ReadToEnd`, `Write`, `WriteAll`, `Flush`, and
+  `Seek(SeekFrom)` with seam's own `SeekFrom` (on handles)
 - `fs`: `ReadFile`, `ReadToString`, `Metadata` (queries); `WriteFile`,
   `CreateDir`, `RemoveFile`, `RemoveDir`, `Rename`, `CopyFile`,
   `SweepAtomic`; acquisitions `Open<'a, F>`, `CreateAtomic<'a, F>` and
   `ReadDir<'a, D>`, a directory listing that `NextEntry` steps through one
-  path at a time
+  path at a time; on an open file, `Stat` (a query), `SetLen`, `SyncAll`
+  and `SyncData`
 - `net`: `ResolveInto` and `Resolve` (DNS is an effect), `SendTo`, `RecvFrom`, `Shutdown(How)`;
   `LocalAddr` and `PeerAddr` queries; acquisitions `TcpConnect<S>`,
   `TcpBind<L>`, `Accept<S>` (from a listener) and `UdpBind<U>`
 - `time`: `Sleep`, `Now` (no_std); `WallClock` (std)
-- `env`: `Var`, `Args`, `CurrentDir`, `TempDir` (all queries)
+- `env`: `Var`, `Args`, `CurrentDir`, `TempDir` (queries); `SetVar` and
+  `RemoveVar`, which check names and values instead of panicking as std
+  does. Changing the environment while another thread reads it is
+  undefined behaviour on most platforms, which is why `std::env::set_var`
+  is `unsafe`. So `Std` does not change it: `seam_std::env::WritableEnv`
+  does, made by an `unsafe fn new()` that carries `set_var`'s contract, and
+  `!Send`, so it stays on the thread the promise was made for. It reads
+  the environment too, so it can serve `kinds::Env` in a root. It is the
+  only `unsafe` in seam: the workspace denies `unsafe_code`, every crate
+  but seam-std forbids it, and seam-std allows it on those items alone.
 - `process`: `RunCommand`, `Exit` (outcome `Infallible`), and `SpawnChild`,
   an acquisition lending a running child to a scope: written to and read
   like a stream (stdin and stdout), with `ReadErr`, `CloseStdin`, `Wait`,

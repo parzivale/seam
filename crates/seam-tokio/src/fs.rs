@@ -13,6 +13,21 @@ use seam_core::{AsyncProvide, Token};
 use tokio::io::AsyncWriteExt;
 
 use crate::Tokio;
+use seam_core::ops::fs::{SetLen, Stat, SyncAll, SyncData};
+
+/// Implements the file handle operations for a wrapper around a
+/// `tokio::fs::File`.
+macro_rules! file_ops {
+    ($ty:ty) => {
+        async_op!(perform [] $ty, seam_core::ops::io::Seek, |s, op| {
+            tokio::io::AsyncSeekExt::seek(&mut s.0, op.0.into()).await
+        });
+        async_op!(perform [] $ty, SetLen, |s, op| s.0.set_len(op.0).await);
+        async_op!(perform [] $ty, SyncAll, |s, _op| s.0.sync_all().await);
+        async_op!(perform [] $ty, SyncData, |s, _op| s.0.sync_data().await);
+        async_op!(inspect [] $ty, Stat, |s, _op| s.0.metadata().await.map(file_info));
+    };
+}
 
 /// An open file, acquired with [`Open`]. Read and write it with the `io`
 /// operations.
@@ -25,6 +40,7 @@ use crate::Tokio;
 pub struct File(tokio::fs::File, Writable);
 
 io_ops!(File);
+file_ops!(File);
 
 /// Whether a [`File`] was opened for writing. Only those are synced on
 /// close; some platforms refuse to sync a read-only handle.
@@ -69,6 +85,7 @@ impl AsyncProvide<Open<'_, File>> for Tokio {
 pub struct AtomicFile(tokio::fs::File, Pending);
 
 io_ops!(AtomicFile);
+file_ops!(AtomicFile);
 
 /// The temporary file of an [`AtomicFile`], deleted on drop unless it was
 /// renamed into place.

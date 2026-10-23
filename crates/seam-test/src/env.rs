@@ -4,8 +4,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::vec::Vec;
 
-use seam_core::Inspect;
-use seam_core::ops::env::{Args, CurrentDir, TempDir, Var};
+use seam_core::ops::env::{Args, CurrentDir, RemoveVar, SetVar, TempDir, Var};
+use seam_core::{Inspect, Perform};
 
 use crate::Sim;
 
@@ -63,6 +63,24 @@ impl Sim {
 impl Inspect<Var<'_>> for Sim {
     fn inspect(&self, op: Var<'_>) -> Option<OsString> {
         self.env.vars.get(op.name).cloned()
+    }
+}
+
+impl Perform<SetVar<'_>> for Sim {
+    fn perform(&mut self, op: SetVar<'_>) -> io::Result<()> {
+        op.check()?;
+        self.env
+            .vars
+            .insert(OsString::from(op.name), OsString::from(op.value));
+        Ok(())
+    }
+}
+
+impl Perform<RemoveVar<'_>> for Sim {
+    fn perform(&mut self, op: RemoveVar<'_>) -> io::Result<()> {
+        op.check()?;
+        self.env.vars.remove(op.name);
+        Ok(())
     }
 }
 

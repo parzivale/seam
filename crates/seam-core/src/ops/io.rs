@@ -60,12 +60,54 @@ pub struct WriteAll<'a>(pub &'a [u8]);
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Flush;
 
+/// Move a seekable handle (a file) to a new position. Returns the new
+/// position, in bytes from the start. Seeking past the end is allowed; a
+/// write there fills the gap with zeros. Seeking before the start fails
+/// with `io::ErrorKind::InvalidInput`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Seek(pub SeekFrom);
+
+/// Where a [`Seek`] counts from: the same choices as `std::io::SeekFrom`,
+/// which converts into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SeekFrom {
+    /// This many bytes from the start.
+    Start(u64),
+    /// This many bytes from the end, usually negative.
+    End(i64),
+    /// This many bytes from the current position.
+    Current(i64),
+}
+
+#[cfg(feature = "std")]
+impl From<std::io::SeekFrom> for SeekFrom {
+    fn from(from: std::io::SeekFrom) -> Self {
+        match from {
+            std::io::SeekFrom::Start(n) => Self::Start(n),
+            std::io::SeekFrom::End(n) => Self::End(n),
+            std::io::SeekFrom::Current(n) => Self::Current(n),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl From<SeekFrom> for std::io::SeekFrom {
+    fn from(from: SeekFrom) -> Self {
+        match from {
+            SeekFrom::Start(n) => Self::Start(n),
+            SeekFrom::End(n) => Self::End(n),
+            SeekFrom::Current(n) => Self::Current(n),
+        }
+    }
+}
+
 operations! {
     Read<'_> => io::Result<usize>;
     ReadExact<'_> => io::Result<()>;
     Write<'_> => io::Result<usize>;
     WriteAll<'_> => io::Result<()>;
     Flush => io::Result<()>;
+    Seek => io::Result<u64>;
 }
 
 #[cfg(feature = "alloc")]

@@ -8,10 +8,10 @@
 //! |---|---|---|---|
 //! | `time` | `time` | no (`WallClock`: yes) | `Now`, `Sleep`, `WallClock` |
 //! | `random` | `random` | no | `RandomU64`, `FillRandom` |
-//! | `fs` | `fs` | yes | `ReadFile`, `WriteFile`, `Open<F>` |
-//! | `io` | `io` (or `fs`, `net`, `process`) | no (`ReadToEnd`: alloc) | `Read`, `ReadExact`, `WriteAll`, `Flush` on handles |
+//! | `fs` | `fs` | yes | `ReadFile`, `WriteFile`, `Open<'a, F>`, `ReadDir<'a, D>`, `Stat`, `SetLen` |
+//! | `io` | `io` (or `fs`, `net`, `process`) | no (`ReadToEnd`: alloc) | `Read`, `ReadExact`, `WriteAll`, `Flush`, `Seek` on handles |
 //! | `net` | `net` | no (`Resolve`: alloc) | `TcpConnect<S>`, `TcpBind<L>`, `ResolveInto`, `Resolve` |
-//! | `env` | `env` | yes | `Var`, `Args`, `CurrentDir` |
+//! | `env` | `env` | yes | `Var`, `Args`, `CurrentDir`, `SetVar` |
 //! | `process` | `process` | yes | `RunCommand`, `Exit` |
 //! | `stdio` | `io-std` | no (`ReadLine`: alloc) | `Print`, `ReadLineInto`, `ReadLine` |
 //! | `signal` | `signal` | no | `CtrlC` |

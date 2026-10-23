@@ -47,9 +47,10 @@ feature, so a core written against them runs on any backend:
   `ReadDir<'a, D>`, a directory listing that `NextEntry` steps through one
   path at a time; on an open file, `Stat` (a query), `SetLen`, `SyncAll`
   and `SyncData`
-- `net`: `ResolveInto` and `Resolve` (DNS is an effect), `SendTo`, `RecvFrom`, `Shutdown(How)`;
-  `LocalAddr` and `PeerAddr` queries; acquisitions `TcpConnect<S>`,
-  `TcpBind<L>`, `Accept<S>` (from a listener) and `UdpBind<U>`
+- `net`: `ResolveInto` and `Resolve` (DNS is an effect), `SendTo`,
+  `RecvFrom`, `Shutdown(How)`; `LocalAddr` and `PeerAddr` queries;
+  acquisitions `TcpConnect<S>`, `TcpBind<L>`, `Accept<S>` (from a listener)
+  and `UdpBind<U>`
 - `time`: `Sleep`, `Now` (no_std); `WallClock` (std)
 - `env`: `Var`, `Args`, `CurrentDir`, `TempDir` (queries); `SetVar` and
   `RemoveVar`, which check names and values instead of panicking as std
@@ -105,8 +106,7 @@ for the same reason. The operations returning owned data (`ReadToEnd`,
 the caller passes instead: `ReadExact`; `ResolveInto`, which reports how
 many addresses there were, so a caller can tell its buffer was too small;
 and `ReadLineInto`, which hands back a line too long for its buffer a
-piece at a time (`Line::complete`). `Resolve` borrows its host name, so
-neither form allocates for its input; `fs`, `process` and `env` need std for
+piece at a time (`Line::complete`). `fs`, `process` and `env` need std for
 `Path`, `Command` and `OsString`.
 
 Operations borrow their inputs: paths are `&Path`, `WriteFile`'s contents
@@ -130,9 +130,9 @@ items a core emits, to check that output scales with input size.
 ## Backends
 
 Each backend has a zero-sized capability (`Std`, `Tokio`), used alone or as
-a part of a `Root`, constructed at the edge, and newtype handles that expose no std or Tokio I/O traits and no
-way back to the inner value. Every effect on them goes through
-`Perform`/`Inspect`.
+a part of a `Root`, constructed at the edge, and newtype handles that
+expose no std or Tokio I/O traits and no way back to the inner value. Every
+effect on them goes through `Perform`/`Inspect`.
 
 In the `seam` umbrella crate, capability-group features (`fs`, `time`, ...)
 never enable a backend; backends (`std`, `tokio`, `test`) are only ever
@@ -140,11 +140,11 @@ enabled by the end user. Tokio's runtime options (`rt`, ...) do nothing
 without `tokio`.
 
 Feature flags: `seam-std` has `fs`, `net`, `time`, `env`, `process`,
-`random`, `io-std`. `seam-tokio` copies Tokio's names (`rt`,
-`rt-multi-thread`, `fs`, `net`, `time`, `process`, `io-std`, `signal`,
-`io-util`, `test-util`, `full`) plus `env` and `random`, which run
-synchronously. Tokio's `sync`, `macros` and `parking_lot` are not mirrored:
-there is nothing for seam to wrap yet, and `#[tokio::main]` cannot be
+`random`, `io-std`, `sync`, `rt` and `full`. `seam-tokio` copies Tokio's
+names (`rt`, `rt-multi-thread`, `fs`, `net`, `time`, `process`, `io-std`,
+`signal`, `sync`, `io-util`, `test-util`, `full`); it has no `env` or
+`random`, which a Tokio program takes from `Std` (see **Roots**). Tokio's
+`macros` and `parking_lot` are not mirrored: `#[tokio::main]` cannot be
 re-exported without exposing Tokio itself.
 
 ## Test backend
@@ -158,13 +158,21 @@ group with no real effects other than allocation:
 - **fs**: an in-memory tree of inodes. Errors match a real system
   (`NotFound`, `IsADirectory`, `NotADirectory`, `DirectoryNotEmpty`, ...),
   `..` only steps out of directories that exist, and open handles survive
-  renames, as on Unix. No symlinks or permissions.
+  renames, as on Unix: `Stat` on a handle follows its file, not its path.
+  `ReadDir` lists a snapshot taken when it is opened, sorted by name. Files
+  seek past their end (a write there fills the gap with zeros), and
+  `SetLen` needs a handle open for writing (`InvalidInput`, as on Linux).
+  Nothing is lost in a simulated crash, so `SyncAll` and `SyncData` do
+  nothing. An atomic file's temporary file is visible beside its target
+  until the scope ends. No symlinks or permissions.
 - **net**: in-memory TCP (pipe pairs, with shutdown and `BrokenPipe`) and UDP
   (truncation, drops to unbound addresses), plus a hosts table for
   `Resolve` and `ResolveInto`. A plain-simulation `ReadExact` takes
   nothing until the whole buffer has arrived.
-- **env**, **io-std**: configured variables, arguments and directories;
-  scripted stdin, captured stdout and stderr.
+- **env**, **io-std**: configured variables, arguments and directories,
+  with `SetVar` and `RemoveVar` changing the variables (no `unsafe`
+  needed: nothing real changes); scripted stdin, captured stdout and
+  stderr.
 - **process**: commands are answered by scripted handlers and logged. A
   spawned child is a filter: its handler runs the first time its output is
   needed (a read, a wait, or the end of its scope), on the input written
@@ -256,8 +264,9 @@ in document order and the last setting wins, which is also how one file
 layers over another. The simulated filesystem lists directories by name,
 whatever order the files were written in.
 
-Expectations check only what they list. `stdout` and `stderr` compare
-exact bytes, and `ran` lines must be every command, in order. Everything is
+Expectations check only what they list: the clock, variables (`var`,
+`unset`), files, output and commands. `stdout` and `stderr` compare exact
+bytes, and `ran` lines must be every command, in order. Everything is
 checked before reporting, so one run shows every difference.
 
 The parser is a small one for the subset of KDL v2 world files use (no type
@@ -459,8 +468,8 @@ its `Pick` impls; a named form defines a plain struct instead.
 
 Each backend covers only what it is for. `seam-tokio` has no environment
 or randomness, since Tokio has nothing to add to them; a Tokio program
-takes `kinds::Env` and `kinds::Random` from `Std` in the same root. A root has
-no singleton or lock: roots are built at the edge, and the clippy template
+takes `kinds::Env` and `kinds::Random` from `Std` in the same root. A root
+has no singleton or lock: roots are built at the edge, and the clippy template
 is what keeps cores from reaching for effects directly.
 
 Alternatives explored and set aside are fixed per-domain slots
@@ -475,7 +484,9 @@ lose plain `c.perform(op)` calls.
 `block_on`, but no operation types: those are imported one by one, so that a
 module's imports, like its bounds, show what it can do.
 
-## Deferred
+## Future work
+
+Deferred by design:
 
 - **Allocation as a capability.** The plan was an explicit `A: Allocator`
   generic in the core, fallible APIs only, and clippy bans on the `Global`
@@ -486,6 +497,30 @@ module's imports, like its bounds, show what it can do.
   runs once on the input it was given. A child that answers line by line
   would run as its own task or thread on the runtime or the scheduler,
   written as a core against its stdin and stdout.
+
+Not implemented yet:
+
+- **Signals.** `CtrlC` on `seam-std`, which needs a dependency
+  (`signal-hook` or `ctrlc`). Other signals (`SIGTERM`, `SIGHUP`, or any by
+  number) on every backend, for graceful shutdown.
+- **Time.** `SleepUntil(Instant)` and an interval timer, so a periodic loop
+  does not drift.
+- **Network.** TCP options (`nodelay`, keepalive, TTL); connected UDP
+  (`connect`, `send`, `recv`), broadcast and multicast; Unix domain
+  sockets. Tokio streams shut down only their write half; shutting down
+  the read half reports `Unsupported`.
+- **Filesystem.** Symlinks and hard links (create, read, stat without
+  following), `Canonicalize`, setting permissions and modification times,
+  and recursive copy and listing. The simulation has no symlinks or
+  permissions, so its `FileInfo::readonly` is always false.
+- **Processes.** A gentler `Kill` (`SIGTERM`), the signal that ended a
+  child in `ExitStatus`, and the process's own ID.
+- **Environment.** `SetCurrentDir` (safe in std, unlike `set_var`) and
+  listing every variable.
+- **Polish.** An optional run-time message on `io::Error` behind `alloc`;
+  `Sim::list_dir` for tests; buffer-filling forms of the std-only
+  operations that still return owned data (`ReadFile`, `Args`, `Var`,
+  `NextEntry`).
 
 ## Open questions
 

@@ -4,7 +4,7 @@ Sans-effect programming for Rust.
 
 ```toml
 [dependencies]
-seam = { package = "seam-rs", version = "0.1", features = ["fs", "std"] }
+seam = { package = "seam-rs", version = "0.2", features = ["fs", "std"] }
 ```
 
 The crates are published as `seam-rs`, `seam-rs-core`, `seam-rs-std`,
@@ -35,11 +35,11 @@ fn jitter<C: Perform<RandomU64> + Perform<Sleep>>(c: &mut C) {
 
 | Crate | What it is |
 |---|---|
-| [`seam-core`](crates/seam-core) (`seam-rs-core`) | The traits (`Operation`, `Query`, `Inspect`, `Perform`, `Provide`/`Acquire` and their async forms, `block_on`), the operation and acquisition types, and a `prelude`. `no_std`. |
-| [`seam-std`](crates/seam-std) (`seam-rs-std`) | The std backend: a `Std` capability (used alone, or as a part of a `Root`) and newtype handles (`File`, `TcpStream`, ...) that expose no std I/O traits. |
-| [`seam-tokio`](crates/seam-tokio) (`seam-rs-tokio`) | The Tokio backend: a `Tokio` capability implementing the async and `Send` capability traits, for time, files, the network, stdio, processes, signals, tasks and channels. |
-| [`seam-test`](crates/seam-test) (`seam-rs-test`) | The pure test backend: a `Sim` world with a virtual clock, seeded randomness, in-memory filesystem and network, scripted commands and captured stdio. Its only real effect is allocation. |
-| [`seam`](crates/seam) (`seam-rs`) | Re-exports everything, behind feature flags. `no_std` by default. |
+| [`seam-core`](https://github.com/parzivale/seam/tree/main/crates/seam-core) (`seam-rs-core`) | The traits (`Operation`, `Query`, `Inspect`, `Perform`, `Provide`/`Acquire` and their async forms, `block_on`), the operation and acquisition types, and a `prelude`. `no_std`. |
+| [`seam-std`](https://github.com/parzivale/seam/tree/main/crates/seam-std) (`seam-rs-std`) | The std backend: a `Std` capability (used alone, or as a part of a `Root`) and newtype handles (`File`, `TcpStream`, ...) that expose no std I/O traits. |
+| [`seam-tokio`](https://github.com/parzivale/seam/tree/main/crates/seam-tokio) (`seam-rs-tokio`) | The Tokio backend: a `Tokio` capability implementing the async and `Send` capability traits, for time, files, the network, stdio, processes, signals, tasks and channels. |
+| [`seam-test`](https://github.com/parzivale/seam/tree/main/crates/seam-test) (`seam-rs-test`) | The pure test backend: a `Sim` world with a virtual clock, seeded randomness, in-memory filesystem and network, scripted commands and captured stdio. Its only real effect is allocation. |
+| [`seam`](https://github.com/parzivale/seam/tree/main/crates/seam) (`seam-rs`) | Re-exports everything, behind feature flags. `no_std` by default. |
 
 ## Features
 
@@ -58,7 +58,7 @@ and only the binary (or its tests) picks a backend.
 | `sync` | Channels (`Channel`, `SendMsg`, `RecvMsg`) and shared cells (`Share`, `Load`, `Store`, `Update`). No std or alloc needed. |
 | `alloc` | `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type; the operations that return owned data (`ReadToEnd`, `Resolve`, `ReadLine`). Each has a no-allocation form that fills a buffer you pass: `ReadExact`, `ResolveInto`, `ReadLineInto`. |
 | `io`, `net`, `io-std`, `signal` | Those operation types. No std needed. |
-| `fs`, `process`, `env` | Those operation types. Links std for their types (`Path`, `Command`, `OsString`). |
+| `fs`, `process`, `env` | Those operation types. Links std for their types (`Path`, `Command`, `OsString`). `env` includes `SetVar` and `RemoveVar`, which std serves only through `WritableEnv` (see Roots). |
 | `full` | Every capability group. Still no backend. |
 
 | Backend | Gives you |
@@ -108,8 +108,9 @@ impl InKind for Get { type Kind = Store; }
 
 `root!` evaluates to the root. It writes a struct of the parts and one
 `Pick` impl per kind; a named form (`root! { struct App { ... } }`) gives
-the struct a name, for when the root's type must be written out. Capability types opt in to seam's lifts (an `Inspect` is
-also a `Perform`, a sync operation also works from async code) with
+the struct a name, for when the root's type must be written out.
+Capability types opt in to seam's lifts (an `Inspect` is also a `Perform`,
+a sync operation also works from async code) with
 `impl Capability for MyType {}`; every type in seam's backends does.
 
 ## I/O errors
@@ -185,7 +186,7 @@ visit(&mut root, "home")?;
   through `C`'s `CreateAtomic`. It then runs on every backend, the
   simulation included, and on the simulated runtime and threads its
   interleavings are explored like any other effects. See
-  [`custom_ops`](crates/seam/examples/custom_ops.rs).
+  [`custom_ops`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/custom_ops.rs).
 - **Effects of a kind seam has** (another filesystem, say) use seam's
   operations and kind (`kinds::Fs`), so they can stand in for a backend's
   part in a root.
@@ -267,10 +268,14 @@ c.acquire(CreateAtomic::new("settings.conf"), |c, file| {
 When the body returns `Ok` the resource is committed: a file is synced, an
 atomic file renamed into place, a stream shut down cleanly, a task or child
 process waited for. Otherwise it is rolled back: a task is aborted, a child
-process killed. Providers make
-dropping a resource equal rolling it back, so cancelling at any `.await`,
-even while opening or closing, never commits half a result. Atomic files on
-Tokio are tested by cancelling after every possible number of polls.
+process killed. Providers make dropping a resource equal rolling it back,
+so cancelling at any `.await`, even while opening or closing, never
+commits half a result. Atomic files on Tokio are tested by cancelling
+after every possible number of polls.
+
+Inside the scope, a file is read and written with the `io` operations, and
+also moved (`Seek`), truncated or extended (`SetLen`), synced (`SyncAll`,
+`SyncData`) and asked for its metadata (`Stat`).
 
 A resource reaches a task only through the provider: `SpawnWith` has a
 listener accept a connection into a new task that owns it, running a named
@@ -319,6 +324,7 @@ process { command git exit=0 stdout="clean\n" }
 let mut sim = Sim::from_world(include_str!("app.world"))?;
 run(&mut sim)?;
 sim.assert_world(r#"
+    env { var APP_STATE ready }
     fs { file "/var/log/app.log" "started on 8080\n"; absent "/tmp/app.lock" }
     stdio { stdout "ok\n" }
     process { ran git status }
@@ -327,6 +333,8 @@ sim.assert_world(r#"
 
 Directives apply in order, and something set twice keeps its last value;
 `load_world` layers a test's changes over a shared base. Directories nest.
+Expectations check only what they list: the clock, variables, files,
+output and the commands that ran.
 A failing expectation is reported with its line, all of them at once, and
 a mistake in the file is an error with its line and column ("unknown `fil`
 in `fs` (did you mean `file`?)"). The parser is seam-test's own, for the
@@ -349,8 +357,8 @@ match rx.perform(Timeout::new(Duration::from_secs(1), RecvMsg::new())) {
 A receive that times out reports `Empty`, a send `Full` with the value
 handed back, I/O `io::ErrorKind::TimedOut`, and a join `JoinError::TimedOut`
 with the task still running. An expired operation had no effect, except
-`ReadToEnd` and `ReadExact`, which keep what arrived, and `WriteAll`, which may have written
-part of its buffer. `Timeout` covers channel sends and receives, socket
+`ReadToEnd` and `ReadExact`, which keep what arrived, and `WriteAll`, which
+may have written part of its buffer. `Timeout` covers channel sends and receives, socket
 reads and writes, accept (also with `SpawnWith`), connect, `RecvFrom`, joins
 and `CtrlC`, on `seam-std`, `seam-tokio` and the simulation. On the
 simulated runtime and threads, timeouts run on the virtual clock, so a test
@@ -360,22 +368,22 @@ can check exactly when one fired.
 
 The newtype handles stop effects leaking out of the backends, but nothing in
 the type system stops a core crate from calling `std::fs::read` directly.
-[`templates/clippy.toml`](templates/clippy.toml) bans the std and Tokio
+[`templates/clippy.toml`](https://github.com/parzivale/seam/blob/main/templates/clippy.toml) bans the std and Tokio
 effect APIs (and shared-state types); copy it into each crate that should stay
 sans-effect.
 
 ## Examples
 
-Real programs in [`crates/seam/examples`](crates/seam/examples), each with
+Real programs in [`crates/seam/examples`](https://github.com/parzivale/seam/tree/main/crates/seam/examples), each with
 tests that run its core in the simulation:
 
 | Example | Shows |
 |---|---|
-| [`guess`](crates/seam/examples/guess.rs) | randomness and stdio; seeded, scripted tests, and a test of a playing strategy |
-| [`backup`](crates/seam/examples/backup.rs) | filesystem, clock and arguments; bundling many capabilities into one trait; an atomic manifest marks complete snapshots, and crashed runs are cleaned up |
-| [`echo_server`](crates/seam/examples/echo_server.rs) | an async `Send` core on a root of Tokio and std that spawns a task per connection; its handler is tested on the in-memory network with no runtime |
-| [`custom_ops`](crates/seam/examples/custom_ops.rs) | defining your own operations and their kind; building a capability out of other capabilities; putting it in a root next to `Std`; atomic writes in a scope |
-| [`word_count`](crates/seam/examples/word_count.rs) | a worker pool on OS threads, tested on simulated threads under many schedules; a world file for its setup and expectations |
+| [`guess`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/guess.rs) | randomness and stdio; seeded, scripted tests, and a test of a playing strategy |
+| [`backup`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/backup.rs) | filesystem, clock and arguments; bundling many capabilities into one trait; an atomic manifest marks complete snapshots, and crashed runs are cleaned up |
+| [`echo_server`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/echo_server.rs) | an async `Send` core on a root of Tokio and std that spawns a task per connection; its handler is tested on the in-memory network with no runtime |
+| [`custom_ops`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/custom_ops.rs) | defining your own operations and their kind; building a capability out of other capabilities; putting it in a root next to `Std`; atomic writes in a scope |
+| [`word_count`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/word_count.rs) | a worker pool on OS threads, tested on simulated threads under many schedules; a world file for its setup and expectations |
 
 ```text
 cargo run  -p seam-rs --example guess --features full,std,tokio,rt,test
@@ -384,8 +392,8 @@ cargo test -p seam-rs --examples --features full,std,tokio,rt,test
 
 ## Design
 
-See [DESIGN.md](DESIGN.md). API documentation: `cargo doc --open --all-features`.
+See [DESIGN.md](https://github.com/parzivale/seam/blob/main/DESIGN.md). API documentation: `cargo doc --open --all-features`.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/parzivale/seam/blob/main/LICENSE).

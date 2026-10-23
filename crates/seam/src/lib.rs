@@ -16,10 +16,10 @@
 //!
 //! ```toml
 //! [dependencies]
-//! seam = { package = "seam-rs", version = "0.1", features = ["fs", "io-std", "std"] }
+//! seam = { package = "seam-rs", version = "0.2", features = ["fs", "io-std", "std"] }
 //!
 //! [dev-dependencies]
-//! seam = { package = "seam-rs", version = "0.1", features = ["test"] }
+//! seam = { package = "seam-rs", version = "0.2", features = ["test"] }
 //! ```
 //!
 //! ```
@@ -60,8 +60,8 @@
 //! `&self`; [`Perform<O>`] runs anything through `&mut self`. Every
 //! `Inspect` is also a `Perform` (for types that opt in with
 //! [`Capability`], as every backend type does), so a stronger capability is
-//! accepted where a weaker one is asked for. A core asks for capabilities as bounds and
-//! receives one value that provides them.
+//! accepted where a weaker one is asked for. A core asks for capabilities
+//! as bounds and receives one value that provides them.
 //!
 //! **Backends** provide capabilities over the real world, and are chosen
 //! only at the edge of the program:
@@ -98,8 +98,9 @@
 //! # Async
 //!
 //! Async capabilities are in [`future`]. Every sync capability is also an
-//! async one (again, for types that opt in with [`Capability`]), so an async core runs on `Std`, `Sim` or a hand-written fake
-//! through [`block_on`](future::block_on), and on Tokio through
+//! async one (again, for types that opt in with [`Capability`]), so an
+//! async core runs on `Std`, `Sim` or a hand-written fake through
+//! [`block_on`](future::block_on), and on Tokio through
 //! `seam::tokio::block_on`. Write `SendPerform`/`SendInspect` bounds for a
 //! core that must run on a multithreaded runtime.
 //!
@@ -161,6 +162,9 @@
 //!   in-memory network with no runtime.
 //! - `custom_ops`: defining your own operations, and building a capability
 //!   out of other capabilities.
+//! - `word_count`: a worker pool on OS threads, tested on simulated threads
+//!   under many schedules, with a world file for its setup and
+//!   expectations.
 //!
 //! # Features
 //!
@@ -196,15 +200,15 @@
 //! ```toml
 //! # The library holding the core: operations only.
 //! [dependencies]
-//! seam = { package = "seam-rs", version = "0.1", features = ["fs", "time"] }
+//! seam = { package = "seam-rs", version = "0.2", features = ["fs", "time"] }
 //!
 //! # The binary: also picks the real backend...
 //! [dependencies]
-//! seam = { package = "seam-rs", version = "0.1", features = ["fs", "time", "std"] }
+//! seam = { package = "seam-rs", version = "0.2", features = ["fs", "time", "std"] }
 //!
 //! # ...and its tests pick the simulation.
 //! [dev-dependencies]
-//! seam = { package = "seam-rs", version = "0.1", features = ["test"] }
+//! seam = { package = "seam-rs", version = "0.2", features = ["test"] }
 //! ```
 #![forbid(unsafe_code)]
 #![no_std]

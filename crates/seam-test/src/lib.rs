@@ -39,7 +39,7 @@
 //! |---|---|---|
 //! | time | `advance`, `set_wall_clock` | perform `Now` |
 //! | fs | `add_file`, `add_dir` | `file`, `exists` |
-//! | env | `set_var`, `set_args`, `set_current_dir` | |
+//! | env | `set_var`, `remove_var`, `set_args`, `set_current_dir` | inspect `Var` |
 //! | net | `add_host` | bind and connect sockets |
 //! | io-std | `feed_stdin` | `stdout`, `take_stdout` |
 //! | process | `on_command` | `invocations`, `catch_exit` |
@@ -47,8 +47,9 @@
 //!
 //! Each row needs its feature. The same setup can be written as a world
 //! file, in KDL, and loaded with `Sim::from_world`; `Sim::check_world`
-//! checks the world afterwards against expectations in the same format.
-//! See the `world_file` module.
+//! checks the world afterwards against expectations in the same format
+//! (files, output, variables, commands run, the clock). See the
+//! `world_file` module.
 //!
 //! ```
 //! # #[cfg(all(feature = "fs", feature = "env", feature = "io-std"))] {

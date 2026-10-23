@@ -285,7 +285,9 @@ fn every_failure_is_reported_with_its_line() {
 #[test]
 fn invalid_expectations_are_reported_too() {
     let sim = Sim::new();
-    let mismatch = sim.check_world("env { var USER ada }").unwrap_err();
+    let mismatch = sim
+        .check_world("net { host example.com \"1.2.3.4\" }")
+        .unwrap_err();
     assert!(
         mismatch
             .to_string()
@@ -340,5 +342,33 @@ fn the_documented_examples_load() {
             .iter()
             .all(|f| !f.message.starts_with("invalid")),
         "{mismatch}"
+    );
+}
+
+#[test]
+fn env_expectations_check_what_a_core_changed() {
+    use seam_core::Perform;
+    use seam_core::ops::env::{RemoveVar, SetVar};
+
+    let mut sim = Sim::from_world("env { var MODE start; var LOCK yes }").unwrap();
+    sim.perform(SetVar::new("MODE", "done")).unwrap();
+    sim.perform(RemoveVar::new("LOCK")).unwrap();
+    sim.assert_world("env { var MODE done; unset LOCK; unset NEVER }");
+
+    let mismatch = sim
+        .check_world("env {\n    var MODE start\n    unset MODE\n    var LOCK yes\n}")
+        .unwrap_err();
+    let failures: Vec<_> = mismatch
+        .failures
+        .iter()
+        .map(|f| (f.line, f.message.as_str()))
+        .collect();
+    assert_eq!(
+        failures,
+        [
+            (2, "env: expected MODE \"start\", found \"done\""),
+            (3, "env: expected MODE unset, found \"done\""),
+            (4, "env: expected LOCK \"yes\", found unset"),
+        ]
     );
 }

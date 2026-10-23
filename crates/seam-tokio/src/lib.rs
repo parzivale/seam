@@ -81,12 +81,16 @@
 //! down, and `fs::AtomicFile` is renamed into place. When it fails, panics
 //! or is cancelled, they are dropped instead. `fs::AtomicFile` is safe to
 //! cancel at any point, including while it is being created or renamed.
+//! Inside the scope a file can also `Seek`, `SetLen`, `SyncAll`, `SyncData`
+//! and `Stat`. Tokio streams can only shut down their write half; `Shutdown`
+//! of the read half fails with `Unsupported`.
 //!
 //! # Features
 //!
 //! Names follow Tokio's: `rt`, `rt-multi-thread`, `fs`, `net`, `time`,
-//! `process`, `io-std`, `signal`, `sync`, `io-util`, `test-util`, `full`. Each turns
-//! on the Tokio feature of the same name and the matching seam operations.
+//! `process`, `io-std`, `signal`, `sync`, `io-util`, `test-util`, `full`.
+//! Each turns on the Tokio feature of the same name and the matching seam
+//! operations.
 //! With `test-util`, `Now` follows Tokio's pausable clock.
 #![forbid(unsafe_code)]
 

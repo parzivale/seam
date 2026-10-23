@@ -45,7 +45,18 @@
 //! succeeds, a file is flushed and synced, a stream is shut down cleanly,
 //! and `fs::AtomicFile` is renamed into place, and errors are returned;
 //! otherwise they are just closed, and an atomic file's temporary file is
-//! deleted.
+//! deleted. Inside the scope a file can also `Seek`, `SetLen`, `SyncAll`,
+//! `SyncData` and `Stat`, and `ReadDir` lends an `fs::Dir` to step through
+//! with `NextEntry`.
+//!
+//! # Changing the environment
+//!
+//! `Std` reads the environment but does not change it, since
+//! `std::env::set_var` is `unsafe`: another thread reading the environment
+//! meanwhile is undefined behaviour. `env::WritableEnv` performs `SetVar`
+//! and `RemoveVar` as well as every read; it is made with an `unsafe fn
+//! new()` that carries `set_var`'s contract, and cannot leave its thread.
+//! Put it in a root for `kinds::Env` in place of `Std`.
 //!
 //! # Threads
 //!
@@ -65,8 +76,8 @@
 //! # Features
 //!
 //! One per capability group: `fs`, `net`, `time`, `env`, `process`,
-//! `random`, `io-std`, `sync`, `rt` (tasks on OS threads), or `full`. `Std` implements only the groups that are
-//! enabled.
+//! `random`, `io-std`, `sync`, `rt` (tasks on OS threads), or `full`. `Std`
+//! implements only the groups that are enabled.
 //!
 //! `random` uses std's randomly keyed hasher, since std has no public random
 //! number generator. It is fine for jitter, sampling and seeds, and is not

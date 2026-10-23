@@ -84,16 +84,20 @@
 //! - [`acquire`]: resources (files, sockets, tasks), which a core can only
 //!   use inside a scope that commits on success and rolls back on error,
 //!   panic or cancellation.
+//! - [`io`]: seam's own I/O error, the same with or without std.
 //! - [`Push`]: a sink operation for counting or capping what a core emits.
 //! - [`prelude`]: all the traits in one import.
 //!
 //! # Features
 //!
 //! This crate is `no_std` with no dependencies. Each operation group is a
-//! feature: `time`, `random` (no std needed), `fs`, `net`, `process`, `env`,
-//! `io-std`, `signal` (these need std's types and turn on `std`), and `full`.
-//! With `std`, [`block_on`](future::block_on) parks the thread instead of
-//! spinning.
+//! feature. `time`, `random`, `io`, `net`, `io-std`, `signal`, `rt` and
+//! `sync` need no std; `fs`, `process` and `env` need std's types (`Path`,
+//! `Command`, `OsString`) and turn on `std`. `alloc` adds the operations
+//! that return owned data (`ReadToEnd`, `Resolve`, `ReadLine`), each of
+//! which has a buffer-filling form that does not need it, and boxed tasks.
+//! `full` turns on every group. With `std`, [`block_on`](future::block_on)
+//! parks the thread instead of spinning.
 #![forbid(unsafe_code)]
 #![no_std]
 

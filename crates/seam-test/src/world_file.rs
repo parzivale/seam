@@ -67,6 +67,7 @@
 //!
 //! ```kdl
 //! clock now=3
+//! env { var MODE done; unset LOCK_HELD }
 //! fs {
 //!     file "/tmp/out/report.txt" "total 6\n"
 //!     dir "/tmp/out" { file count.txt "1" }
@@ -76,6 +77,8 @@
 //! process { ran git status; ran make test }
 //! ```
 //!
+//! `var` expects a variable to hold exactly that value, and `unset` expects
+//! it not to be set: a core can change them with `SetVar` and `RemoveVar`.
 //! `stdout` and `stderr` compare exact bytes, and the `ran` lines must be
 //! every command the core ran or spawned, in order. `ran cat stdin="hi"`
 //! also checks what a spawned child was given on its standard input.
@@ -879,17 +882,66 @@ impl Sim {
                 #[cfg(not(feature = "process"))]
                 Err(needs_feature(node, "process"))
             }
-            "seed" | "parallelism" | "env" | "net" | "signal" => Err(error(
+            "env" => {
+                #[cfg(feature = "env")]
+                {
+                    use seam_core::Inspect;
+                    use seam_core::ops::env::Var;
+
+                    for child in node.block()? {
+                        child.no_children()?;
+                        child.props_only(&[])?;
+                        let (name, want) = match child.name.as_str() {
+                            "var" => {
+                                child.arity(2, Some(2), "a name and a value")?;
+                                let name = child.args[0].string("the name")?;
+                                (name, Some(child.args[1].string("the value")?))
+                            }
+                            "unset" => {
+                                child.arity(1, Some(1), "a name")?;
+                                (child.args[0].string("the name")?, None)
+                            }
+                            _ => {
+                                return Err(unknown(
+                                    child,
+                                    "`env` expectations",
+                                    &["var", "unset"],
+                                ));
+                            }
+                        };
+                        let got = self.inspect(Var::new(name));
+                        if got.as_deref() != want.map(std::ffi::OsStr::new) {
+                            let show_var = |v: Option<&std::ffi::OsStr>| match v {
+                                Some(v) => format!("{:?}", v.to_string_lossy()),
+                                None => String::from("unset"),
+                            };
+                            fail(
+                                failures,
+                                child.pos,
+                                format!(
+                                    "env: expected {name} {}, found {}",
+                                    show_var(want.map(std::ffi::OsStr::new)),
+                                    show_var(got.as_deref())
+                                ),
+                            );
+                        }
+                    }
+                    Ok(())
+                }
+                #[cfg(not(feature = "env"))]
+                Err(needs_feature(node, "env"))
+            }
+            "seed" | "parallelism" | "net" | "signal" => Err(error(
                 node.pos,
                 format!(
-                    "`{}` does not change during a run, so it has no expectations; expectations cover `clock`, `fs`, `stdio` and `process`",
+                    "`{}` does not change during a run, so it has no expectations; expectations cover `clock`, `env`, `fs`, `stdio` and `process`",
                     node.name
                 ),
             )),
             _ => Err(unknown(
                 node,
                 "expectations",
-                &["clock", "fs", "stdio", "process"],
+                &["clock", "env", "fs", "stdio", "process"],
             )),
         }
     }

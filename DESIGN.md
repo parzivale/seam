@@ -39,11 +39,11 @@ tracks it. Control effects (errors, early return, async suspension) use
 `seam-core::ops` defines the operation types, one module per capability
 feature, so a core written against them runs on any backend:
 
-- `io`: `Read`, `ReadToEnd`, `Write`, `WriteAll`, `Flush` (on handles)
+- `io`: `Read`, `ReadExact`, `ReadToEnd`, `Write`, `WriteAll`, `Flush` (on handles)
 - `fs`: `ReadFile`, `ReadToString`, `Metadata`, `ReadDir` (queries);
   `WriteFile`, `CreateDir`, `RemoveFile`, `RemoveDir`, `Rename`, `CopyFile`,
   `SweepAtomic`; acquisitions `Open<F>` and `CreateAtomic<F>`
-- `net`: `Resolve` (DNS is an effect), `SendTo`, `RecvFrom`, `Shutdown(How)`;
+- `net`: `ResolveInto` and `Resolve` (DNS is an effect), `SendTo`, `RecvFrom`, `Shutdown(How)`;
   `LocalAddr` and `PeerAddr` queries; acquisitions `TcpConnect<S>`,
   `TcpBind<L>`, `Accept<S>` (from a listener) and `UdpBind<U>`
 - `time`: `Sleep`, `Now` (no_std); `WallClock` (std)
@@ -53,7 +53,7 @@ feature, so a core written against them runs on any backend:
   like a stream (stdin and stdout), with `ReadErr`, `CloseStdin`, `Wait`,
   `Kill` and `ChildId`
 - `random`: `RandomU64`, `FillRandom` (no_std)
-- `stdio`: `Print`, `EPrint`, `ReadLine`
+- `stdio`: `Print`, `EPrint`, `ReadLineInto`, `ReadLine`
 - `signal`: `CtrlC`
 - `sync` (feature `sync`, no_std, no alloc): `Channel<S, R>` creating owned
   sender and receiver endpoints, with `SendMsg`/`TrySendMsg` and
@@ -88,7 +88,12 @@ one type. The alternative, using `std::io::Error` when std is on and a
 custom type when it is off, would make a feature change a type, and two
 crates in a build would disagree. `net` has its own `How` (for `Shutdown`)
 for the same reason. The operations returning owned data (`ReadToEnd`,
-`Resolve`, `ReadLine`) need `alloc`; `fs`, `process` and `env` need std for
+`Resolve`, `ReadLine`) need `alloc`. Each has a form that fills a buffer
+the caller passes instead: `ReadExact`; `ResolveInto`, which reports how
+many addresses there were, so a caller can tell its buffer was too small;
+and `ReadLineInto`, which hands back a line too long for its buffer a
+piece at a time (`Line::complete`). `Resolve` borrows its host name, so
+neither form allocates for its input; `fs`, `process` and `env` need std for
 `Path`, `Command` and `OsString`.
 
 Acquisitions are generic over the backend's handle type (`Open<F>`), since
@@ -132,7 +137,8 @@ group with no real effects other than allocation:
   renames, as on Unix. No symlinks or permissions.
 - **net**: in-memory TCP (pipe pairs, with shutdown and `BrokenPipe`) and UDP
   (truncation, drops to unbound addresses), plus a hosts table for
-  `Resolve`.
+  `Resolve` and `ResolveInto`. A plain-simulation `ReadExact` takes
+  nothing until the whole buffer has arrived.
 - **env**, **io-std**: configured variables, arguments and directories;
   scripted stdin, captured stdout and stderr.
 - **process**: commands are answered by scripted handlers and logged. A

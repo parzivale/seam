@@ -4,7 +4,8 @@ use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
 
 use seam_core::ops::net::{
-    Accept, LocalAddr, PeerAddr, RecvFrom, Resolve, SendTo, Shutdown, TcpBind, TcpConnect, UdpBind,
+    Accept, LocalAddr, PeerAddr, RecvFrom, Resolve, ResolveInto, SendTo, Shutdown, TcpBind,
+    TcpConnect, UdpBind,
 };
 use seam_core::{Inspect, Perform, Provide, Token};
 
@@ -46,9 +47,22 @@ impl TcpStream {
     }
 }
 
-impl Inspect<Resolve> for Std {
-    fn inspect(&self, op: Resolve) -> seam_core::io::Result<Vec<SocketAddr>> {
-        Ok((op.host.as_str(), op.port).to_socket_addrs()?.collect())
+impl Inspect<Resolve<'_>> for Std {
+    fn inspect(&self, op: Resolve<'_>) -> seam_core::io::Result<Vec<SocketAddr>> {
+        Ok((op.host, op.port).to_socket_addrs()?.collect())
+    }
+}
+
+impl Inspect<ResolveInto<'_>> for Std {
+    fn inspect(&self, op: ResolveInto<'_>) -> seam_core::io::Result<usize> {
+        let mut n = 0;
+        for addr in (op.host, op.port).to_socket_addrs()? {
+            if let Some(slot) = op.out.get_mut(n) {
+                *slot = addr;
+            }
+            n += 1;
+        }
+        Ok(n)
     }
 }
 
@@ -165,7 +179,7 @@ mod timeouts {
     use std::io::{Read as _, Write as _};
     use std::time::{Duration, Instant};
 
-    use seam_core::ops::io::{Read, ReadToEnd, Write, WriteAll};
+    use seam_core::ops::io::{Read, ReadExact, ReadToEnd, Write, WriteAll};
     use seam_core::ops::time::{Timeout, TimesOut};
 
     use super::*;
@@ -258,6 +272,22 @@ mod timeouts {
         fn perform(&mut self, op: Timeout<Read<'_>>) -> seam_core::io::Result<usize> {
             let buf = op.op.0;
             within(&self.0, Dir::Read, Some(op.after), |mut s| s.read(buf))
+        }
+    }
+
+    impl Perform<Timeout<ReadExact<'_>>> for TcpStream {
+        fn perform(&mut self, op: Timeout<ReadExact<'_>>) -> seam_core::io::Result<()> {
+            let deadline = Deadline::after(op.after);
+            let mut buf = op.op.0;
+            while !buf.is_empty() {
+                match within(&self.0, Dir::Read, deadline.left(), |mut s| s.read(buf)) {
+                    Ok(0) => return Err(seam_core::io::ErrorKind::UnexpectedEof.into()),
+                    Ok(n) => buf = &mut buf[n..],
+                    Err(e) if e.kind() == seam_core::io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(())
         }
     }
 

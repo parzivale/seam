@@ -56,7 +56,7 @@ and only the binary (or its tests) picks a backend.
 | `time`, `random` | `Sleep`, `Now`, `RandomU64`, `FillRandom`. No std needed. |
 | `rt` | `Spawn`, `SpawnSet`, `SpawnWith`, `Join`, `Detach`, `YieldNow`, `AvailableParallelism`. No std or alloc needed. On `std` the tasks are closures on OS threads; on Tokio and the simulated runtime, futures. |
 | `sync` | Channels (`Channel`, `SendMsg`, `RecvMsg`) and shared cells (`Share`, `Load`, `Store`, `Update`). No std or alloc needed. |
-| `alloc` | `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type; the operations that return owned data (`ReadToEnd`, `Resolve`, `ReadLine`). |
+| `alloc` | `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type; the operations that return owned data (`ReadToEnd`, `Resolve`, `ReadLine`). Each has a no-allocation form that fills a buffer you pass: `ReadExact`, `ResolveInto`, `ReadLineInto`. |
 | `io`, `net`, `io-std`, `signal` | Those operation types. No std needed. |
 | `fs`, `process`, `env` | Those operation types. Links std for their types (`Path`, `Command`, `OsString`). |
 | `full` | Every capability group. Still no backend. |
@@ -336,7 +336,7 @@ match rx.perform(Timeout::new(Duration::from_secs(1), RecvMsg::new())) {
 A receive that times out reports `Empty`, a send `Full` with the value
 handed back, I/O `io::ErrorKind::TimedOut`, and a join `JoinError::TimedOut`
 with the task still running. An expired operation had no effect, except
-`ReadToEnd`, which keeps what arrived, and `WriteAll`, which may have written
+`ReadToEnd` and `ReadExact`, which keep what arrived, and `WriteAll`, which may have written
 part of its buffer. `Timeout` covers channel sends and receives, socket
 reads and writes, accept (also with `SpawnWith`), connect, `RecvFrom`, joins
 and `CtrlC`, on `seam-std`, `seam-tokio` and the simulation. On the

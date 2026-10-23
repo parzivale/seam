@@ -9,8 +9,8 @@ use std::time::Duration;
 use seam_core::ops::fs::{
     CreateAtomic, CreateDir, Open, ReadDir, ReadFile, RemoveDir, SweepAtomic, WriteFile,
 };
-use seam_core::ops::io::{Read, ReadToEnd, WriteAll};
-use seam_core::ops::net::{Accept, LocalAddr, TcpBind, TcpConnect};
+use seam_core::ops::io::{Read, ReadExact, ReadToEnd, WriteAll};
+use seam_core::ops::net::{Accept, LocalAddr, ResolveInto, TcpBind, TcpConnect};
 use seam_core::ops::random::FillRandom;
 use seam_core::ops::time::Now;
 use seam_core::{Acquire, Inspect, Perform, Provide};
@@ -59,13 +59,27 @@ fn tcp_loopback() -> io::Result<()> {
     let mut std = Std::new();
     let any_port = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
     std.acquire(TcpBind::new(any_port), |std, listener| {
-        let addr = listener.inspect(LocalAddr)?;
+        let port = listener.inspect(LocalAddr)?.port();
+        let mut addr = [any_port];
+        assert_eq!(
+            std.inspect(ResolveInto::new("127.0.0.1", port, &mut addr))?,
+            1
+        );
+        let [addr] = addr;
         std.acquire(TcpConnect::new(addr), |_, client| {
             client.perform(WriteAll(b"ping"))?;
             listener.acquire(Accept::new(), |_, server| {
                 let mut buf = [0; 4];
                 let n = server.perform(Read(&mut buf))?;
                 assert_eq!(&buf[..n], b"ping");
+                client.perform(WriteAll(b"pong!"))?;
+                server.perform(ReadExact(&mut buf))?;
+                assert_eq!(&buf, b"pong");
+                client.perform(seam_core::ops::net::Shutdown(
+                    seam_core::ops::net::How::Write,
+                ))?;
+                let err = server.perform(ReadExact(&mut buf)).unwrap_err();
+                assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
                 Ok(())
             })
         })

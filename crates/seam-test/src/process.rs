@@ -24,7 +24,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::vec::Vec;
 
-use seam_core::ops::io::{Flush, Read, ReadToEnd, Write, WriteAll};
+use seam_core::ops::io::{Flush, Read, ReadExact, ReadToEnd, Write, WriteAll};
 use seam_core::ops::process::{
     ChildId, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, ReadErrToEnd, RunCommand,
     SpawnChild, Wait,
@@ -472,6 +472,20 @@ impl Perform<Read<'_>> for Child {
     }
 }
 
+/// The child's output is all there once it has run, so a short read means
+/// it ended.
+impl Perform<ReadExact<'_>> for Child {
+    fn perform(&mut self, op: ReadExact<'_>) -> io::Result<()> {
+        if self.read(STDOUT, op.0)? < op.0.len() {
+            return Err(error(
+                ErrorKind::UnexpectedEof,
+                "the child's output ended before the buffer was full",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl Perform<ReadToEnd<'_>> for Child {
     fn perform(&mut self, op: ReadToEnd<'_>) -> io::Result<usize> {
         self.read_to_end(STDOUT, op.0)
@@ -556,6 +570,7 @@ mod timeouts {
     untimed! {
         Wait => io::Result<ExitStatus>;
         Read<'_> => io::Result<usize>;
+        ReadExact<'_> => io::Result<()>;
         ReadToEnd<'_> => io::Result<usize>;
         ReadErr<'_> => io::Result<usize>;
         ReadErrToEnd<'_> => io::Result<usize>;

@@ -15,20 +15,25 @@
 //! ```no_run
 //! # #[cfg(all(feature = "rt", feature = "time", feature = "net"))] {
 //! use seam_core::io;
+//! use std::net::SocketAddr;
 //! use std::time::Duration;
 //! use seam_core::prelude::*;
 //! use seam_core::ops::io::WriteAll;
-//! use seam_core::ops::net::{Resolve, TcpConnect};
+//! use seam_core::ops::net::{ResolveInto, TcpConnect};
 //! use seam_core::ops::time::Sleep;
 //!
 //! /// The core: sends a heartbeat, retrying with backoff. `Send` bounds,
 //! /// so it can run on a multithreaded runtime.
 //! async fn heartbeat<C, S>(c: &mut C, host: &str) -> io::Result<()>
 //! where
-//!     C: SendInspect<Resolve> + AsyncProvide<TcpConnect<S>> + SendPerform<Sleep> + Send,
+//!     C: for<'a> SendInspect<ResolveInto<'a>> + AsyncProvide<TcpConnect<S>> + SendPerform<Sleep> + Send,
 //!     S: for<'a> SendPerform<WriteAll<'a>> + Send,
 //! {
-//!     let addr = c.inspect_send(Resolve::new(host, 9000)).await?[0];
+//!     let mut addr = [SocketAddr::from(([0, 0, 0, 0], 0))];
+//!     if c.inspect_send(ResolveInto::new(host, 9000, &mut addr)).await? == 0 {
+//!         return Err(io::Error::new(io::ErrorKind::NotFound, "no addresses"));
+//!     }
+//!     let [addr] = addr;
 //!     for attempt in 0..5 {
 //!         // The stream exists only inside this scope, and is shut down
 //!         // cleanly when the scope succeeds.
@@ -189,6 +194,9 @@ macro_rules! io_ops {
     ($ty:ty) => {
         async_op!(perform ['a] $ty, seam_core::ops::io::Read<'a>, |s, op| {
             tokio::io::AsyncReadExt::read(&mut s.0, op.0).await
+        });
+        async_op!(perform ['a] $ty, seam_core::ops::io::ReadExact<'a>, |s, op| {
+            tokio::io::AsyncReadExt::read_exact(&mut s.0, op.0).await.map(drop)
         });
         async_op!(perform ['a] $ty, seam_core::ops::io::ReadToEnd<'a>, |s, op| {
             tokio::io::AsyncReadExt::read_to_end(&mut s.0, op.0).await

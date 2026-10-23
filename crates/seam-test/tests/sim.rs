@@ -14,14 +14,15 @@ use seam_core::ops::fs::{
     CreateDir, Metadata, Open, ReadDir, ReadFile, ReadToString, RemoveDir, RemoveFile, Rename,
     WriteFile,
 };
-use seam_core::ops::io::{Read, ReadToEnd, WriteAll};
+use seam_core::ops::io::{Read, ReadExact, ReadToEnd, WriteAll};
 use seam_core::ops::net::{
-    Accept, LocalAddr, PeerAddr, RecvFrom, Resolve, SendTo, Shutdown, TcpBind, TcpConnect, UdpBind,
+    Accept, LocalAddr, PeerAddr, RecvFrom, Resolve, ResolveInto, SendTo, Shutdown, TcpBind,
+    TcpConnect, UdpBind,
 };
 use seam_core::ops::process::{Exit, Output, RunCommand};
 use seam_core::ops::random::RandomU64;
 use seam_core::ops::signal::CtrlC;
-use seam_core::ops::stdio::{Print, ReadLine};
+use seam_core::ops::stdio::{Line, Print, ReadLine, ReadLineInto};
 use seam_core::ops::time::{Now, Sleep, WallClock};
 use seam_core::{Acquire, AsyncAcquire, Inspect, Perform, Provide};
 use seam_test::fs::File;
@@ -478,4 +479,95 @@ mod atomic {
         assert_eq!(listing(&sim), [PathBuf::from("/etc/app.conf")]);
         assert_eq!(sim.file("/etc/app.conf").unwrap(), b"new");
     }
+}
+
+#[test]
+fn read_line_into_a_buffer() {
+    let mut sim = Sim::new();
+    sim.feed_stdin("ab\ncdefg\nh");
+    let mut buf = [0; 4];
+    let mut read = |sim: &mut Sim| {
+        sim.perform(ReadLineInto(&mut buf))
+            .unwrap()
+            .map(|Line { len, complete }| (buf[..len].to_vec(), complete))
+    };
+    assert_eq!(read(&mut sim), Some((b"ab\n".to_vec(), true)));
+    // Too long for the buffer: the rest comes with the next read.
+    assert_eq!(read(&mut sim), Some((b"cdef".to_vec(), false)));
+    assert_eq!(read(&mut sim), Some((b"g\n".to_vec(), true)));
+    // The input ends without a newline, which ends the line too.
+    assert_eq!(read(&mut sim), Some((b"h".to_vec(), true)));
+    assert_eq!(read(&mut sim), None);
+
+    // A line that fills the buffer exactly is not known to have ended.
+    sim.feed_stdin("abcd");
+    assert_eq!(read(&mut sim), Some((b"abcd".to_vec(), false)));
+    assert_eq!(read(&mut sim), None);
+}
+
+#[test]
+fn resolve_into_a_buffer() -> io::Result<()> {
+    let mut sim = Sim::new();
+    sim.add_host("many.test", Ipv4Addr::new(10, 0, 0, 1))
+        .add_host("many.test", Ipv4Addr::new(10, 0, 0, 2))
+        .add_host("many.test", Ipv4Addr::new(10, 0, 0, 3));
+    let none = SocketAddr::from(([0, 0, 0, 0], 0));
+    let mut out = [none; 2];
+    // Three addresses; the buffer holds the first two.
+    assert_eq!(sim.inspect(ResolveInto::new("many.test", 80, &mut out))?, 3);
+    assert_eq!(out, sim.inspect(Resolve::new("many.test", 80))?[..2]);
+    assert_eq!(sim.inspect(ResolveInto::new("10.9.9.9", 7, &mut out))?, 1);
+    assert_eq!(out[0], SocketAddr::from(([10, 9, 9, 9], 7)));
+    assert_eq!(
+        kind(sim.inspect(ResolveInto::new("nowhere.test", 80, &mut out))),
+        ErrorKind::NotFound
+    );
+    Ok(())
+}
+
+#[test]
+fn read_exact_fills_or_fails() -> io::Result<()> {
+    let mut sim = Sim::new();
+    sim.add_file("/data", "abcdef");
+    sim.acquire(Open::<File>::read("/data"), |_, f| {
+        let mut buf = [0; 4];
+        f.perform(ReadExact(&mut buf))?;
+        assert_eq!(&buf, b"abcd");
+        assert_eq!(
+            kind(f.perform(ReadExact(&mut buf))),
+            ErrorKind::UnexpectedEof
+        );
+        assert_eq!(&buf[..2], b"ef");
+        io::Result::Ok(())
+    })?;
+
+    // A stream takes nothing until the whole buffer is there.
+    sim.acquire(
+        TcpBind::<TcpListener>::new(([127, 0, 0, 1], 80)),
+        |sim, listener| {
+            sim.acquire(
+                TcpConnect::<TcpStream>::new(([127, 0, 0, 1], 80)),
+                |_, client| {
+                    listener.acquire(Accept::<TcpStream>::new(), |_, server| {
+                        let mut buf = [0; 4];
+                        client.perform(WriteAll(b"pi"))?;
+                        assert_eq!(
+                            kind(server.perform(ReadExact(&mut buf))),
+                            ErrorKind::WouldBlock
+                        );
+                        client.perform(WriteAll(b"ng!"))?;
+                        server.perform(ReadExact(&mut buf))?;
+                        assert_eq!(&buf, b"ping");
+                        client.perform(Shutdown(seam_core::ops::net::How::Write))?;
+                        assert_eq!(
+                            kind(server.perform(ReadExact(&mut buf))),
+                            ErrorKind::UnexpectedEof
+                        );
+                        assert_eq!(buf[0], b'!');
+                        io::Result::Ok(())
+                    })
+                },
+            )
+        },
+    )
 }

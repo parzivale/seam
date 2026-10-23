@@ -109,7 +109,7 @@ mod sync {
 mod net {
     use std::net::SocketAddr;
 
-    use seam_core::ops::io::{Read, ReadToEnd, Write, WriteAll};
+    use seam_core::ops::io::{Read, ReadExact, ReadToEnd, Write, WriteAll};
     use seam_core::ops::net::{Accept, RecvFrom, TcpConnect};
     use seam_core::ops::task::{SpawnWith, TaskBody};
     use seam_core::{AsyncProvide, Provide, Token};
@@ -119,6 +119,11 @@ mod net {
     use crate::rt::net::{TcpListener, TcpStream, UdpSocket};
 
     async_op!(['a] TcpStream, Timeout<Read<'a>>, |s, op| {
+        let shared = Arc::clone(&s.1);
+        within(&shared, op.after, s.perform_send(op.op)).await.unwrap_or_else(|| Err(timed_out()))
+    });
+
+    async_op!(['a] TcpStream, Timeout<ReadExact<'a>>, |s, op| {
         let shared = Arc::clone(&s.1);
         within(&shared, op.after, s.perform_send(op.op)).await.unwrap_or_else(|| Err(timed_out()))
     });

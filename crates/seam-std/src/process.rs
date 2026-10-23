@@ -4,7 +4,7 @@ use std::convert::Infallible;
 use std::io::{Read as _, Write as _};
 use std::process::{ChildStderr, ChildStdin, ChildStdout, Stdio};
 
-use seam_core::ops::io::{Flush, Read, ReadToEnd, Write, WriteAll};
+use seam_core::ops::io::{Flush, Read, ReadExact, ReadToEnd, Write, WriteAll};
 use seam_core::ops::process::{
     ChildId, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, ReadErrToEnd, RunCommand,
     SpawnChild, Wait,
@@ -152,6 +152,12 @@ impl Perform<Flush> for Child {
 impl Perform<Read<'_>> for Child {
     fn perform(&mut self, op: Read<'_>) -> seam_core::io::Result<usize> {
         crate::sio(self.stdout()?.read(op.0))
+    }
+}
+
+impl Perform<ReadExact<'_>> for Child {
+    fn perform(&mut self, op: ReadExact<'_>) -> seam_core::io::Result<()> {
+        crate::sio(self.stdout()?.read_exact(op.0))
     }
 }
 

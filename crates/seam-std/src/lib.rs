@@ -106,14 +106,14 @@ pub mod task;
 #[cfg(feature = "time")]
 mod time;
 
-/// Implements the handle-level `io` operations for a wrapper around a std
-/// type that implements `Read` and `Write`.
 /// Converts a std result into seam's: the error keeps the original.
 #[allow(dead_code)] // used by whichever modules are on
 pub(crate) fn sio<T>(r: std::io::Result<T>) -> seam_core::io::Result<T> {
     r.map_err(Into::into)
 }
 
+/// Implements the handle-level `io` operations for a wrapper around a std
+/// type that implements `Read` and `Write`.
 #[cfg(any(feature = "fs", feature = "net"))]
 macro_rules! io_ops {
     ($ty:ty) => {
@@ -123,6 +123,15 @@ macro_rules! io_ops {
                 op: seam_core::ops::io::Read<'_>,
             ) -> seam_core::io::Result<usize> {
                 crate::sio(std::io::Read::read(&mut self.0, op.0))
+            }
+        }
+
+        impl seam_core::Perform<seam_core::ops::io::ReadExact<'_>> for $ty {
+            fn perform(
+                &mut self,
+                op: seam_core::ops::io::ReadExact<'_>,
+            ) -> seam_core::io::Result<()> {
+                crate::sio(std::io::Read::read_exact(&mut self.0, op.0))
             }
         }
 

@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use seam_core::future::{SendInspect, SendPerform};
 use seam_core::ops::fs::{CreateAtomic, CreateDir, Open, ReadDir, ReadFile, RemoveDir, WriteFile};
-use seam_core::ops::io::{Read, ReadToEnd, WriteAll};
-use seam_core::ops::net::{Accept, LocalAddr, TcpBind, TcpConnect};
+use seam_core::ops::io::{ReadExact, ReadToEnd, WriteAll};
+use seam_core::ops::net::{Accept, LocalAddr, ResolveInto, TcpBind, TcpConnect};
 use seam_core::ops::time::{Now, Sleep};
 use seam_core::{AsyncAcquire, AsyncProvide, Inspect};
 use seam_tokio::Tokio;
@@ -80,17 +80,26 @@ async fn tcp_loopback() -> io::Result<()> {
         .acquire_async(
             TcpBind::<TcpListener>::new(any_port),
             async |tokio, listener| {
-                let addr = listener.inspect(LocalAddr)?;
+                let port = listener.inspect(LocalAddr)?.port();
+                let mut addr = [any_port];
+                let found = tokio
+                    .inspect_send(ResolveInto::new("127.0.0.1", port, &mut addr))
+                    .await?;
+                assert_eq!(found, 1);
+                let [addr] = addr;
                 // Accept and connect concurrently: the body holds both the
                 // listener and the root capability.
                 let server = listener.acquire_async(Accept::<TcpStream>::new(), async |_, s| {
+                    // Waits for the whole buffer, across the client's writes.
                     let mut buf = [0; 4];
-                    let n = s.perform_send(Read(&mut buf)).await?;
-                    io::Result::Ok(buf[..n].to_vec())
+                    s.perform_send(ReadExact(&mut buf)).await?;
+                    io::Result::Ok(buf.to_vec())
                 });
-                let client = tokio
-                    .acquire_async(TcpConnect::<TcpStream>::new(addr), async |_, c| {
-                        c.perform_send(WriteAll(b"ping")).await
+                let client =
+                    tokio.acquire_async(TcpConnect::<TcpStream>::new(addr), async |tokio, c| {
+                        c.perform_send(WriteAll(b"pi")).await?;
+                        tokio.perform_send(Sleep(Duration::from_millis(5))).await;
+                        c.perform_send(WriteAll(b"ng")).await
                     });
                 let (received, sent) = tokio::join!(server, client);
                 sent?;

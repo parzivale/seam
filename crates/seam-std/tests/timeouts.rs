@@ -5,7 +5,7 @@ use seam_core::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
-use seam_core::ops::io::{Read, ReadToEnd, WriteAll};
+use seam_core::ops::io::{Read, ReadExact, ReadToEnd, WriteAll};
 use seam_core::ops::net::{Accept, LocalAddr, TcpBind, TcpConnect};
 use seam_core::ops::sync::{Channel, RecvError, RecvMsg, SendError, SendMsg};
 use seam_core::ops::task::{Join, JoinError, JoinNext, Spawn, SpawnInto, SpawnSet};
@@ -159,6 +159,16 @@ fn sockets() -> io::Result<()> {
                             "the client never closed"
                         );
                         assert_eq!(all, b"partial");
+
+                        // So does ReadExact.
+                        client.perform(WriteAll(b"ab"))?;
+                        let mut four = [0; 4];
+                        let err = timed(SHORT, || {
+                            server.perform(Timeout::new(SHORT, ReadExact(&mut four)))
+                        })
+                        .unwrap_err();
+                        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+                        assert_eq!(&four[..2], b"ab");
 
                         // After a timeout the socket blocks normally again.
                         client.perform(WriteAll(b"!"))?;

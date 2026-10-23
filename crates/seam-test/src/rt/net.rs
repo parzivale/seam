@@ -12,7 +12,7 @@ use core::task::Poll;
 use seam_core::io;
 use std::sync::Arc;
 
-use seam_core::ops::io::{Flush, Read, ReadToEnd, Write, WriteAll};
+use seam_core::ops::io::{Flush, Read, ReadExact, ReadToEnd, Write, WriteAll};
 use seam_core::ops::net::{
     Accept, LocalAddr, PeerAddr, RecvFrom, SendTo, Shutdown, TcpBind, TcpConnect, UdpBind,
 };
@@ -182,6 +182,21 @@ where
 async_op!(['a] TcpStream, Read<'a>, |s, op| {
     s.readable().await;
     s.0.perform(op)
+});
+
+// Waits until the buffer is full or the peer closes its end, as a real
+// stream does.
+async_op!(['a] TcpStream, ReadExact<'a>, |s, op| {
+    let mut buf = op.0;
+    while !buf.is_empty() {
+        s.readable().await;
+        let rest = core::mem::take(&mut buf);
+        match s.0.perform(Read(&mut *rest))? {
+            0 => return Err(crate::error(io::ErrorKind::UnexpectedEof, "the stream ended before the buffer was full")),
+            n => buf = &mut rest[n..],
+        }
+    }
+    Ok(())
 });
 
 // Reads until the peer closes its end, as a real stream does.

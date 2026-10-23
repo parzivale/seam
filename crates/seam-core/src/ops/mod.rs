@@ -9,12 +9,12 @@
 //! | `time` | `time` | no (`WallClock`: yes) | `Now`, `Sleep`, `WallClock` |
 //! | `random` | `random` | no | `RandomU64`, `FillRandom` |
 //! | `fs` | `fs` | yes | `ReadFile`, `WriteFile`, `Open<F>` |
-//! | `io` | `fs` or `net` | yes | `Read`, `WriteAll`, `Flush` on handles |
-//! | `net` | `net` | yes | `TcpConnect<S>`, `TcpBind<L>`, `Resolve` |
+//! | `io` | `io` (or `fs`, `net`, `process`) | no (`ReadToEnd`: alloc) | `Read`, `ReadExact`, `WriteAll`, `Flush` on handles |
+//! | `net` | `net` | no (`Resolve`: alloc) | `TcpConnect<S>`, `TcpBind<L>`, `ResolveInto`, `Resolve` |
 //! | `env` | `env` | yes | `Var`, `Args`, `CurrentDir` |
 //! | `process` | `process` | yes | `RunCommand`, `Exit` |
-//! | `stdio` | `io-std` | yes | `Print`, `ReadLine` |
-//! | `signal` | `signal` | yes | `CtrlC` |
+//! | `stdio` | `io-std` | no (`ReadLine`: alloc) | `Print`, `ReadLineInto`, `ReadLine` |
+//! | `signal` | `signal` | no | `CtrlC` |
 //! | `sync` | `sync` | no | `Channel`, `SendMsg`, `RecvMsg`, `Share`, `Update` |
 //! | `task` | `rt` | no (`BoxFuture`: alloc) | `Spawn`, `SpawnSet`, `SpawnWith`, `Join`, `YieldNow` |
 //!

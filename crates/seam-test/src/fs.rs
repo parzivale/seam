@@ -17,7 +17,7 @@ use seam_core::ops::fs::{
     CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Open, ReadDir, ReadFile,
     ReadToString, RemoveDir, RemoveFile, Rename, SweepAtomic, WriteFile,
 };
-use seam_core::ops::io::{Flush, Read, ReadToEnd, Write, WriteAll};
+use seam_core::ops::io::{Flush, Read, ReadExact, ReadToEnd, Write, WriteAll};
 use seam_core::{Inspect, Perform, Provide, Token};
 
 use crate::world::{Shared, World};
@@ -540,6 +540,19 @@ impl Perform<Read<'_>> for File {
         op.0[..n].copy_from_slice(&rest[..n]);
         self.pos += n;
         Ok(n)
+    }
+}
+
+impl Perform<ReadExact<'_>> for File {
+    fn perform(&mut self, op: ReadExact<'_>) -> io::Result<()> {
+        let n = self.perform(Read(&mut *op.0))?;
+        if n < op.0.len() {
+            return Err(crate::error(
+                io::ErrorKind::UnexpectedEof,
+                "the file ended before the buffer was full",
+            ));
+        }
+        Ok(())
     }
 }
 

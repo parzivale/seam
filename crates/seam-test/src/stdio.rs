@@ -4,7 +4,7 @@ use std::string::String;
 use std::vec::Vec;
 
 use seam_core::Perform;
-use seam_core::ops::stdio::{EPrint, Print, ReadLine};
+use seam_core::ops::stdio::{EPrint, Line, Print, ReadLine, ReadLineInto};
 
 use crate::Sim;
 
@@ -55,6 +55,31 @@ impl Perform<EPrint<'_>> for Sim {
     fn perform(&mut self, op: EPrint<'_>) -> io::Result<()> {
         self.stdio.stderr.extend_from_slice(op.0);
         Ok(())
+    }
+}
+
+impl Perform<ReadLineInto<'_>> for Sim {
+    fn perform(&mut self, op: ReadLineInto<'_>) -> io::Result<Option<Line>> {
+        let stdin = &mut self.stdio.stdin;
+        if op.0.is_empty() {
+            return Ok(Some(Line {
+                len: 0,
+                complete: false,
+            }));
+        }
+        if stdin.is_empty() {
+            return Ok(None);
+        }
+        let take = stdin.len().min(op.0.len());
+        let (len, complete) = match stdin.iter().take(take).position(|&b| b == b'\n') {
+            Some(i) => (i + 1, true),
+            // Input ran out before the buffer filled: the line ended.
+            None => (take, take < op.0.len()),
+        };
+        for (dst, src) in op.0.iter_mut().zip(stdin.drain(..len)) {
+            *dst = src;
+        }
+        Ok(Some(Line { len, complete }))
     }
 }
 

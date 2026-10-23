@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use seam_core::future::SendPerform;
-use seam_core::ops::io::{Read, ReadToEnd, WriteAll};
+use seam_core::ops::io::{Read, ReadExact, ReadToEnd, WriteAll};
 use seam_core::ops::net::{Accept, TcpBind, TcpConnect};
 use seam_core::ops::signal::CtrlC;
 use seam_core::ops::sync::{Channel, RecvError, RecvMsg, SendError, SendMsg};
@@ -220,12 +220,17 @@ mod runtime {
                     .unwrap_err();
                 assert_eq!(err.kind(), io::ErrorKind::TimedOut);
                 assert_eq!(now(sim) - start, SEC);
-                sim.acquire_async(TcpConnect::<TcpStream>::new(addr), async |_, client| {
+                sim.acquire_async(TcpConnect::<TcpStream>::new(addr), async |sim, client| {
                     listener
                         .acquire_async(
                             Timeout::new(SEC, Accept::<TcpStream>::new()),
                             async |_, server| {
                                 client.perform_send(WriteAll(b"partial")).await?;
+                                let mut part = [0; 4];
+                                server
+                                    .perform_send(Timeout::new(SEC, ReadExact(&mut part)))
+                                    .await?;
+                                assert_eq!(&part, b"part");
                                 let mut all = Vec::new();
                                 let err = server
                                     .perform_send(Timeout::new(SEC, ReadToEnd(&mut all)))
@@ -236,7 +241,16 @@ mod runtime {
                                     io::ErrorKind::TimedOut,
                                     "the client never closed"
                                 );
-                                assert_eq!(all, b"partial", "what arrived is kept");
+                                assert_eq!(all, b"ial", "what arrived is kept");
+                                client.perform_send(WriteAll(b"xy")).await?;
+                                let start = now(sim);
+                                let err = server
+                                    .perform_send(Timeout::new(SEC, ReadExact(&mut part)))
+                                    .await
+                                    .unwrap_err();
+                                assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+                                assert_eq!(now(sim) - start, SEC);
+                                assert_eq!(&part[..2], b"xy", "what arrived is kept");
                                 io::Result::Ok(())
                             },
                         )
@@ -343,7 +357,7 @@ mod threads {
                     })
                     .unwrap_err();
                 assert_eq!(err.kind(), io::ErrorKind::TimedOut);
-                sim.acquire(TcpConnect::<TcpStream>::new(addr), |_, _client| {
+                sim.acquire(TcpConnect::<TcpStream>::new(addr), |_, client| {
                     listener.acquire(
                         Timeout::new(SEC, Accept::<TcpStream>::new()),
                         |_, server| {
@@ -351,13 +365,23 @@ mod threads {
                                 .perform(Timeout::new(SEC, Read(&mut [0; 4])))
                                 .unwrap_err();
                             assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+                            client.perform(WriteAll(b"pi"))?;
+                            let mut buf = [0; 4];
+                            let err = server
+                                .perform(Timeout::new(SEC, ReadExact(&mut buf)))
+                                .unwrap_err();
+                            assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+                            assert_eq!(&buf[..2], b"pi", "what arrived is kept");
+                            client.perform(WriteAll(b"ng"))?;
+                            server.perform(ReadExact(&mut buf[2..]))?;
+                            assert_eq!(&buf, b"ping");
                             io::Result::Ok(())
                         },
                     )
                 })
             })
             .unwrap();
-            assert_eq!(now(&sim), 13 * SEC);
+            assert_eq!(now(&sim), 14 * SEC);
         });
     }
 }

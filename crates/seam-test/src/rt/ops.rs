@@ -132,12 +132,12 @@ mod process {
 
 #[cfg(feature = "io-std")]
 mod stdio {
-    use seam_core::ops::stdio::{EPrint, Print, ReadLine};
+    use seam_core::ops::stdio::{EPrint, Print, ReadLine, ReadLineInto};
 
     use super::*;
 
     // Standard input is a finite script, so reading it never waits.
-    delegate! { perform ['a] Print<'a>; ['a] EPrint<'a>; [] ReadLine; }
+    delegate! { perform ['a] Print<'a>; ['a] EPrint<'a>; [] ReadLine; ['a] ReadLineInto<'a>; }
 }
 
 #[cfg(feature = "signal")]
@@ -172,9 +172,9 @@ mod task {
 
 #[cfg(feature = "net")]
 mod net {
-    use seam_core::ops::net::Resolve;
+    use seam_core::ops::net::{Resolve, ResolveInto};
 
     use super::*;
 
-    delegate! { inspect [] Resolve; }
+    delegate! { inspect ['a] Resolve<'a>; ['a] ResolveInto<'a>; }
 }

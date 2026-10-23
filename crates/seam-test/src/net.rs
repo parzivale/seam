@@ -14,9 +14,10 @@ use std::string::String;
 use std::task::Waker;
 use std::vec::Vec;
 
-use seam_core::ops::io::{Flush, Read, ReadToEnd, Write, WriteAll};
+use seam_core::ops::io::{Flush, Read, ReadExact, ReadToEnd, Write, WriteAll};
 use seam_core::ops::net::{
-    Accept, LocalAddr, PeerAddr, RecvFrom, Resolve, SendTo, Shutdown, TcpBind, TcpConnect, UdpBind,
+    Accept, LocalAddr, PeerAddr, RecvFrom, Resolve, ResolveInto, SendTo, Shutdown, TcpBind,
+    TcpConnect, UdpBind,
 };
 use seam_core::{Inspect, Perform, Provide, Token};
 
@@ -202,18 +203,42 @@ impl Sim {
     }
 }
 
-impl Inspect<Resolve> for Sim {
-    fn inspect(&self, op: Resolve) -> io::Result<Vec<SocketAddr>> {
-        if let Ok(ip) = op.host.parse::<IpAddr>() {
-            return Ok(Vec::from([SocketAddr::new(ip, op.port)]));
+impl Sim {
+    /// Calls `each` with every address `host` resolves to.
+    fn resolve(&self, host: &str, port: u16, mut each: impl FnMut(SocketAddr)) -> io::Result<()> {
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            each(SocketAddr::new(ip, port));
+            return Ok(());
         }
         let world = self.world.lock();
         let ips = world
             .net
             .hosts
-            .get(&op.host)
+            .get(host)
             .ok_or_else(|| error(ErrorKind::NotFound, "unknown host"))?;
-        Ok(ips.iter().map(|&ip| SocketAddr::new(ip, op.port)).collect())
+        ips.iter().for_each(|&ip| each(SocketAddr::new(ip, port)));
+        Ok(())
+    }
+}
+
+impl Inspect<Resolve<'_>> for Sim {
+    fn inspect(&self, op: Resolve<'_>) -> io::Result<Vec<SocketAddr>> {
+        let mut addrs = Vec::new();
+        self.resolve(op.host, op.port, |a| addrs.push(a))?;
+        Ok(addrs)
+    }
+}
+
+impl Inspect<ResolveInto<'_>> for Sim {
+    fn inspect(&self, op: ResolveInto<'_>) -> io::Result<usize> {
+        let mut n = 0;
+        self.resolve(op.host, op.port, |a| {
+            if let Some(slot) = op.out.get_mut(n) {
+                *slot = a;
+            }
+            n += 1;
+        })?;
+        Ok(n)
     }
 }
 
@@ -363,6 +388,34 @@ impl Perform<Read<'_>> for TcpStream {
             }
             n
         })
+    }
+}
+
+/// Takes nothing until the whole buffer has arrived: until then it fails
+/// with `WouldBlock`, as nothing in the simulation waits. If the peer has
+/// closed first, it takes what is left and fails with `UnexpectedEof`.
+impl Perform<ReadExact<'_>> for TcpStream {
+    fn perform(&mut self, op: ReadExact<'_>) -> io::Result<()> {
+        let mut world = self.world.lock();
+        let pipe = &mut world.net.pipes[self.rx];
+        let ended = pipe.writer_closed || pipe.reader_closed;
+        if pipe.bytes.len() < op.0.len() && !ended {
+            return Err(error(
+                ErrorKind::WouldBlock,
+                "not all the data yet, and nothing in the simulation waits",
+            ));
+        }
+        let n = pipe.bytes.len().min(op.0.len());
+        for (dst, src) in op.0.iter_mut().zip(pipe.bytes.drain(..n)) {
+            *dst = src;
+        }
+        if n < op.0.len() {
+            return Err(error(
+                ErrorKind::UnexpectedEof,
+                "the stream ended before the buffer was full",
+            ));
+        }
+        Ok(())
     }
 }
 

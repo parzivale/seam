@@ -103,7 +103,7 @@ pub mod kinds {
     /// The filesystem operations: `ReadFile`, `WriteFile`, `Open`, ...
     #[derive(Debug, Clone, Copy)]
     pub struct Fs;
-    /// `Resolve`, `TcpConnect`, `TcpBind`, `UdpBind`.
+    /// `ResolveInto`, `Resolve`, `TcpConnect`, `TcpBind`, `UdpBind`.
     #[derive(Debug, Clone, Copy)]
     pub struct Net;
     /// `RunCommand`, `Exit`.
@@ -115,7 +115,7 @@ pub mod kinds {
     /// `CtrlC`.
     #[derive(Debug, Clone, Copy)]
     pub struct Signal;
-    /// `Print`, `EPrint`, `ReadLine`.
+    /// `Print`, `EPrint`, `ReadLineInto`, `ReadLine`.
     #[derive(Debug, Clone, Copy)]
     pub struct Stdio;
     /// `Now`, `WallClock`, `Sleep`.

@@ -49,7 +49,7 @@ mod sync {
 mod net {
     use std::io;
 
-    use seam_core::ops::io::{Read, ReadToEnd, Write, WriteAll};
+    use seam_core::ops::io::{Read, ReadExact, ReadToEnd, Write, WriteAll};
     use seam_core::ops::net::{Accept, RecvFrom, TcpConnect};
     use seam_core::{AsyncProvide, Token};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -64,6 +64,11 @@ mod net {
 
     async_op!(perform ['a] TcpStream, Timeout<Read<'a>>, |s, op| {
         timeout(op.after, s.0.read(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
+    });
+
+    // What arrived before the deadline stays in the buffer.
+    async_op!(perform ['a] TcpStream, Timeout<ReadExact<'a>>, |s, op| {
+        timeout(op.after, s.0.read_exact(op.op.0)).await.unwrap_or_else(|_| Err(timed_out())).map(drop)
     });
 
     // Reads chunk by chunk, so that what arrived before the deadline stays
@@ -226,7 +231,7 @@ mod signal {
 mod process {
     use std::io;
 
-    use seam_core::ops::io::{Read, ReadToEnd};
+    use seam_core::ops::io::{Read, ReadExact, ReadToEnd};
     use seam_core::ops::process::{ReadErr, ReadErrToEnd, Wait};
     use tokio::io::AsyncReadExt;
 
@@ -249,6 +254,12 @@ mod process {
     async_op!(perform ['a] Child, Timeout<ReadErr<'a>>, |s, op| {
         let err = s.stderr_mut()?;
         timeout(op.after, err.read(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
+    });
+
+    // What arrived before the deadline stays in the buffer.
+    async_op!(perform ['a] Child, Timeout<ReadExact<'a>>, |s, op| {
+        let out = s.stdout_mut()?;
+        timeout(op.after, out.read_exact(op.op.0)).await.unwrap_or_else(|_| Err(timed_out())).map(drop)
     });
 
     // Chunk by chunk, so what arrived before the deadline stays.

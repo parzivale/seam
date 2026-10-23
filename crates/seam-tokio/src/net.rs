@@ -4,8 +4,8 @@ use std::io;
 use std::net::SocketAddr;
 
 use seam_core::ops::net::{
-    Accept, How, LocalAddr, PeerAddr, RecvFrom, Resolve, SendTo, Shutdown, TcpBind, TcpConnect,
-    UdpBind,
+    Accept, How, LocalAddr, PeerAddr, RecvFrom, Resolve, ResolveInto, SendTo, Shutdown, TcpBind,
+    TcpConnect, UdpBind,
 };
 use seam_core::{AsyncProvide, Inspect, Token};
 
@@ -139,8 +139,18 @@ where
     }
 }
 
-async_op!(inspect [] Tokio, Resolve, |_s, op| {
-    seam_core::io::Result::Ok(tokio::net::lookup_host((op.host.as_str(), op.port)).await?.collect())
+async_op!(inspect ['a] Tokio, Resolve<'a>, |_s, op| {
+    seam_core::io::Result::Ok(tokio::net::lookup_host((op.host, op.port)).await?.collect())
+});
+async_op!(inspect ['a] Tokio, ResolveInto<'a>, |_s, op| {
+    let mut n = 0;
+    for addr in tokio::net::lookup_host((op.host, op.port)).await? {
+        if let Some(slot) = op.out.get_mut(n) {
+            *slot = addr;
+        }
+        n += 1;
+    }
+    seam_core::io::Result::Ok(n)
 });
 // Tokio can only shut down the write half of a stream.
 async_op!(perform [] TcpStream, Shutdown, |s, op| match op.0 {

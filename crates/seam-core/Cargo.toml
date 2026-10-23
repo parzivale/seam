@@ -20,7 +20,7 @@ alloc = []
 # Capability groups. Groups whose operation types need std turn it on.
 fs = ["std", "io"]
 net = ["std", "io"]
-process = ["std"]
+process = ["std", "io"]
 env = ["std"]
 io-std = ["std"]
 signal = ["std"]

@@ -48,7 +48,10 @@ feature, so a core written against them runs on any backend:
   `TcpBind<L>`, `Accept<S>` (from a listener) and `UdpBind<U>`
 - `time`: `Sleep`, `Now` (no_std); `WallClock` (std)
 - `env`: `Var`, `Args`, `CurrentDir`, `TempDir` (all queries)
-- `process`: `RunCommand`, `Exit` (outcome `Infallible`)
+- `process`: `RunCommand`, `Exit` (outcome `Infallible`), and `SpawnChild`,
+  an acquisition lending a running child to a scope: written to and read
+  like a stream (stdin and stdout), with `ReadErr`, `CloseStdin`, `Wait`,
+  `Kill` and `ChildId`
 - `random`: `RandomU64`, `FillRandom` (no_std)
 - `stdio`: `Print`, `EPrint`, `ReadLine`
 - `signal`: `CtrlC`
@@ -118,7 +121,12 @@ group with no real effects other than allocation:
   `Resolve`.
 - **env**, **io-std**: configured variables, arguments and directories;
   scripted stdin, captured stdout and stderr.
-- **process**: commands are answered by scripted handlers and logged.
+- **process**: commands are answered by scripted handlers and logged. A
+  spawned child is a filter: its handler runs the first time its output is
+  needed (a read, a wait, or the end of its scope), on the input written
+  so far, and later input is refused. Children inherit nothing until they
+  run; their inherited output is printed then, at spawn or when the scope
+  closes.
   `Exit` unwinds with an `Exited` payload, without running the panic hook;
   `catch_exit` turns it back into a code.
 - **signal**: `raise_ctrl_c` queues a Ctrl-C for `CtrlC` to consume.
@@ -430,7 +438,10 @@ module's imports, like its bounds, show what it can do.
   escape hatches. `allocator_api` is still unstable (checked on 1.99.1), so
   this waits.
 - **`Pin<Box<_>>` sink variant** for writers that are not `Unpin`.
-- **Child process handles** (only run-to-completion today).
+- **Interactive simulated children.** A simulated child is a filter that
+  runs once on the input it was given. A child that answers line by line
+  would run as its own task or thread on the runtime or the scheduler,
+  written as a core against its stdin and stdout.
 
 ## Open questions
 

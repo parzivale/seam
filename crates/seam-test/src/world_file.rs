@@ -77,7 +77,8 @@
 //! ```
 //!
 //! `stdout` and `stderr` compare exact bytes, and the `ran` lines must be
-//! every command the core ran, in order.
+//! every command the core ran or spawned, in order. `ran cat stdin="hi"`
+//! also checks what a spawned child was given on its standard input.
 
 #[cfg(any(feature = "env", feature = "process"))]
 use std::ffi::OsString;
@@ -792,17 +793,21 @@ impl Sim {
                             return Err(unknown(child, "`process` expectations", &["ran"]));
                         }
                         child.no_children()?;
-                        child.props_only(&[])?;
+                        child.props_only(&["stdin"])?;
                         child.arity(1, None, "a program, then its arguments")?;
                         let words = child
                             .args
                             .iter()
                             .map(|a| a.string("an argument").map(OsString::from))
                             .collect::<Result<Vec<_>>>()?;
-                        want.push((child.pos, words));
+                        let stdin = match child.prop("stdin") {
+                            Some(v) => Some(v.string("`stdin`")?.as_bytes().to_vec()),
+                            None => None,
+                        };
+                        want.push((child.pos, words, stdin));
                     }
-                    let got: Vec<Vec<OsString>> = self
-                        .invocations()
+                    let log = self.invocations();
+                    let got: Vec<Vec<OsString>> = log
                         .iter()
                         .map(|i| {
                             core::iter::once(i.program.clone())
@@ -817,9 +822,23 @@ impl Sim {
                             .collect::<Vec<_>>()
                             .join(" ")
                     };
-                    for (n, (pos, words)) in want.iter().enumerate() {
+                    for (n, (pos, words, stdin)) in want.iter().enumerate() {
                         match got.get(n) {
-                            Some(g) if g == words => {}
+                            Some(g) if g == words => {
+                                let given = &log[n].stdin;
+                                if let Some(stdin) = stdin.as_ref().filter(|s| *s != given) {
+                                    fail(
+                                        failures,
+                                        *pos,
+                                        format!(
+                                            "command {}: expected stdin {}, but it was given {}",
+                                            n + 1,
+                                            show(stdin),
+                                            show(given)
+                                        ),
+                                    );
+                                }
+                            }
                             Some(g) => fail(
                                 failures,
                                 *pos,

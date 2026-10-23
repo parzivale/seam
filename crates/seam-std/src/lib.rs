@@ -94,7 +94,7 @@ pub mod fs;
 #[cfg(feature = "net")]
 pub mod net;
 #[cfg(feature = "process")]
-mod process;
+pub mod process;
 #[cfg(feature = "random")]
 mod random;
 #[cfg(feature = "io-std")]

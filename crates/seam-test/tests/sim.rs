@@ -26,7 +26,7 @@ use seam_core::ops::time::{Now, Sleep, WallClock};
 use seam_core::{Acquire, AsyncAcquire, Inspect, Perform, Provide};
 use seam_test::fs::File;
 use seam_test::net::{TcpListener, TcpStream, UdpSocket};
-use seam_test::{Invocation, Sim, catch_exit};
+use seam_test::{Sim, catch_exit};
 
 fn kind<T: std::fmt::Debug>(r: io::Result<T>) -> ErrorKind {
     r.unwrap_err().kind()
@@ -315,13 +315,9 @@ fn scripted_processes_stdio_and_exit() {
         String::from_utf8(sim.take_stdout()).unwrap(),
         "hi there\nnope: no handler scripted for this program\n"
     );
-    assert_eq!(
-        sim.invocations()[0],
-        Invocation {
-            program: "echo".into(),
-            args: vec![OsString::from("hi"), OsString::from("there")],
-        }
-    );
+    let ran = &sim.invocations()[0];
+    assert_eq!(ran.program, "echo");
+    assert_eq!(ran.args, [OsString::from("hi"), OsString::from("there")]);
     assert_eq!(
         sim.perform(ReadLine).unwrap().as_deref(),
         Some("never read\n")

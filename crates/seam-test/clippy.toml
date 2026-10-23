@@ -7,7 +7,7 @@ disallowed-types = [
     { path = "std::net::TcpStream", reason = "take `Perform<TcpConnect<S>>` instead" },
     { path = "std::net::TcpListener", reason = "take `Perform<TcpBind<L>>` instead" },
     { path = "std::net::UdpSocket", reason = "take `Perform<UdpBind<U>>` instead" },
-    { path = "std::process::Child", reason = "take `Perform<RunCommand>` instead" },
+    { path = "std::process::Child", reason = "take `Perform<RunCommand>`, or `Provide<SpawnChild<C>>` to talk to it, instead" },
     { path = "std::hash::RandomState", reason = "take `Perform<RandomU64>` instead" },
     { path = "std::cell::Cell", reason = "shared state is an effect: take `Perform<Share<T, C>>` and use the cell" },
     { path = "std::cell::RefCell", reason = "shared state is an effect: take `Perform<Share<T, C>>` and use the cell" },

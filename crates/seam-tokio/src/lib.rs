@@ -184,7 +184,7 @@ pub mod fs;
 #[cfg(feature = "net")]
 pub mod net;
 #[cfg(feature = "process")]
-mod process;
+pub mod process;
 #[cfg(feature = "rt")]
 mod runtime;
 #[cfg(feature = "signal")]

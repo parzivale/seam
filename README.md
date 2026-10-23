@@ -237,8 +237,9 @@ c.acquire(CreateAtomic::new("settings.conf"), |c, file| {
 ```
 
 When the body returns `Ok` the resource is committed: a file is synced, an
-atomic file renamed into place, a stream shut down cleanly, a task waited
-for. Otherwise it is rolled back, and a task is aborted. Providers make
+atomic file renamed into place, a stream shut down cleanly, a task or child
+process waited for. Otherwise it is rolled back: a task is aborted, a child
+process killed. Providers make
 dropping a resource equal rolling it back, so cancelling at any `.await`,
 even while opening or closing, never commits half a result. Atomic files on
 Tokio are tested by cancelling after every possible number of polls.

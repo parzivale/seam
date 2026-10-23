@@ -219,3 +219,69 @@ mod signal {
         }
     });
 }
+
+#[cfg(feature = "process")]
+mod process {
+    use std::io;
+
+    use seam_core::ops::io::{Read, ReadToEnd};
+    use seam_core::ops::process::{ReadErr, ReadErrToEnd, Wait};
+    use tokio::io::AsyncReadExt;
+
+    use super::*;
+    use crate::process::Child;
+
+    fn timed_out() -> io::Error {
+        io::ErrorKind::TimedOut.into()
+    }
+
+    // Each of these is cancel-safe in Tokio: a wait leaves the child
+    // running, and a read that times out has read nothing.
+    async_op!(perform [] Child, Timeout<Wait>, |s, op| {
+        timeout(op.after, s.wait()).await.unwrap_or_else(|_| op.op.timed_out())
+    });
+    async_op!(perform ['a] Child, Timeout<Read<'a>>, |s, op| {
+        let out = s.stdout_mut()?;
+        timeout(op.after, out.read(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
+    });
+    async_op!(perform ['a] Child, Timeout<ReadErr<'a>>, |s, op| {
+        let err = s.stderr_mut()?;
+        timeout(op.after, err.read(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
+    });
+
+    // Chunk by chunk, so what arrived before the deadline stays.
+    async_op!(perform ['a] Child, Timeout<ReadToEnd<'a>>, |s, op| {
+        let deadline = tokio::time::Instant::now() + op.after;
+        let out = op.op.0;
+        let pipe = s.stdout_mut()?;
+        let mut chunk = [0; 8192];
+        let mut total = 0;
+        loop {
+            let n = tokio::time::timeout_at(deadline, pipe.read(&mut chunk))
+                .await
+                .unwrap_or_else(|_| Err(timed_out()))?;
+            if n == 0 {
+                return Ok(total);
+            }
+            out.extend_from_slice(&chunk[..n]);
+            total += n;
+        }
+    });
+    async_op!(perform ['a] Child, Timeout<ReadErrToEnd<'a>>, |s, op| {
+        let deadline = tokio::time::Instant::now() + op.after;
+        let out = op.op.0;
+        let pipe = s.stderr_mut()?;
+        let mut chunk = [0; 8192];
+        let mut total = 0;
+        loop {
+            let n = tokio::time::timeout_at(deadline, pipe.read(&mut chunk))
+                .await
+                .unwrap_or_else(|_| Err(timed_out()))?;
+            if n == 0 {
+                return Ok(total);
+            }
+            out.extend_from_slice(&chunk[..n]);
+            total += n;
+        }
+    });
+}

@@ -120,11 +120,14 @@ mod fs {
 
 #[cfg(feature = "process")]
 mod process {
-    use seam_core::ops::process::{Exit, RunCommand};
+    use seam_core::ops::process::{Exit, RunCommand, SpawnChild};
 
     use super::*;
+    use crate::process::Child;
 
     delegate! { perform [] RunCommand; [] Exit; }
+    // The child is the plain simulation's: nothing about it waits.
+    delegate! { provide SpawnChild<Child>; }
 }
 
 #[cfg(feature = "io-std")]

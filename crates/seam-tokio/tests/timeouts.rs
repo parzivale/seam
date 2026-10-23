@@ -1,7 +1,7 @@
 //! Timeouts on a real Tokio runtime.
 #![cfg(feature = "full")]
 
-use std::io;
+use seam_core::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 

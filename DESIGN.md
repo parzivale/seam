@@ -43,7 +43,7 @@ feature, so a core written against them runs on any backend:
 - `fs`: `ReadFile`, `ReadToString`, `Metadata`, `ReadDir` (queries);
   `WriteFile`, `CreateDir`, `RemoveFile`, `RemoveDir`, `Rename`, `CopyFile`,
   `SweepAtomic`; acquisitions `Open<F>` and `CreateAtomic<F>`
-- `net`: `Resolve` (DNS is an effect), `SendTo`, `RecvFrom`, `Shutdown`;
+- `net`: `Resolve` (DNS is an effect), `SendTo`, `RecvFrom`, `Shutdown(How)`;
   `LocalAddr` and `PeerAddr` queries; acquisitions `TcpConnect<S>`,
   `TcpBind<L>`, `Accept<S>` (from a listener) and `UdpBind<U>`
 - `time`: `Sleep`, `Now` (no_std); `WallClock` (std)
@@ -76,6 +76,20 @@ not produce them. So `Now` returns seam's own `time::Instant` (a duration
 since a backend-chosen epoch) instead of `std::time::Instant`, `Metadata`
 returns `fs::FileInfo` instead of `std::fs::Metadata`, and `RunCommand`
 returns `process::Output` instead of `std::process::Output`.
+
+I/O outcomes use seam's own `io::Error` for the same reason, and so that
+`io`, `net`, `stdio` and `signal` need no std. It is an `ErrorKind` (std's
+kinds, `non_exhaustive`) and a `&'static str`, so building one allocates
+nothing and works on any target. With std it also carries the
+`std::io::Error` it was converted from, and converts back to it losslessly.
+That field exists only under std, but nothing depends on its absence:
+features only add, so a no_std library and a std binary in one build see
+one type. The alternative, using `std::io::Error` when std is on and a
+custom type when it is off, would make a feature change a type, and two
+crates in a build would disagree. `net` has its own `How` (for `Shutdown`)
+for the same reason. The operations returning owned data (`ReadToEnd`,
+`Resolve`, `ReadLine`) need `alloc`; `fs`, `process` and `env` need std for
+`Path`, `Command` and `OsString`.
 
 Acquisitions are generic over the backend's handle type (`Open<F>`), since
 each backend has its own. Bounds name the handle as a type parameter and

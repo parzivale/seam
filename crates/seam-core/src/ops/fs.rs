@@ -11,7 +11,7 @@
 //! reads can ask for `Inspect`:
 //!
 //! ```
-//! use std::io;
+//! use seam_core::io;
 //! use seam_core::Inspect;
 //! use seam_core::ops::fs::{Metadata, ReadToString};
 //!
@@ -29,8 +29,8 @@
 //! }
 //! ```
 
+use crate::io;
 use core::marker::PhantomData;
-use std::io;
 use std::path::PathBuf;
 use std::string::String;
 use std::vec::Vec;
@@ -139,7 +139,7 @@ pub struct Open<F> {
 /// killed outright, one can be left behind; [`SweepAtomic`] removes them.
 ///
 /// ```
-/// use std::io;
+/// use seam_core::io;
 /// use seam_core::prelude::*;
 /// use seam_core::ops::fs::CreateAtomic;
 /// use seam_core::ops::io::WriteAll;

@@ -56,8 +56,9 @@ and only the binary (or its tests) picks a backend.
 | `time`, `random` | `Sleep`, `Now`, `RandomU64`, `FillRandom`. No std needed. |
 | `rt` | `Spawn`, `SpawnSet`, `SpawnWith`, `Join`, `Detach`, `YieldNow`, `AvailableParallelism`. No std or alloc needed. On `std` the tasks are closures on OS threads; on Tokio and the simulated runtime, futures. |
 | `sync` | Channels (`Channel`, `SendMsg`, `RecvMsg`) and shared cells (`Share`, `Load`, `Store`, `Update`). No std or alloc needed. |
-| `alloc` | `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type. |
-| `fs`, `net`, `process`, `env`, `io-std`, `signal` | Those operation types. Links std for their types. |
+| `alloc` | `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type; the operations that return owned data (`ReadToEnd`, `Resolve`, `ReadLine`). |
+| `io`, `net`, `io-std`, `signal` | Those operation types. No std needed. |
+| `fs`, `process`, `env` | Those operation types. Links std for their types (`Path`, `Command`, `OsString`). |
 | `full` | Every capability group. Still no backend. |
 
 | Backend | Gives you |
@@ -107,6 +108,30 @@ impl InKind for Get { type Kind = Store; }
 the struct a name, for when the root's type must be written out. Capability types opt in to seam's lifts (an `Inspect` is
 also a `Perform`, a sync operation also works from async code) with
 `impl Capability for MyType {}`; every type in seam's backends does.
+
+## I/O errors
+
+I/O operations fail with `seam::io::Error`, not `std::io::Error`, so the
+same operation types work without std. It is an `ErrorKind` (the same
+kinds as std's, `non_exhaustive`) and a `&'static str` message, and
+allocates nothing. With std, it also keeps the `std::io::Error` it came
+from: it converts both ways with `?` or `.into()`, `as_std()` borrows the
+original, and its `Display` shows the original's message. Features only
+add to it, so crates built with and without std agree on the type.
+
+```rust
+use seam::io;
+
+match c.inspect(ReadToString::new("config.toml")) {
+    Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Config::default()),
+    other => parse(other?),
+}
+```
+
+A core that has its own error to report builds one from a kind and a
+static message: `io::Error::new(io::ErrorKind::InvalidData, "not a number")`.
+For a message built at run time, keep it in your own error type, or on std
+make a `std::io::Error` and convert it.
 
 ## Writing your own effects
 

@@ -1,7 +1,7 @@
 //! Child processes on the real OS.
 #![cfg(all(feature = "full", unix))]
 
-use std::io;
+use seam_core::io;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -82,6 +82,7 @@ fn a_failed_scope_kills_the_child() {
     let pid = pid.unwrap();
     let alive = Command::new("kill")
         .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
         .status()
         .unwrap()
         .success();

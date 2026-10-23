@@ -1,7 +1,7 @@
 //! Child processes on a real Tokio runtime.
 #![cfg(all(feature = "full", unix))]
 
-use std::io;
+use seam_core::io;
 use std::process::Command;
 use std::time::{Duration, Instant};
 

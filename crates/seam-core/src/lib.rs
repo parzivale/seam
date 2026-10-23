@@ -104,6 +104,7 @@ extern crate std;
 pub mod acquire;
 mod capability;
 pub mod future;
+pub mod io;
 mod operation;
 pub mod ops;
 pub mod prelude;

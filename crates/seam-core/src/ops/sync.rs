@@ -219,26 +219,40 @@ impl fmt::Display for RecvError {
 impl core::error::Error for RecvError {}
 
 /// So that cores working in `io::Result` can use channels.
-#[cfg(feature = "std")]
-impl<T> From<SendError<T>> for std::io::Error {
+impl<T> From<SendError<T>> for crate::io::Error {
     fn from(e: SendError<T>) -> Self {
-        let kind = match e {
-            SendError::Closed(_) => std::io::ErrorKind::BrokenPipe,
-            SendError::Full(_) => std::io::ErrorKind::WouldBlock,
-        };
-        std::io::Error::new(kind, std::format!("{e}"))
+        match e {
+            SendError::Closed(_) => {
+                Self::new(crate::io::ErrorKind::BrokenPipe, "channel is closed")
+            }
+            SendError::Full(_) => Self::new(crate::io::ErrorKind::WouldBlock, "channel is full"),
+        }
     }
 }
 
 /// So that cores working in `io::Result` can use channels.
+impl From<RecvError> for crate::io::Error {
+    fn from(e: RecvError) -> Self {
+        match e {
+            RecvError::Closed => Self::new(crate::io::ErrorKind::BrokenPipe, "channel is closed"),
+            RecvError::Empty => Self::new(crate::io::ErrorKind::WouldBlock, "channel is empty"),
+        }
+    }
+}
+
+/// So that cores working in `std::io::Result` can use channels.
+#[cfg(feature = "std")]
+impl<T> From<SendError<T>> for std::io::Error {
+    fn from(e: SendError<T>) -> Self {
+        crate::io::Error::from(e).into()
+    }
+}
+
+/// So that cores working in `std::io::Result` can use channels.
 #[cfg(feature = "std")]
 impl From<RecvError> for std::io::Error {
     fn from(e: RecvError) -> Self {
-        let kind = match e {
-            RecvError::Closed => std::io::ErrorKind::BrokenPipe,
-            RecvError::Empty => std::io::ErrorKind::WouldBlock,
-        };
-        std::io::Error::new(kind, e)
+        crate::io::Error::from(e).into()
     }
 }
 

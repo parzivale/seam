@@ -52,7 +52,7 @@
 //!
 //! ```
 //! # #[cfg(all(feature = "fs", feature = "env", feature = "io-std"))] {
-//! use std::io;
+//! use seam_core::io;
 //! use seam_core::prelude::*;
 //! use seam_core::ops::env::Var;
 //! use seam_core::ops::fs::{ReadToString, WriteFile};
@@ -279,8 +279,8 @@ impl core::fmt::Debug for Sim {
     feature = "io-std",
     feature = "signal"
 ))]
-fn error(kind: std::io::ErrorKind, msg: &'static str) -> std::io::Error {
-    std::io::Error::new(kind, msg)
+fn error(kind: seam_core::io::ErrorKind, msg: &'static str) -> seam_core::io::Error {
+    seam_core::io::Error::new(kind, msg)
 }
 
 // Every capability type opts in to seam's lifts.

@@ -15,7 +15,7 @@
 //! and std for the command-line arguments, which have nothing to do with
 //! Tokio.
 
-use std::io;
+use seam::io;
 use std::net::SocketAddr;
 
 use seam::ops::env::Args;
@@ -138,7 +138,7 @@ fn main() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::net::Shutdown as How;
+    use seam::ops::net::How;
 
     use seam::ops::io::ReadToEnd;
     use seam::ops::net::{Shutdown, TcpConnect};

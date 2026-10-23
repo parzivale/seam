@@ -15,14 +15,12 @@
 //! timed operations on a child behave like untimed ones.
 #![allow(clippy::disallowed_types)] // the scripts, and each child's input, are shared with child handles
 
+use seam_core::io::{self, ErrorKind};
 use std::boxed::Box;
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::ffi::OsString;
-use std::format;
-use std::io::{self, ErrorKind};
 use std::process::Command;
-use std::string::{String, ToString};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::vec::Vec;
 
@@ -263,7 +261,7 @@ struct Ran {
     inherited: (Vec<u8>, Vec<u8>),
     code: Option<i32>,
     /// Why the handler failed, if it did.
-    failed: Option<(ErrorKind, String)>,
+    failed: Option<(ErrorKind, Option<io::Error>)>,
 }
 
 impl core::fmt::Debug for Child {
@@ -280,9 +278,15 @@ const STDOUT: usize = 1;
 const STDERR: usize = 2;
 
 fn not_piped(stream: &str) -> io::Error {
-    io::Error::new(
+    error(
         ErrorKind::BrokenPipe,
-        format!("the child's {stream} is not piped to this scope, or is closed"),
+        match stream {
+            "standard input" => {
+                "the child's standard input is not piped to this scope, or is closed"
+            }
+            "standard output" => "the child's standard output is not piped to this scope",
+            _ => "the child's standard error is not piped to this scope",
+        },
     )
 }
 
@@ -315,7 +319,7 @@ impl Child {
                     stderr: VecDeque::new(),
                     inherited: (Vec::new(), Vec::new()),
                     code: None,
-                    failed: Some((e.kind(), e.to_string())),
+                    failed: Some((e.kind(), Some(e))),
                 },
             };
             self.ran = Some(ran);
@@ -333,8 +337,9 @@ impl Child {
             return Err(not_piped(name));
         }
         let ran = self.run();
-        if let Some((kind, msg)) = &ran.failed {
-            return Err(io::Error::new(*kind, msg.clone()));
+        if let Some((kind, e)) = &mut ran.failed {
+            // The handler's own error the first time, then its kind.
+            return Err(e.take().unwrap_or_else(|| (*kind).into()));
         }
         Ok(if stream == STDOUT {
             &mut ran.stdout
@@ -376,8 +381,9 @@ impl Child {
 
     fn wait(&mut self) -> io::Result<ExitStatus> {
         let ran = self.run();
-        if let Some((kind, msg)) = &ran.failed {
-            return Err(io::Error::new(*kind, msg.clone()));
+        if let Some((kind, e)) = &mut ran.failed {
+            // The handler's own error the first time, then its kind.
+            return Err(e.take().unwrap_or_else(|| (*kind).into()));
         }
         let code = ran.code;
         self.waited = true;

@@ -25,12 +25,12 @@ pub struct File(std::fs::File, Writable);
 crate::io_ops!(File);
 
 impl File {
-    fn commit(mut self) -> io::Result<()> {
+    fn commit(mut self) -> seam_core::io::Result<()> {
         if !self.1.0 {
             return Ok(());
         }
         io::Write::flush(&mut self.0)?;
-        self.0.sync_all()
+        crate::sio(self.0.sync_all())
     }
 }
 
@@ -68,7 +68,7 @@ impl Drop for Pending {
 }
 
 impl AtomicFile {
-    fn commit(mut self) -> io::Result<()> {
+    fn commit(mut self) -> seam_core::io::Result<()> {
         io::Write::flush(&mut self.0)?;
         self.0.sync_all()?;
         let temp = self
@@ -102,30 +102,36 @@ fn temp_path(target: &Path) -> PathBuf {
 }
 
 impl Provide<Open<File>> for Std {
-    fn provide(&mut self, op: Open<File>, _: Token) -> io::Result<File> {
+    fn provide(&mut self, op: Open<File>, _: Token) -> seam_core::io::Result<File> {
         let o = op.options;
-        std::fs::OpenOptions::new()
-            .read(o.read)
-            .write(o.write)
-            .append(o.append)
-            .truncate(o.truncate)
-            .create(o.create)
-            .create_new(o.create_new)
-            .open(op.path)
-            .map(|f| File(f, Writable(o.write || o.append)))
+        crate::sio(
+            std::fs::OpenOptions::new()
+                .read(o.read)
+                .write(o.write)
+                .append(o.append)
+                .truncate(o.truncate)
+                .create(o.create)
+                .create_new(o.create_new)
+                .open(op.path)
+                .map(|f| File(f, Writable(o.write || o.append))),
+        )
     }
 
-    fn close(&mut self, file: File) -> io::Result<()> {
+    fn close(&mut self, file: File) -> seam_core::io::Result<()> {
         file.commit()
     }
 }
 
 impl Provide<CreateAtomic<AtomicFile>> for Std {
-    fn close(&mut self, file: AtomicFile) -> io::Result<()> {
+    fn close(&mut self, file: AtomicFile) -> seam_core::io::Result<()> {
         file.commit()
     }
 
-    fn provide(&mut self, op: CreateAtomic<AtomicFile>, _: Token) -> io::Result<AtomicFile> {
+    fn provide(
+        &mut self,
+        op: CreateAtomic<AtomicFile>,
+        _: Token,
+    ) -> seam_core::io::Result<AtomicFile> {
         let temp = temp_path(&op.path);
         let file = std::fs::OpenOptions::new()
             .write(true)
@@ -142,77 +148,77 @@ impl Provide<CreateAtomic<AtomicFile>> for Std {
 }
 
 impl Inspect<ReadFile> for Std {
-    fn inspect(&self, op: ReadFile) -> io::Result<Vec<u8>> {
-        std::fs::read(op.path)
+    fn inspect(&self, op: ReadFile) -> seam_core::io::Result<Vec<u8>> {
+        crate::sio(std::fs::read(op.path))
     }
 }
 
 impl Inspect<ReadToString> for Std {
-    fn inspect(&self, op: ReadToString) -> io::Result<String> {
-        std::fs::read_to_string(op.path)
+    fn inspect(&self, op: ReadToString) -> seam_core::io::Result<String> {
+        crate::sio(std::fs::read_to_string(op.path))
     }
 }
 
 impl Inspect<Metadata> for Std {
-    fn inspect(&self, op: Metadata) -> io::Result<FileInfo> {
-        std::fs::metadata(op.path).map(file_info)
+    fn inspect(&self, op: Metadata) -> seam_core::io::Result<FileInfo> {
+        crate::sio(std::fs::metadata(op.path).map(file_info))
     }
 }
 
 impl Inspect<ReadDir> for Std {
-    fn inspect(&self, op: ReadDir) -> io::Result<Vec<PathBuf>> {
+    fn inspect(&self, op: ReadDir) -> seam_core::io::Result<Vec<PathBuf>> {
         std::fs::read_dir(op.path)?
-            .map(|entry| entry.map(|e| e.path()))
+            .map(|entry| entry.map(|e| e.path()).map_err(Into::into))
             .collect()
     }
 }
 
 impl Perform<WriteFile> for Std {
-    fn perform(&mut self, op: WriteFile) -> io::Result<()> {
-        std::fs::write(op.path, op.contents)
+    fn perform(&mut self, op: WriteFile) -> seam_core::io::Result<()> {
+        crate::sio(std::fs::write(op.path, op.contents))
     }
 }
 
 impl Perform<CreateDir> for Std {
-    fn perform(&mut self, op: CreateDir) -> io::Result<()> {
+    fn perform(&mut self, op: CreateDir) -> seam_core::io::Result<()> {
         if op.recursive {
-            std::fs::create_dir_all(op.path)
+            crate::sio(std::fs::create_dir_all(op.path))
         } else {
-            std::fs::create_dir(op.path)
+            crate::sio(std::fs::create_dir(op.path))
         }
     }
 }
 
 impl Perform<RemoveFile> for Std {
-    fn perform(&mut self, op: RemoveFile) -> io::Result<()> {
-        std::fs::remove_file(op.path)
+    fn perform(&mut self, op: RemoveFile) -> seam_core::io::Result<()> {
+        crate::sio(std::fs::remove_file(op.path))
     }
 }
 
 impl Perform<RemoveDir> for Std {
-    fn perform(&mut self, op: RemoveDir) -> io::Result<()> {
+    fn perform(&mut self, op: RemoveDir) -> seam_core::io::Result<()> {
         if op.recursive {
-            std::fs::remove_dir_all(op.path)
+            crate::sio(std::fs::remove_dir_all(op.path))
         } else {
-            std::fs::remove_dir(op.path)
+            crate::sio(std::fs::remove_dir(op.path))
         }
     }
 }
 
 impl Perform<Rename> for Std {
-    fn perform(&mut self, op: Rename) -> io::Result<()> {
-        std::fs::rename(op.from, op.to)
+    fn perform(&mut self, op: Rename) -> seam_core::io::Result<()> {
+        crate::sio(std::fs::rename(op.from, op.to))
     }
 }
 
 impl Perform<CopyFile> for Std {
-    fn perform(&mut self, op: CopyFile) -> io::Result<u64> {
-        std::fs::copy(op.from, op.to)
+    fn perform(&mut self, op: CopyFile) -> seam_core::io::Result<u64> {
+        crate::sio(std::fs::copy(op.from, op.to))
     }
 }
 
 impl Perform<SweepAtomic> for Std {
-    fn perform(&mut self, op: SweepAtomic) -> io::Result<u64> {
+    fn perform(&mut self, op: SweepAtomic) -> seam_core::io::Result<u64> {
         let now = SystemTime::now();
         let mut removed = 0;
         for entry in std::fs::read_dir(&op.dir)? {
@@ -227,7 +233,7 @@ impl Perform<SweepAtomic> for Std {
                     Ok(()) => removed += 1,
                     // Finished or cleaned up by its writer in the meantime.
                     Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e),
+                    Err(e) => return Err(seam_core::io::Error::from(e)),
                 }
             }
         }

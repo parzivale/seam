@@ -15,7 +15,7 @@
 //! an order chosen from a seed. Sweeping seeds there checks that the
 //! output does not depend on how the threads interleave.
 
-use std::io;
+use seam::io;
 
 use seam::ops::env::Args;
 use seam::ops::fs::ReadToString;

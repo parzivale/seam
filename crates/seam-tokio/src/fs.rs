@@ -31,26 +31,28 @@ io_ops!(File);
 struct Writable(bool);
 
 impl AsyncProvide<Open<File>> for Tokio {
-    async fn provide_async(&mut self, op: Open<File>, _: Token) -> io::Result<File> {
+    async fn provide_async(&mut self, op: Open<File>, _: Token) -> seam_core::io::Result<File> {
         let o = op.options;
-        tokio::fs::OpenOptions::new()
-            .read(o.read)
-            .write(o.write)
-            .append(o.append)
-            .truncate(o.truncate)
-            .create(o.create)
-            .create_new(o.create_new)
-            .open(op.path)
-            .await
-            .map(|f| File(f, Writable(o.write || o.append)))
+        crate::sio(
+            tokio::fs::OpenOptions::new()
+                .read(o.read)
+                .write(o.write)
+                .append(o.append)
+                .truncate(o.truncate)
+                .create(o.create)
+                .create_new(o.create_new)
+                .open(op.path)
+                .await
+                .map(|f| File(f, Writable(o.write || o.append))),
+        )
     }
 
-    async fn close_async(&mut self, mut file: File) -> io::Result<()> {
+    async fn close_async(&mut self, mut file: File) -> seam_core::io::Result<()> {
         if !file.1.0 {
             return Ok(());
         }
         file.0.flush().await?;
-        file.0.sync_all().await
+        crate::sio(file.0.sync_all().await)
     }
 }
 
@@ -114,8 +116,8 @@ fn sync_parent(path: &Path) {
 
 /// Runs `f` on the blocking pool.
 async fn blocking<T: Send + 'static>(
-    f: impl FnOnce() -> io::Result<T> + Send + 'static,
-) -> io::Result<T> {
+    f: impl FnOnce() -> seam_core::io::Result<T> + Send + 'static,
+) -> seam_core::io::Result<T> {
     tokio::task::spawn_blocking(f)
         .await
         .map_err(io::Error::other)?
@@ -126,7 +128,7 @@ impl AsyncProvide<CreateAtomic<AtomicFile>> for Tokio {
         &mut self,
         op: CreateAtomic<AtomicFile>,
         _: Token,
-    ) -> io::Result<AtomicFile> {
+    ) -> seam_core::io::Result<AtomicFile> {
         // Created together with its guard, in one blocking task: see `Pending`.
         let (file, pending) = blocking(move || {
             let temp = temp_path(&op.path);
@@ -146,7 +148,7 @@ impl AsyncProvide<CreateAtomic<AtomicFile>> for Tokio {
         Ok(AtomicFile(tokio::fs::File::from_std(file), pending))
     }
 
-    async fn close_async(&mut self, file: AtomicFile) -> io::Result<()> {
+    async fn close_async(&mut self, file: AtomicFile) -> seam_core::io::Result<()> {
         let AtomicFile(mut file, mut pending) = file;
         file.flush().await?;
         file.sync_all().await?;
@@ -181,7 +183,7 @@ async_op!(perform [] Tokio, SweepAtomic, |_s, op| {
                     Ok(()) => removed += 1,
                     // Finished or cleaned up by its writer in the meantime.
                     Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e),
+                    Err(e) => return Err(seam_core::io::Error::from(e)),
                 }
             }
         }
@@ -199,7 +201,7 @@ async_op!(inspect [] Tokio, ReadDir, |_s, op| {
     while let Some(entry) = dir.next_entry().await? {
         paths.push(entry.path());
     }
-    Ok(paths)
+    seam_core::io::Result::Ok(paths)
 });
 
 async_op!(perform [] Tokio, WriteFile, |_s, op| tokio::fs::write(op.path, op.contents).await);

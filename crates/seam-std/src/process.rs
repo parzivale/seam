@@ -1,7 +1,7 @@
 //! Running commands, child processes, and exiting.
 
 use std::convert::Infallible;
-use std::io::{self, Read as _, Write as _};
+use std::io::{Read as _, Write as _};
 use std::process::{ChildStderr, ChildStdin, ChildStdout, Stdio};
 
 use seam_core::ops::io::{Flush, Read, ReadToEnd, Write, WriteAll};
@@ -14,12 +14,12 @@ use seam_core::{Inspect, Perform, Provide, Token};
 use crate::Std;
 
 impl Perform<RunCommand> for Std {
-    fn perform(&mut self, mut op: RunCommand) -> io::Result<Output> {
-        op.0.output().map(|o| Output {
+    fn perform(&mut self, mut op: RunCommand) -> seam_core::io::Result<Output> {
+        crate::sio(op.0.output().map(|o| Output {
             code: o.status.code(),
             stdout: o.stdout,
             stderr: o.stderr,
-        })
+        }))
     }
 }
 
@@ -53,8 +53,9 @@ fn stdio(pipe: Pipe) -> Stdio {
     }
 }
 
-fn not_piped(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::BrokenPipe, message)
+/// No allocation: a kind and a static message.
+fn not_piped(message: &'static str) -> seam_core::io::Error {
+    seam_core::io::Error::new(seam_core::io::ErrorKind::BrokenPipe, message)
 }
 
 fn status(s: std::process::ExitStatus) -> ExitStatus {
@@ -62,25 +63,25 @@ fn status(s: std::process::ExitStatus) -> ExitStatus {
 }
 
 impl Child {
-    fn stdin(&mut self) -> io::Result<&mut ChildStdin> {
+    fn stdin(&mut self) -> seam_core::io::Result<&mut ChildStdin> {
         self.stdin.as_mut().ok_or_else(|| {
             not_piped("the child's standard input is not piped to this scope, or is closed")
         })
     }
 
-    fn stdout(&mut self) -> io::Result<&mut ChildStdout> {
+    fn stdout(&mut self) -> seam_core::io::Result<&mut ChildStdout> {
         self.stdout
             .as_mut()
             .ok_or_else(|| not_piped("the child's standard output is not piped to this scope"))
     }
 
-    fn stderr(&mut self) -> io::Result<&mut ChildStderr> {
+    fn stderr(&mut self) -> seam_core::io::Result<&mut ChildStderr> {
         self.stderr
             .as_mut()
             .ok_or_else(|| not_piped("the child's standard error is not piped to this scope"))
     }
 
-    fn wait(&mut self) -> io::Result<ExitStatus> {
+    fn wait(&mut self) -> seam_core::io::Result<ExitStatus> {
         self.stdin = None;
         if let Some(s) = self.status {
             return Ok(s);
@@ -92,7 +93,7 @@ impl Child {
 
     /// Commits: closes the pipes, so a child blocked writing to one cannot
     /// hang the wait, then waits for it.
-    fn finish(mut self) -> io::Result<()> {
+    fn finish(mut self) -> seam_core::io::Result<()> {
         self.stdout = None;
         self.stderr = None;
         self.wait().map(drop)
@@ -110,7 +111,7 @@ impl Drop for Child {
 }
 
 impl Provide<SpawnChild<Child>> for Std {
-    fn provide(&mut self, op: SpawnChild<Child>, _: Token) -> io::Result<Child> {
+    fn provide(&mut self, op: SpawnChild<Child>, _: Token) -> seam_core::io::Result<Child> {
         let mut cmd = op.command;
         cmd.stdin(stdio(op.stdin))
             .stdout(stdio(op.stdout))
@@ -125,50 +126,50 @@ impl Provide<SpawnChild<Child>> for Std {
         })
     }
 
-    fn close(&mut self, child: Child) -> io::Result<()> {
+    fn close(&mut self, child: Child) -> seam_core::io::Result<()> {
         child.finish()
     }
 }
 
 impl Perform<Write<'_>> for Child {
-    fn perform(&mut self, op: Write<'_>) -> io::Result<usize> {
-        self.stdin()?.write(op.0)
+    fn perform(&mut self, op: Write<'_>) -> seam_core::io::Result<usize> {
+        crate::sio(self.stdin()?.write(op.0))
     }
 }
 
 impl Perform<WriteAll<'_>> for Child {
-    fn perform(&mut self, op: WriteAll<'_>) -> io::Result<()> {
-        self.stdin()?.write_all(op.0)
+    fn perform(&mut self, op: WriteAll<'_>) -> seam_core::io::Result<()> {
+        crate::sio(self.stdin()?.write_all(op.0))
     }
 }
 
 impl Perform<Flush> for Child {
-    fn perform(&mut self, _: Flush) -> io::Result<()> {
-        self.stdin()?.flush()
+    fn perform(&mut self, _: Flush) -> seam_core::io::Result<()> {
+        crate::sio(self.stdin()?.flush())
     }
 }
 
 impl Perform<Read<'_>> for Child {
-    fn perform(&mut self, op: Read<'_>) -> io::Result<usize> {
-        self.stdout()?.read(op.0)
+    fn perform(&mut self, op: Read<'_>) -> seam_core::io::Result<usize> {
+        crate::sio(self.stdout()?.read(op.0))
     }
 }
 
 impl Perform<ReadToEnd<'_>> for Child {
-    fn perform(&mut self, op: ReadToEnd<'_>) -> io::Result<usize> {
-        self.stdout()?.read_to_end(op.0)
+    fn perform(&mut self, op: ReadToEnd<'_>) -> seam_core::io::Result<usize> {
+        crate::sio(self.stdout()?.read_to_end(op.0))
     }
 }
 
 impl Perform<ReadErr<'_>> for Child {
-    fn perform(&mut self, op: ReadErr<'_>) -> io::Result<usize> {
-        self.stderr()?.read(op.0)
+    fn perform(&mut self, op: ReadErr<'_>) -> seam_core::io::Result<usize> {
+        crate::sio(self.stderr()?.read(op.0))
     }
 }
 
 impl Perform<ReadErrToEnd<'_>> for Child {
-    fn perform(&mut self, op: ReadErrToEnd<'_>) -> io::Result<usize> {
-        self.stderr()?.read_to_end(op.0)
+    fn perform(&mut self, op: ReadErrToEnd<'_>) -> seam_core::io::Result<usize> {
+        crate::sio(self.stderr()?.read_to_end(op.0))
     }
 }
 
@@ -179,17 +180,17 @@ impl Perform<CloseStdin> for Child {
 }
 
 impl Perform<Wait> for Child {
-    fn perform(&mut self, _: Wait) -> io::Result<ExitStatus> {
+    fn perform(&mut self, _: Wait) -> seam_core::io::Result<ExitStatus> {
         self.wait()
     }
 }
 
 impl Perform<Kill> for Child {
-    fn perform(&mut self, _: Kill) -> io::Result<()> {
+    fn perform(&mut self, _: Kill) -> seam_core::io::Result<()> {
         if self.status.is_some() {
             return Ok(());
         }
-        self.inner.kill()
+        crate::sio(self.inner.kill())
     }
 }
 
@@ -204,7 +205,10 @@ impl Inspect<ChildId> for Child {
 /// sleeping up to 10ms between tries.
 #[cfg(feature = "time")]
 impl Perform<seam_core::ops::time::Timeout<Wait>> for Child {
-    fn perform(&mut self, op: seam_core::ops::time::Timeout<Wait>) -> io::Result<ExitStatus> {
+    fn perform(
+        &mut self,
+        op: seam_core::ops::time::Timeout<Wait>,
+    ) -> seam_core::io::Result<ExitStatus> {
         use seam_core::ops::time::TimesOut;
         use std::time::{Duration, Instant};
 

@@ -24,7 +24,7 @@
 //!
 //! ```
 //! # #[cfg(all(feature = "std", feature = "test", feature = "fs", feature = "io-std"))] {
-//! use std::io;
+//! use seam::io;
 //! use seam::prelude::*;
 //! use seam::ops::fs::ReadToString;
 //! use seam::ops::stdio::Print;
@@ -111,7 +111,7 @@
 //!
 //! ```
 //! # #[cfg(feature = "fs")] {
-//! use std::io;
+//! use seam::io;
 //! use seam::prelude::*;
 //! use seam::ops::fs::CreateAtomic;
 //! use seam::ops::io::WriteAll;
@@ -178,8 +178,9 @@
 //! | `time`, `random` | operation types; no std needed |
 //! | `rt` | task operations (`Spawn`, `Join`, ...); no std needed |
 //! | `sync` | channels and shared cells; no std needed |
-//! | `alloc` | `Spawn::boxed`, `SpawnWith::boxed`: tasks of unnameable type, boxed |
-//! | `fs`, `net`, `process`, `env`, `io-std`, `signal` | operation types (links std for their types) |
+//! | `alloc` | `Spawn::boxed`, `SpawnWith::boxed` (tasks of unnameable type, boxed); `ReadToEnd`, `Resolve`, `ReadLine` |
+//! | `io`, `net`, `io-std`, `signal` | operation types; no std needed |
+//! | `fs`, `process`, `env` | operation types (links std for `Path`, `Command`, `OsString`) |
 //! | `full` | every group above |
 //!
 //! | Backend | Gives you |

@@ -21,8 +21,8 @@
 //! cargo run -p seam-rs --example custom_ops --features std,test,fs,env
 //! ```
 
+use seam::io;
 use std::collections::BTreeMap;
-use std::io;
 use std::marker::PhantomData;
 use std::path::PathBuf;
 
@@ -33,7 +33,7 @@ use seam::prelude::*;
 
 /// The store's operations.
 mod kv {
-    use std::io;
+    use seam::io;
 
     use seam::{InKind, Operation, Query};
 
@@ -71,9 +71,9 @@ fn visit<K: Inspect<Get> + Perform<Put>>(store: &mut K, page: &str) -> io::Resul
     let key = format!("visits:{page}");
     let n = match store.inspect(Get(key.clone()))? {
         Some(n) => {
-            n.parse::<u64>()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
-                + 1
+            n.parse::<u64>().map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "a count is not a number")
+            })? + 1
         }
         None => 1,
     };

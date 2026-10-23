@@ -7,7 +7,7 @@
 //!
 //! ```no_run
 //! # #[cfg(all(feature = "fs", feature = "io-std", feature = "env"))] {
-//! use std::io;
+//! use seam_core::io;
 //! use seam_core::prelude::*;
 //! use seam_core::ops::env::Args;
 //! use seam_core::ops::fs::ReadToString;
@@ -108,36 +108,54 @@ mod time;
 
 /// Implements the handle-level `io` operations for a wrapper around a std
 /// type that implements `Read` and `Write`.
+/// Converts a std result into seam's: the error keeps the original.
+#[allow(dead_code)] // used by whichever modules are on
+pub(crate) fn sio<T>(r: std::io::Result<T>) -> seam_core::io::Result<T> {
+    r.map_err(Into::into)
+}
+
 #[cfg(any(feature = "fs", feature = "net"))]
 macro_rules! io_ops {
     ($ty:ty) => {
         impl seam_core::Perform<seam_core::ops::io::Read<'_>> for $ty {
-            fn perform(&mut self, op: seam_core::ops::io::Read<'_>) -> std::io::Result<usize> {
-                std::io::Read::read(&mut self.0, op.0)
+            fn perform(
+                &mut self,
+                op: seam_core::ops::io::Read<'_>,
+            ) -> seam_core::io::Result<usize> {
+                crate::sio(std::io::Read::read(&mut self.0, op.0))
             }
         }
 
         impl seam_core::Perform<seam_core::ops::io::ReadToEnd<'_>> for $ty {
-            fn perform(&mut self, op: seam_core::ops::io::ReadToEnd<'_>) -> std::io::Result<usize> {
-                std::io::Read::read_to_end(&mut self.0, op.0)
+            fn perform(
+                &mut self,
+                op: seam_core::ops::io::ReadToEnd<'_>,
+            ) -> seam_core::io::Result<usize> {
+                crate::sio(std::io::Read::read_to_end(&mut self.0, op.0))
             }
         }
 
         impl seam_core::Perform<seam_core::ops::io::Write<'_>> for $ty {
-            fn perform(&mut self, op: seam_core::ops::io::Write<'_>) -> std::io::Result<usize> {
-                std::io::Write::write(&mut self.0, op.0)
+            fn perform(
+                &mut self,
+                op: seam_core::ops::io::Write<'_>,
+            ) -> seam_core::io::Result<usize> {
+                crate::sio(std::io::Write::write(&mut self.0, op.0))
             }
         }
 
         impl seam_core::Perform<seam_core::ops::io::WriteAll<'_>> for $ty {
-            fn perform(&mut self, op: seam_core::ops::io::WriteAll<'_>) -> std::io::Result<()> {
-                std::io::Write::write_all(&mut self.0, op.0)
+            fn perform(
+                &mut self,
+                op: seam_core::ops::io::WriteAll<'_>,
+            ) -> seam_core::io::Result<()> {
+                crate::sio(std::io::Write::write_all(&mut self.0, op.0))
             }
         }
 
         impl seam_core::Perform<seam_core::ops::io::Flush> for $ty {
-            fn perform(&mut self, _: seam_core::ops::io::Flush) -> std::io::Result<()> {
-                std::io::Write::flush(&mut self.0)
+            fn perform(&mut self, _: seam_core::ops::io::Flush) -> seam_core::io::Result<()> {
+                crate::sio(std::io::Write::flush(&mut self.0))
             }
         }
     };

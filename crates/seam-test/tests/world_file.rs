@@ -1,7 +1,7 @@
 //! World files: loading every directive, ordering, errors, expectations.
 #![cfg(feature = "full")]
 
-use std::io;
+use seam_core::io;
 use std::net::IpAddr;
 use std::process::Command;
 use std::time::{Duration, UNIX_EPOCH};

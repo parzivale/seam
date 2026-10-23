@@ -1,5 +1,5 @@
+use seam_core::io;
 use std::collections::VecDeque;
-use std::io;
 use std::string::String;
 use std::vec::Vec;
 

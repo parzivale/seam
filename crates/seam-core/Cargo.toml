@@ -17,13 +17,15 @@ std = ["alloc"]
 # `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type.
 alloc = []
 
-# Capability groups. Groups whose operation types need std turn it on.
+# Capability groups. Groups whose operation types need std (`Path`,
+# `OsString`, `Command`) turn it on; the rest need none, and the few of
+# their operations that return owned data need only `alloc`.
 fs = ["std", "io"]
-net = ["std", "io"]
+net = ["io"]
 process = ["std", "io"]
 env = ["std"]
-io-std = ["std"]
-signal = ["std"]
+io-std = []
+signal = []
 # `time` and `random` are usable without std. With `std`, `time` also
 # gains `WallClock`.
 time = []
@@ -33,8 +35,9 @@ rt = []
 # Channels and shared cells. No std needed.
 sync = []
 
-# Handle-level read/write/flush operations. Pulled in by `fs` and `net`.
-io = ["std"]
+# Handle-level read/write/flush operations. Pulled in by `fs`, `net` and
+# `process`. No std needed; `ReadToEnd` needs `alloc`.
+io = []
 
 full = ["fs", "net", "process", "env", "io-std", "signal", "time", "random", "rt", "sync"]
 

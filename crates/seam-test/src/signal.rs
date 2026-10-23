@@ -1,4 +1,4 @@
-use std::io::{self, ErrorKind};
+use seam_core::io::{self, ErrorKind};
 
 use seam_core::Perform;
 use seam_core::ops::signal::CtrlC;

@@ -1,5 +1,4 @@
 use std::ffi::OsString;
-use std::io;
 use std::path::PathBuf;
 
 use seam_core::Inspect;
@@ -20,8 +19,8 @@ impl Inspect<Args> for Std {
 }
 
 impl Inspect<CurrentDir> for Std {
-    fn inspect(&self, _: CurrentDir) -> io::Result<PathBuf> {
-        std::env::current_dir()
+    fn inspect(&self, _: CurrentDir) -> seam_core::io::Result<PathBuf> {
+        crate::sio(std::env::current_dir())
     }
 }
 

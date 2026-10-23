@@ -4,7 +4,8 @@ use std::io;
 use std::net::SocketAddr;
 
 use seam_core::ops::net::{
-    Accept, LocalAddr, PeerAddr, RecvFrom, Resolve, SendTo, Shutdown, TcpBind, TcpConnect, UdpBind,
+    Accept, How, LocalAddr, PeerAddr, RecvFrom, Resolve, SendTo, Shutdown, TcpBind, TcpConnect,
+    UdpBind,
 };
 use seam_core::{AsyncProvide, Inspect, Token};
 
@@ -38,10 +39,10 @@ io_ops!(TcpStream);
 impl TcpStream {
     /// Flushes and shuts down the write half, so the peer sees end of input.
     /// A peer that has already closed its end counts as success.
-    pub(crate) async fn commit(mut self) -> io::Result<()> {
+    pub(crate) async fn commit(mut self) -> seam_core::io::Result<()> {
         match tokio::io::AsyncWriteExt::shutdown(&mut self.0).await {
             Err(e) if e.kind() == io::ErrorKind::NotConnected => Ok(()),
-            result => result,
+            result => crate::sio(result),
         }
     }
 }
@@ -51,11 +52,11 @@ impl AsyncProvide<TcpConnect<TcpStream>> for Tokio {
         &mut self,
         op: TcpConnect<TcpStream>,
         _: Token,
-    ) -> io::Result<TcpStream> {
-        tokio::net::TcpStream::connect(op.addr).await.map(TcpStream)
+    ) -> seam_core::io::Result<TcpStream> {
+        crate::sio(tokio::net::TcpStream::connect(op.addr).await.map(TcpStream))
     }
 
-    async fn close_async(&mut self, stream: TcpStream) -> io::Result<()> {
+    async fn close_async(&mut self, stream: TcpStream) -> seam_core::io::Result<()> {
         stream.commit().await
     }
 }
@@ -65,33 +66,43 @@ impl AsyncProvide<TcpBind<TcpListener>> for Tokio {
         &mut self,
         op: TcpBind<TcpListener>,
         _: Token,
-    ) -> io::Result<TcpListener> {
-        tokio::net::TcpListener::bind(op.addr)
-            .await
-            .map(TcpListener)
+    ) -> seam_core::io::Result<TcpListener> {
+        crate::sio(
+            tokio::net::TcpListener::bind(op.addr)
+                .await
+                .map(TcpListener),
+        )
     }
 
-    async fn close_async(&mut self, _: TcpListener) -> io::Result<()> {
+    async fn close_async(&mut self, _: TcpListener) -> seam_core::io::Result<()> {
         Ok(())
     }
 }
 
 impl AsyncProvide<UdpBind<UdpSocket>> for Tokio {
-    async fn provide_async(&mut self, op: UdpBind<UdpSocket>, _: Token) -> io::Result<UdpSocket> {
-        tokio::net::UdpSocket::bind(op.addr).await.map(UdpSocket)
+    async fn provide_async(
+        &mut self,
+        op: UdpBind<UdpSocket>,
+        _: Token,
+    ) -> seam_core::io::Result<UdpSocket> {
+        crate::sio(tokio::net::UdpSocket::bind(op.addr).await.map(UdpSocket))
     }
 
-    async fn close_async(&mut self, _: UdpSocket) -> io::Result<()> {
+    async fn close_async(&mut self, _: UdpSocket) -> seam_core::io::Result<()> {
         Ok(())
     }
 }
 
 impl AsyncProvide<Accept<TcpStream>> for TcpListener {
-    async fn provide_async(&mut self, _: Accept<TcpStream>, _: Token) -> io::Result<TcpStream> {
-        self.0.accept().await.map(|(stream, _)| TcpStream(stream))
+    async fn provide_async(
+        &mut self,
+        _: Accept<TcpStream>,
+        _: Token,
+    ) -> seam_core::io::Result<TcpStream> {
+        crate::sio(self.0.accept().await.map(|(stream, _)| TcpStream(stream)))
     }
 
-    async fn close_async(&mut self, stream: TcpStream) -> io::Result<()> {
+    async fn close_async(&mut self, stream: TcpStream) -> seam_core::io::Result<()> {
         stream.commit().await
     }
 }
@@ -109,13 +120,13 @@ impl<B> AsyncProvide<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output
     for TcpListener
 where
     B: TaskBody<TcpStream>,
-    B::Error: From<io::Error>,
+    B::Error: From<seam_core::io::Error>,
 {
     async fn provide_async(
         &mut self,
         op: SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>,
         _: Token,
-    ) -> io::Result<JoinHandle<Result<B::Output, B::Error>>> {
+    ) -> seam_core::io::Result<JoinHandle<Result<B::Output, B::Error>>> {
         let (stream, _) = self.0.accept().await?;
         Ok(spawn_connection(stream, op.body))
     }
@@ -123,19 +134,19 @@ where
     async fn close_async(
         &mut self,
         task: JoinHandle<Result<B::Output, B::Error>>,
-    ) -> io::Result<()> {
-        task.finish().await.map_err(io::Error::from)
+    ) -> seam_core::io::Result<()> {
+        crate::sio(task.finish().await.map_err(io::Error::from))
     }
 }
 
 async_op!(inspect [] Tokio, Resolve, |_s, op| {
-    Ok(tokio::net::lookup_host((op.host.as_str(), op.port)).await?.collect())
+    seam_core::io::Result::Ok(tokio::net::lookup_host((op.host.as_str(), op.port)).await?.collect())
 });
 // Tokio can only shut down the write half of a stream.
 async_op!(perform [] TcpStream, Shutdown, |s, op| match op.0 {
-    std::net::Shutdown::Write => tokio::io::AsyncWriteExt::shutdown(&mut s.0).await,
-    _ => Err(io::Error::new(
-        io::ErrorKind::Unsupported,
+    How::Write => crate::sio(tokio::io::AsyncWriteExt::shutdown(&mut s.0).await),
+    _ => Err(seam_core::io::Error::new(
+        seam_core::io::ErrorKind::Unsupported,
         "Tokio streams can only shut down the write half",
     )),
 });
@@ -145,8 +156,8 @@ async_op!(perform ['a] UdpSocket, RecvFrom<'a>, |s, op| s.0.recv_from(op.0).awai
 macro_rules! addr_queries {
     ($($ty:ty: $($op:ident => $method:ident),*;)*) => {$($(
         impl Inspect<$op> for $ty {
-            fn inspect(&self, _: $op) -> io::Result<SocketAddr> {
-                self.0.$method()
+            fn inspect(&self, _: $op) -> seam_core::io::Result<SocketAddr> {
+                crate::sio(self.0.$method())
             }
         }
     )*)*};
@@ -167,7 +178,7 @@ pub(crate) fn spawn_connection<B>(
 ) -> JoinHandle<Result<B::Output, B::Error>>
 where
     B: TaskBody<TcpStream>,
-    B::Error: From<io::Error>,
+    B::Error: From<seam_core::io::Error>,
 {
     JoinHandle::new(tokio::spawn(async move {
         let mut stream = TcpStream(stream);

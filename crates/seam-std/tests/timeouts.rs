@@ -1,7 +1,7 @@
 //! Timeouts on the std backend, against real threads and sockets.
 #![cfg(feature = "full")]
 
-use std::io;
+use seam_core::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 

@@ -14,7 +14,7 @@
 //!
 //! ```no_run
 //! # #[cfg(all(feature = "rt", feature = "time", feature = "net"))] {
-//! use std::io;
+//! use seam_core::io;
 //! use std::time::Duration;
 //! use seam_core::prelude::*;
 //! use seam_core::ops::io::WriteAll;
@@ -43,7 +43,7 @@
 //!     Err(io::ErrorKind::TimedOut.into())
 //! }
 //!
-//! fn main() -> io::Result<()> {
+//! fn main() -> seam_core::io::Result<()> {
 //!     seam_tokio::block_on(async {
 //!         let mut tokio = seam_tokio::Tokio::new();
 //!         heartbeat::<_, seam_tokio::net::TcpStream>(&mut tokio, "localhost").await
@@ -100,6 +100,32 @@ impl Tokio {
     }
 }
 
+/// What an operation's body may produce: its outcome, or for an operation
+/// returning seam's `io::Result`, std's, which converts. The two impls
+/// cannot overlap: a `Result` with std's error is never one with seam's.
+#[allow(dead_code)] // used by whichever modules are on
+pub(crate) trait IntoOutcome<T> {
+    fn into_outcome(self) -> T;
+}
+
+impl<T> IntoOutcome<T> for T {
+    fn into_outcome(self) -> T {
+        self
+    }
+}
+
+impl<T> IntoOutcome<seam_core::io::Result<T>> for std::io::Result<T> {
+    fn into_outcome(self) -> seam_core::io::Result<T> {
+        self.map_err(Into::into)
+    }
+}
+
+/// Converts a std result into seam's: the error keeps the original.
+#[allow(dead_code)] // used by whichever modules are on
+pub(crate) fn sio<T>(r: std::io::Result<T>) -> seam_core::io::Result<T> {
+    r.map_err(Into::into)
+}
+
 /// Implements the async capability traits for an operation, from one async
 /// body. `perform` ops get `AsyncPerform` and `SendPerform`. `inspect` ops
 /// (queries) also get `AsyncInspect` and `SendInspect`, with the perform
@@ -113,7 +139,7 @@ macro_rules! async_op {
                 $o: $op,
             ) -> impl core::future::Future<Output = <$op as seam_core::Operation>::Outcome> {
                 let $s = self;
-                async move { $body }
+                async move { crate::IntoOutcome::into_outcome({ $body }) }
             }
         }
 
@@ -124,7 +150,7 @@ macro_rules! async_op {
             ) -> impl core::future::Future<Output = <$op as seam_core::Operation>::Outcome> + Send
             {
                 let $s = self;
-                async move { $body }
+                async move { crate::IntoOutcome::into_outcome({ $body }) }
             }
         }
     };
@@ -135,7 +161,7 @@ macro_rules! async_op {
                 $o: $op,
             ) -> impl core::future::Future<Output = <$op as seam_core::Operation>::Outcome> {
                 let $s = self;
-                async move { $body }
+                async move { crate::IntoOutcome::into_outcome({ $body }) }
             }
         }
 
@@ -146,7 +172,7 @@ macro_rules! async_op {
             ) -> impl core::future::Future<Output = <$op as seam_core::Operation>::Outcome> + Send
             {
                 let $s = self;
-                async move { $body }
+                async move { crate::IntoOutcome::into_outcome({ $body }) }
             }
         }
 

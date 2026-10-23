@@ -11,7 +11,7 @@ use core::future::{Future, poll_fn};
 use core::pin::pin;
 use core::task::Poll;
 use core::time::Duration;
-use std::io;
+use seam_core::io;
 use std::sync::Arc;
 
 #[allow(unused_imports)]

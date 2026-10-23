@@ -78,7 +78,7 @@ mod net {
                 .await
                 .unwrap_or_else(|_| Err(timed_out()))?;
             if n == 0 {
-                return Ok(total);
+                break seam_core::io::Result::Ok(total);
             }
             out.extend_from_slice(&chunk[..n]);
             total += n;
@@ -102,14 +102,16 @@ mod net {
             &mut self,
             op: Timeout<TcpConnect<TcpStream>>,
             _: Token,
-        ) -> io::Result<TcpStream> {
-            timeout(op.after, tokio::net::TcpStream::connect(op.op.addr))
-                .await
-                .unwrap_or_else(|_| Err(timed_out()))
-                .map(TcpStream)
+        ) -> seam_core::io::Result<TcpStream> {
+            crate::sio(
+                timeout(op.after, tokio::net::TcpStream::connect(op.op.addr))
+                    .await
+                    .unwrap_or_else(|_| Err(timed_out()))
+                    .map(TcpStream),
+            )
         }
 
-        async fn close_async(&mut self, stream: TcpStream) -> io::Result<()> {
+        async fn close_async(&mut self, stream: TcpStream) -> seam_core::io::Result<()> {
             stream.commit().await
         }
     }
@@ -118,7 +120,7 @@ mod net {
         pub(crate) async fn accept_within(
             &self,
             after: core::time::Duration,
-        ) -> io::Result<tokio::net::TcpStream> {
+        ) -> seam_core::io::Result<tokio::net::TcpStream> {
             let (stream, _) = timeout(after, self.0.accept())
                 .await
                 .unwrap_or_else(|_| Err(timed_out()))?;
@@ -131,11 +133,11 @@ mod net {
             &mut self,
             op: Timeout<Accept<TcpStream>>,
             _: Token,
-        ) -> io::Result<TcpStream> {
+        ) -> seam_core::io::Result<TcpStream> {
             self.accept_within(op.after).await.map(TcpStream)
         }
 
-        async fn close_async(&mut self, stream: TcpStream) -> io::Result<()> {
+        async fn close_async(&mut self, stream: TcpStream) -> seam_core::io::Result<()> {
             stream.commit().await
         }
     }
@@ -155,7 +157,7 @@ mod net {
         > for TcpListener
     where
         B: seam_core::ops::task::TaskBody<TcpStream>,
-        B::Error: From<io::Error>,
+        B::Error: From<seam_core::io::Error>,
     {
         async fn provide_async(
             &mut self,
@@ -167,7 +169,7 @@ mod net {
                 >,
             >,
             _: Token,
-        ) -> io::Result<crate::task::JoinHandle<Result<B::Output, B::Error>>> {
+        ) -> seam_core::io::Result<crate::task::JoinHandle<Result<B::Output, B::Error>>> {
             let stream = self.accept_within(op.after).await?;
             Ok(crate::net::spawn_connection(stream, op.op.body))
         }
@@ -175,8 +177,8 @@ mod net {
         async fn close_async(
             &mut self,
             task: crate::task::JoinHandle<Result<B::Output, B::Error>>,
-        ) -> io::Result<()> {
-            task.finish().await.map_err(io::Error::from)
+        ) -> seam_core::io::Result<()> {
+            crate::sio(task.finish().await.map_err(io::Error::from))
         }
     }
 }
@@ -214,7 +216,7 @@ mod signal {
 
     async_op!(perform [] Tokio, Timeout<CtrlC>, |_s, op| {
         match timeout(op.after, tokio::signal::ctrl_c()).await {
-            Ok(result) => result,
+            Ok(result) => crate::sio(result),
             Err(_) => op.op.timed_out(),
         }
     });
@@ -261,7 +263,7 @@ mod process {
                 .await
                 .unwrap_or_else(|_| Err(timed_out()))?;
             if n == 0 {
-                return Ok(total);
+                break seam_core::io::Result::Ok(total);
             }
             out.extend_from_slice(&chunk[..n]);
             total += n;
@@ -278,7 +280,7 @@ mod process {
                 .await
                 .unwrap_or_else(|_| Err(timed_out()))?;
             if n == 0 {
-                return Ok(total);
+                break seam_core::io::Result::Ok(total);
             }
             out.extend_from_slice(&chunk[..n]);
             total += n;

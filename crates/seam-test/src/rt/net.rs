@@ -9,7 +9,7 @@
 use core::future::poll_fn;
 use core::net::SocketAddr;
 use core::task::Poll;
-use std::io;
+use seam_core::io;
 use std::sync::Arc;
 
 use seam_core::ops::io::{Flush, Read, ReadToEnd, Write, WriteAll};

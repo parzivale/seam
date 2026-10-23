@@ -18,7 +18,7 @@ async_op!(perform ['a] Tokio, EPrint<'a>, |_s, op| {
 // Read through std's global stdin buffer, so that no input is lost between
 // calls the way it would be with a fresh `BufReader` each time.
 async_op!(perform [] Tokio, ReadLine, |_s, _op| {
-    tokio::task::spawn_blocking(|| {
+    tokio::task::spawn_blocking(|| -> io::Result<Option<String>> {
         let mut line = String::new();
         match io::stdin().read_line(&mut line)? {
             0 => Ok(None),
@@ -26,5 +26,5 @@ async_op!(perform [] Tokio, ReadLine, |_s, _op| {
         }
     })
     .await
-    .map_err(io::Error::other)?
+    .map_err(|_| seam_core::io::Error::other("the stdin reader was cancelled"))?
 });

@@ -6,7 +6,7 @@
 //! [`io`](super::io). DNS is an effect too: resolve names with [`Resolve`].
 //!
 //! ```
-//! use std::io;
+//! use seam_core::io;
 //! use seam_core::prelude::*;
 //! use seam_core::ops::io::WriteAll;
 //! use seam_core::ops::net::{Resolve, TcpConnect};
@@ -29,14 +29,17 @@
 //! }
 //! ```
 
+use crate::io;
+#[cfg(feature = "alloc")]
+use alloc::string::String;
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
 use core::marker::PhantomData;
 use core::net::SocketAddr;
-use std::io;
-use std::net::Shutdown as How;
-use std::string::String;
-use std::vec::Vec;
 
-/// Resolve a host name to socket addresses. DNS is an effect too.
+/// Resolve a host name to socket addresses. DNS is an effect too. Needs
+/// the `alloc` feature.
+#[cfg(feature = "alloc")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolve {
     /// The host name or address literal.
@@ -97,6 +100,41 @@ pub struct PeerAddr;
 #[derive(Debug, Clone, Copy)]
 pub struct Shutdown(pub How);
 
+/// Which half of a stream to shut down: the same choices as
+/// `std::net::Shutdown`, which converts into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum How {
+    /// Reading: further reads return end of input.
+    Read,
+    /// Writing: the peer sees end of input.
+    Write,
+    /// Both.
+    Both,
+}
+
+#[cfg(feature = "std")]
+impl From<std::net::Shutdown> for How {
+    fn from(how: std::net::Shutdown) -> Self {
+        match how {
+            std::net::Shutdown::Read => Self::Read,
+            std::net::Shutdown::Write => Self::Write,
+            std::net::Shutdown::Both => Self::Both,
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl From<How> for std::net::Shutdown {
+    fn from(how: How) -> Self {
+        match how {
+            How::Read => Self::Read,
+            How::Write => Self::Write,
+            How::Both => Self::Both,
+        }
+    }
+}
+
+#[cfg(feature = "alloc")]
 impl Resolve {
     /// Describes resolving `host` with `port`.
     pub fn new(host: impl Into<String>, port: u16) -> Self {
@@ -163,7 +201,6 @@ impl<S> core::fmt::Debug for Accept<S> {
 }
 
 operations! {
-    #[query] Resolve => io::Result<Vec<SocketAddr>>;
     #[query] LocalAddr => io::Result<SocketAddr>;
     #[query] PeerAddr => io::Result<SocketAddr>;
     SendTo<'_> => io::Result<usize>;
@@ -221,4 +258,11 @@ mod timeouts {
     }
 }
 
-crate::root::in_kind!(crate::kinds::Net: [] Resolve, [S] TcpConnect<S>, [L] TcpBind<L>, [U] UdpBind<U>);
+crate::root::in_kind!(crate::kinds::Net: [S] TcpConnect<S>, [L] TcpBind<L>, [U] UdpBind<U>);
+
+#[cfg(feature = "alloc")]
+operations! {
+    #[query] Resolve => io::Result<Vec<SocketAddr>>;
+}
+#[cfg(feature = "alloc")]
+crate::root::in_kind!(crate::kinds::Net: [] Resolve);

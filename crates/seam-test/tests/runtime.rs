@@ -1,8 +1,8 @@
 //! The deterministic runtime: scheduling, virtual time, waiting, tasks.
 #![cfg(feature = "full")]
 
+use seam_core::io;
 use std::future::{Future, poll_fn};
-use std::io;
 use std::net::SocketAddr;
 use std::pin::pin;
 use std::task::Poll;
@@ -193,7 +193,8 @@ fn reads_and_accepts_wait_for_the_other_side() {
                         c.perform_send(WriteAll(b"ping")).await?;
                         sim.perform_send(Sleep(Duration::from_secs(5))).await;
                         c.perform_send(WriteAll(b" pong")).await?;
-                        c.perform_send(Shutdown(std::net::Shutdown::Write)).await?;
+                        c.perform_send(Shutdown(seam_core::ops::net::How::Write))
+                            .await?;
                         let mut reply = Vec::new();
                         c.perform_send(ReadToEnd(&mut reply)).await?;
                         io::Result::Ok(reply)

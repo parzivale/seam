@@ -8,7 +8,7 @@
 #![allow(clippy::disallowed_types)] // sockets keep the scheduler
 
 use core::net::SocketAddr;
-use std::io;
+use seam_core::io;
 use std::sync::Arc;
 
 use seam_core::ops::io::{Flush, Read, ReadToEnd, Write, WriteAll};

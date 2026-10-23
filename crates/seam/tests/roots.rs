@@ -2,8 +2,8 @@
 //! program's own kind of operation alongside seam's.
 #![cfg(all(feature = "std", feature = "tokio", feature = "test", feature = "full"))]
 
+use seam::io;
 use std::collections::BTreeMap;
-use std::io;
 use std::time::Duration;
 
 use seam::kinds;

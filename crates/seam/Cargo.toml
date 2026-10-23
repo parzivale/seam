@@ -52,6 +52,9 @@ random = ["seam-core/random", "seam-std?/random", "seam-test?/random"]
 rt = ["seam-core/rt", "seam-std?/rt", "seam-tokio?/rt", "seam-test?/rt"]
 # `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type.
 alloc = ["seam-core/alloc"]
+# Handle-level read/write operations alone; `fs`, `net` and `process` pull
+# them in.
+io = ["seam-core/io"]
 
 # Every capability group. Still no backend.
 full = ["fs", "net", "process", "env", "io-std", "signal", "time", "random", "rt", "sync", "alloc"]

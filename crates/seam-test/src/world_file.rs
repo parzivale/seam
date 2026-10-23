@@ -633,8 +633,9 @@ impl Sim {
             "dir" | "file" => path_in(node, parent)?,
             _ => return Err(unknown(node, "`fs`", &["dir", "file"])),
         };
-        let failed =
-            |e: std::io::Error| error(node.pos, format!("cannot create `{}`: {e}", path.display()));
+        let failed = |e: seam_core::io::Error| {
+            error(node.pos, format!("cannot create `{}`: {e}", path.display()))
+        };
         if node.name == "dir" {
             node.props_only(&[])?;
             node.arity(1, Some(1), "a path, then a block of its contents")?;

@@ -5,7 +5,7 @@
 //! [`AsyncPerform`](crate::future::AsyncPerform) on a backend such as
 //! `seam-tokio`.
 
-use std::io;
+use crate::io;
 
 /// Wait for Ctrl-C.
 #[derive(Debug, Clone, Copy, Default)]

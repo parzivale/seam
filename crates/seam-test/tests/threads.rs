@@ -1,7 +1,7 @@
 //! Sync cores with threads, on the deterministic thread scheduler.
 #![cfg(feature = "full")]
 
-use std::io;
+use seam_core::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -349,7 +349,7 @@ fn a_thread_per_connection_server() {
                                 sim.acquire(TcpConnect::<TcpStream>::new(addr), |_, s| {
                                     s.perform(WriteAll(&[i; 3]))?;
                                     s.perform(seam_core::ops::net::Shutdown(
-                                        std::net::Shutdown::Write,
+                                        seam_core::ops::net::How::Write,
                                     ))?;
                                     s.perform(ReadToEnd(&mut reply))?;
                                     io::Result::Ok(())

@@ -3,7 +3,7 @@
 //! exactly when a timeout fired.
 #![cfg(feature = "full")]
 
-use std::io;
+use seam_core::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 

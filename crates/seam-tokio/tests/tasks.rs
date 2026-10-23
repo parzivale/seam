@@ -1,8 +1,8 @@
 //! Spawning tasks through seam on a real Tokio runtime.
 #![cfg(feature = "full")]
 
+use seam_core::io;
 use std::future::Future;
-use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -249,7 +249,8 @@ where
                 let client =
                     tokio.acquire_async(TcpConnect::<TcpStream>::new(addr), async |_, c| {
                         c.perform_send(WriteAll(b"hello")).await?;
-                        c.perform_send(Shutdown(std::net::Shutdown::Write)).await?;
+                        c.perform_send(Shutdown(seam_core::ops::net::How::Write))
+                            .await?;
                         let mut reply = Vec::new();
                         c.perform_send(ReadToEnd(&mut reply)).await?;
                         io::Result::Ok(reply)

@@ -16,8 +16,8 @@
 //! }
 //! ```
 
+use crate::io;
 use std::ffi::OsString;
-use std::io;
 use std::path::PathBuf;
 use std::vec::Vec;
 

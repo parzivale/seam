@@ -139,7 +139,7 @@ pub struct SpawnWith<A, B, H> {
 ///
 /// ```
 /// # #[cfg(feature = "io")] {
-/// use std::io;
+/// use seam_core::io;
 /// use seam_core::prelude::*;
 /// use seam_core::ops::io::{ReadToEnd, WriteAll};
 /// use seam_core::ops::task::TaskBody;
@@ -405,13 +405,22 @@ impl fmt::Display for JoinError {
 impl core::error::Error for JoinError {}
 
 /// So that cores working in `io::Result` can spawn tasks.
+impl From<JoinError> for crate::io::Error {
+    fn from(e: JoinError) -> Self {
+        use crate::io::ErrorKind;
+        match e {
+            JoinError::Panicked => Self::new(ErrorKind::Other, "task panicked"),
+            JoinError::Cancelled => Self::new(ErrorKind::Other, "task was cancelled"),
+            JoinError::TimedOut => Self::new(ErrorKind::TimedOut, "timed out waiting for the task"),
+        }
+    }
+}
+
+/// So that cores working in `std::io::Result` can spawn tasks.
 #[cfg(feature = "std")]
 impl From<JoinError> for std::io::Error {
     fn from(e: JoinError) -> Self {
-        match e {
-            JoinError::TimedOut => std::io::Error::new(std::io::ErrorKind::TimedOut, e),
-            _ => std::io::Error::other(e),
-        }
+        crate::io::Error::from(e).into()
     }
 }
 

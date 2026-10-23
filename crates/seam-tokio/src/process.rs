@@ -17,7 +17,7 @@ use crate::Tokio;
 
 async_op!(perform [] Tokio, RunCommand, |_s, op| {
     let o = tokio::process::Command::from(op.0).output().await?;
-    Ok(Output { code: o.status.code(), stdout: o.stdout, stderr: o.stderr })
+    seam_core::io::Result::Ok(Output { code: o.status.code(), stdout: o.stdout, stderr: o.stderr })
 });
 
 impl Perform<Exit> for Tokio {
@@ -55,26 +55,30 @@ fn not_piped(message: &'static str) -> io::Error {
 }
 
 impl Child {
-    fn stdin(&mut self) -> io::Result<&mut ChildStdin> {
-        self.stdin.as_mut().ok_or_else(|| {
+    fn stdin(&mut self) -> seam_core::io::Result<&mut ChildStdin> {
+        crate::sio(self.stdin.as_mut().ok_or_else(|| {
             not_piped("the child's standard input is not piped to this scope, or is closed")
-        })
+        }))
     }
 
-    fn stdout(&mut self) -> io::Result<&mut ChildStdout> {
-        self.stdout
-            .as_mut()
-            .ok_or_else(|| not_piped("the child's standard output is not piped to this scope"))
+    fn stdout(&mut self) -> seam_core::io::Result<&mut ChildStdout> {
+        crate::sio(
+            self.stdout
+                .as_mut()
+                .ok_or_else(|| not_piped("the child's standard output is not piped to this scope")),
+        )
     }
 
-    fn stderr(&mut self) -> io::Result<&mut ChildStderr> {
-        self.stderr
-            .as_mut()
-            .ok_or_else(|| not_piped("the child's standard error is not piped to this scope"))
+    fn stderr(&mut self) -> seam_core::io::Result<&mut ChildStderr> {
+        crate::sio(
+            self.stderr
+                .as_mut()
+                .ok_or_else(|| not_piped("the child's standard error is not piped to this scope")),
+        )
     }
 
     /// Cancel-safe: the child keeps running, and can be waited for again.
-    pub(crate) async fn wait(&mut self) -> io::Result<ExitStatus> {
+    pub(crate) async fn wait(&mut self) -> seam_core::io::Result<ExitStatus> {
         self.stdin = None;
         if let Some(s) = self.status {
             return Ok(s);
@@ -87,18 +91,22 @@ impl Child {
     }
 
     #[cfg_attr(not(feature = "time"), allow(dead_code))]
-    pub(crate) fn stdout_mut(&mut self) -> io::Result<&mut ChildStdout> {
+    pub(crate) fn stdout_mut(&mut self) -> seam_core::io::Result<&mut ChildStdout> {
         self.stdout()
     }
 
     #[cfg_attr(not(feature = "time"), allow(dead_code))]
-    pub(crate) fn stderr_mut(&mut self) -> io::Result<&mut ChildStderr> {
+    pub(crate) fn stderr_mut(&mut self) -> seam_core::io::Result<&mut ChildStderr> {
         self.stderr()
     }
 }
 
 impl AsyncProvide<SpawnChild<Child>> for Tokio {
-    async fn provide_async(&mut self, op: SpawnChild<Child>, _: Token) -> io::Result<Child> {
+    async fn provide_async(
+        &mut self,
+        op: SpawnChild<Child>,
+        _: Token,
+    ) -> seam_core::io::Result<Child> {
         let mut cmd = tokio::process::Command::from(op.command);
         cmd.stdin(stdio(op.stdin))
             .stdout(stdio(op.stdout))
@@ -116,7 +124,7 @@ impl AsyncProvide<SpawnChild<Child>> for Tokio {
 
     /// Closes the pipes, so a child blocked writing to one cannot hang the
     /// wait, then waits for it.
-    async fn close_async(&mut self, mut child: Child) -> io::Result<()> {
+    async fn close_async(&mut self, mut child: Child) -> seam_core::io::Result<()> {
         child.stdout = None;
         child.stderr = None;
         child.wait().await.map(drop)
@@ -140,11 +148,11 @@ impl Perform<CloseStdin> for Child {
 
 /// Starts killing the child; [`Wait`] then reports how it ended.
 impl Perform<Kill> for Child {
-    fn perform(&mut self, _: Kill) -> io::Result<()> {
+    fn perform(&mut self, _: Kill) -> seam_core::io::Result<()> {
         if self.status.is_some() {
             return Ok(());
         }
-        self.inner.start_kill()
+        crate::sio(self.inner.start_kill())
     }
 }
 

@@ -3,7 +3,7 @@
 //! These borrow their buffer, so bound them for every lifetime:
 //!
 //! ```
-//! use std::io;
+//! use seam_core::io;
 //! use seam_core::Perform;
 //! use seam_core::ops::io::{Flush, Read, WriteAll};
 //!
@@ -27,8 +27,9 @@
 //! }
 //! ```
 
-use std::io;
-use std::vec::Vec;
+use crate::io;
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
 
 /// Read into the buffer. Returns how many bytes were read; 0 means end of
 /// input.
@@ -36,7 +37,8 @@ use std::vec::Vec;
 pub struct Read<'a>(pub &'a mut [u8]);
 
 /// Read everything that is left, appending it to the vector. Returns how
-/// many bytes were read.
+/// many bytes were read. Needs the `alloc` feature.
+#[cfg(feature = "alloc")]
 #[derive(Debug)]
 pub struct ReadToEnd<'a>(pub &'a mut Vec<u8>);
 
@@ -54,10 +56,14 @@ pub struct Flush;
 
 operations! {
     Read<'_> => io::Result<usize>;
-    ReadToEnd<'_> => io::Result<usize>;
     Write<'_> => io::Result<usize>;
     WriteAll<'_> => io::Result<()>;
     Flush => io::Result<()>;
+}
+
+#[cfg(feature = "alloc")]
+operations! {
+    ReadToEnd<'_> => io::Result<usize>;
 }
 
 /// Each gives up with `io::ErrorKind::TimedOut`.
@@ -76,6 +82,7 @@ mod timeouts {
 
     /// The deadline covers the whole read. What arrived before it is left
     /// in the buffer, as when `ReadToEnd` fails for any other reason.
+    #[cfg(feature = "alloc")]
     impl TimesOut for ReadToEnd<'_> {
         type Expired = io::Result<usize>;
         fn timed_out(self) -> Self::Expired {

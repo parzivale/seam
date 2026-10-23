@@ -7,7 +7,7 @@
     unix
 ))]
 
-use std::io;
+use seam::io;
 use std::process::Command;
 
 use seam::ops::io::{ReadToEnd, WriteAll};
@@ -36,7 +36,7 @@ where
         child.perform(ReadToEnd(&mut out))?;
         let status = child.perform(Wait)?;
         if !status.success() {
-            return Err(io::Error::other(format!("filter failed: {status:?}")));
+            return Err(io::Error::other("the filter failed"));
         }
         Ok(out)
     })
@@ -59,7 +59,7 @@ where
         child.perform_send(ReadToEnd(&mut out)).await?;
         let status = child.perform_send(Wait).await?;
         if !status.success() {
-            return Err(io::Error::other(format!("filter failed: {status:?}")));
+            return Err(io::Error::other("the filter failed"));
         }
         Ok(out)
     })

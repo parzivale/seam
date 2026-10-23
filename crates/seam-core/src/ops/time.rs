@@ -237,10 +237,9 @@ where
 }
 
 /// The `io::Error` an I/O operation that times out fails with.
-#[cfg(feature = "std")]
 #[allow(dead_code)] // used by whichever of io, net and signal are on
-pub(crate) fn io_timed_out() -> std::io::Error {
-    std::io::ErrorKind::TimedOut.into()
+pub(crate) fn io_timed_out() -> crate::io::Error {
+    crate::io::ErrorKind::TimedOut.into()
 }
 
 operations! {

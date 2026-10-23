@@ -1,8 +1,8 @@
 //! Cores written against seam bounds, run in the simulation.
 #![cfg(feature = "full")]
 
+use seam_core::io::{self, ErrorKind};
 use std::ffi::OsString;
-use std::io::{self, ErrorKind};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -197,7 +197,7 @@ fn tcp_in_memory() -> io::Result<()> {
                 let mut buf = [0; 8];
                 assert_eq!(kind(server.perform(Read(&mut buf))), ErrorKind::WouldBlock);
                 client.perform(WriteAll(b"ping"))?;
-                client.perform(Shutdown(std::net::Shutdown::Write))?;
+                client.perform(Shutdown(seam_core::ops::net::How::Write))?;
                 assert_eq!(server.perform(Read(&mut buf))?, 4);
                 assert_eq!(&buf[..4], b"ping");
                 assert_eq!(
@@ -208,7 +208,7 @@ fn tcp_in_memory() -> io::Result<()> {
                 io::Result::Ok(())
             })?;
             // The server's end is gone now that its scope is over.
-            client.perform(Shutdown(std::net::Shutdown::Read))?;
+            client.perform(Shutdown(seam_core::ops::net::How::Read))?;
             assert_eq!(kind(client.perform(WriteAll(b"x"))), ErrorKind::BrokenPipe);
             io::Result::Ok(())
         })

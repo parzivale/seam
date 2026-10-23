@@ -14,16 +14,16 @@ use seam_core::{Perform, Provide, Token};
 
 /// Turns a `WouldBlock` into the `TimedOut` of an expired wait.
 #[allow(dead_code)]
-fn expired<T>(result: std::io::Result<T>) -> std::io::Result<T> {
+fn expired<T>(result: seam_core::io::Result<T>) -> seam_core::io::Result<T> {
     result.map_err(|e| match e.kind() {
-        std::io::ErrorKind::WouldBlock => std::io::ErrorKind::TimedOut.into(),
+        seam_core::io::ErrorKind::WouldBlock => seam_core::io::ErrorKind::TimedOut.into(),
         _ => e,
     })
 }
 
 #[cfg(feature = "net")]
 mod net {
-    use std::io;
+    use seam_core::io;
     use std::net::SocketAddr;
 
     use seam_core::ops::io::{Read, ReadToEnd, Write, WriteAll};
@@ -83,7 +83,7 @@ mod net {
 
 #[cfg(feature = "signal")]
 impl Perform<Timeout<seam_core::ops::signal::CtrlC>> for crate::Sim {
-    fn perform(&mut self, op: Timeout<seam_core::ops::signal::CtrlC>) -> std::io::Result<()> {
+    fn perform(&mut self, op: Timeout<seam_core::ops::signal::CtrlC>) -> seam_core::io::Result<()> {
         expired(self.perform(op.op))
     }
 }

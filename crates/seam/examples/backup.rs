@@ -15,7 +15,7 @@
 //! function. The manifest is written through `CreateAtomic` in a scope, which
 //! is what makes "has a manifest" mean "is complete".
 
-use std::io;
+use seam::io;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -111,7 +111,7 @@ fn backup<F: AtomicWrite>(
     let now = env
         .inspect(WallClock)
         .duration_since(UNIX_EPOCH)
-        .map_err(io::Error::other)?;
+        .map_err(|_| io::Error::other("the clock is set before 1970"))?;
     // Zero-padded, so that sorting names sorts snapshots by time.
     let snapshot = dest.join(format!("{:020}", now.as_secs()));
     env.perform(CreateDir::all(&snapshot))?;

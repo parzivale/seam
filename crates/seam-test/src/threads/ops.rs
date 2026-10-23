@@ -139,7 +139,7 @@ mod signal {
 
     /// Blocks until a Ctrl-C is raised, with `ThreadSim::raise_ctrl_c`.
     impl Perform<CtrlC> for ThreadSim {
-        fn perform(&mut self, _: CtrlC) -> std::io::Result<()> {
+        fn perform(&mut self, _: CtrlC) -> seam_core::io::Result<()> {
             self.shared.switch();
             self.shared.wait_until(|waker| {
                 let mut sim = self.shared.sim();
@@ -157,7 +157,10 @@ mod signal {
     /// Blocks at most the timeout on the virtual clock.
     #[cfg(feature = "time")]
     impl Perform<seam_core::ops::time::Timeout<CtrlC>> for ThreadSim {
-        fn perform(&mut self, op: seam_core::ops::time::Timeout<CtrlC>) -> std::io::Result<()> {
+        fn perform(
+            &mut self,
+            op: seam_core::ops::time::Timeout<CtrlC>,
+        ) -> seam_core::io::Result<()> {
             use seam_core::ops::time::TimesOut;
             self.shared.switch();
             self.shared

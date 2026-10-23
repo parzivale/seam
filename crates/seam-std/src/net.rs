@@ -37,57 +37,61 @@ crate::io_ops!(TcpStream);
 impl TcpStream {
     /// Flushes and shuts down both directions. A peer that has already
     /// closed its end leaves nothing to shut down, which counts as success.
-    fn commit(self) -> io::Result<()> {
+    fn commit(self) -> seam_core::io::Result<()> {
         io::Write::flush(&mut &self.0)?;
         match self.0.shutdown(std::net::Shutdown::Both) {
             Err(e) if e.kind() == io::ErrorKind::NotConnected => Ok(()),
-            result => result,
+            result => crate::sio(result),
         }
     }
 }
 
 impl Inspect<Resolve> for Std {
-    fn inspect(&self, op: Resolve) -> io::Result<Vec<SocketAddr>> {
+    fn inspect(&self, op: Resolve) -> seam_core::io::Result<Vec<SocketAddr>> {
         Ok((op.host.as_str(), op.port).to_socket_addrs()?.collect())
     }
 }
 
 impl Provide<TcpConnect<TcpStream>> for Std {
-    fn provide(&mut self, op: TcpConnect<TcpStream>, _: Token) -> io::Result<TcpStream> {
-        std::net::TcpStream::connect(op.addr).map(TcpStream)
+    fn provide(&mut self, op: TcpConnect<TcpStream>, _: Token) -> seam_core::io::Result<TcpStream> {
+        crate::sio(std::net::TcpStream::connect(op.addr).map(TcpStream))
     }
 
-    fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+    fn close(&mut self, stream: TcpStream) -> seam_core::io::Result<()> {
         stream.commit()
     }
 }
 
 impl Provide<TcpBind<TcpListener>> for Std {
-    fn provide(&mut self, op: TcpBind<TcpListener>, _: Token) -> io::Result<TcpListener> {
-        std::net::TcpListener::bind(op.addr).map(TcpListener)
+    fn provide(
+        &mut self,
+        op: TcpBind<TcpListener>,
+        _: Token,
+    ) -> seam_core::io::Result<TcpListener> {
+        crate::sio(std::net::TcpListener::bind(op.addr).map(TcpListener))
     }
 
-    fn close(&mut self, _: TcpListener) -> io::Result<()> {
+    fn close(&mut self, _: TcpListener) -> seam_core::io::Result<()> {
         Ok(())
     }
 }
 
 impl Provide<UdpBind<UdpSocket>> for Std {
-    fn provide(&mut self, op: UdpBind<UdpSocket>, _: Token) -> io::Result<UdpSocket> {
-        std::net::UdpSocket::bind(op.addr).map(UdpSocket)
+    fn provide(&mut self, op: UdpBind<UdpSocket>, _: Token) -> seam_core::io::Result<UdpSocket> {
+        crate::sio(std::net::UdpSocket::bind(op.addr).map(UdpSocket))
     }
 
-    fn close(&mut self, _: UdpSocket) -> io::Result<()> {
+    fn close(&mut self, _: UdpSocket) -> seam_core::io::Result<()> {
         Ok(())
     }
 }
 
 impl Provide<Accept<TcpStream>> for TcpListener {
-    fn provide(&mut self, _: Accept<TcpStream>, _: Token) -> io::Result<TcpStream> {
-        self.0.accept().map(|(stream, _)| TcpStream(stream))
+    fn provide(&mut self, _: Accept<TcpStream>, _: Token) -> seam_core::io::Result<TcpStream> {
+        crate::sio(self.0.accept().map(|(stream, _)| TcpStream(stream)))
     }
 
-    fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+    fn close(&mut self, stream: TcpStream) -> seam_core::io::Result<()> {
         stream.commit()
     }
 }
@@ -103,45 +107,45 @@ impl<B, T, E> Provide<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>
 where
     B: FnOnce(&mut TcpStream) -> Result<T, E> + Send + 'static,
     T: Send + 'static,
-    E: From<io::Error> + Send + 'static,
+    E: From<seam_core::io::Error> + Send + 'static,
 {
     fn provide(
         &mut self,
         op: SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>,
         _: Token,
-    ) -> io::Result<JoinHandle<Result<T, E>>> {
+    ) -> seam_core::io::Result<JoinHandle<Result<T, E>>> {
         let (stream, _) = self.0.accept()?;
         Ok(spawn_connection(stream, op.body))
     }
 
-    fn close(&mut self, task: JoinHandle<Result<T, E>>) -> io::Result<()> {
-        task.finish().map_err(io::Error::from)
+    fn close(&mut self, task: JoinHandle<Result<T, E>>) -> seam_core::io::Result<()> {
+        task.finish().map_err(seam_core::io::Error::from)
     }
 }
 
 impl Perform<Shutdown> for TcpStream {
-    fn perform(&mut self, op: Shutdown) -> io::Result<()> {
-        self.0.shutdown(op.0)
+    fn perform(&mut self, op: Shutdown) -> seam_core::io::Result<()> {
+        crate::sio(self.0.shutdown(op.0.into()))
     }
 }
 
 impl Perform<SendTo<'_>> for UdpSocket {
-    fn perform(&mut self, op: SendTo<'_>) -> io::Result<usize> {
-        self.0.send_to(op.buf, op.addr)
+    fn perform(&mut self, op: SendTo<'_>) -> seam_core::io::Result<usize> {
+        crate::sio(self.0.send_to(op.buf, op.addr))
     }
 }
 
 impl Perform<RecvFrom<'_>> for UdpSocket {
-    fn perform(&mut self, op: RecvFrom<'_>) -> io::Result<(usize, SocketAddr)> {
-        self.0.recv_from(op.0)
+    fn perform(&mut self, op: RecvFrom<'_>) -> seam_core::io::Result<(usize, SocketAddr)> {
+        crate::sio(self.0.recv_from(op.0))
     }
 }
 
 macro_rules! addr_queries {
     ($($ty:ty: $($op:ident => $method:ident),*;)*) => {$($(
         impl Inspect<$op> for $ty {
-            fn inspect(&self, _: $op) -> io::Result<SocketAddr> {
-                self.0.$method()
+            fn inspect(&self, _: $op) -> seam_core::io::Result<SocketAddr> {
+                crate::sio(self.0.$method())
             }
         }
     )*)*};
@@ -181,8 +185,8 @@ mod timeouts {
         }
     }
 
-    fn timed_out() -> io::Error {
-        io::ErrorKind::TimedOut.into()
+    fn timed_out() -> seam_core::io::Error {
+        seam_core::io::ErrorKind::TimedOut.into()
     }
 
     /// A socket whose blocking calls can be given a timeout.
@@ -224,7 +228,7 @@ mod timeouts {
         dir: Dir,
         left: Option<Duration>,
         f: impl FnOnce(&S) -> io::Result<R>,
-    ) -> io::Result<R> {
+    ) -> seam_core::io::Result<R> {
         let set = |t| match dir {
             Dir::Read => sock.set_read(t),
             Dir::Write => sock.set_write(t),
@@ -246,19 +250,19 @@ mod timeouts {
         };
         result.map_err(|e| match e.kind() {
             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => timed_out(),
-            _ => e,
+            _ => e.into(),
         })
     }
 
     impl Perform<Timeout<Read<'_>>> for TcpStream {
-        fn perform(&mut self, op: Timeout<Read<'_>>) -> io::Result<usize> {
+        fn perform(&mut self, op: Timeout<Read<'_>>) -> seam_core::io::Result<usize> {
             let buf = op.op.0;
             within(&self.0, Dir::Read, Some(op.after), |mut s| s.read(buf))
         }
     }
 
     impl Perform<Timeout<ReadToEnd<'_>>> for TcpStream {
-        fn perform(&mut self, op: Timeout<ReadToEnd<'_>>) -> io::Result<usize> {
+        fn perform(&mut self, op: Timeout<ReadToEnd<'_>>) -> seam_core::io::Result<usize> {
             let deadline = Deadline::after(op.after);
             let out = op.op.0;
             let mut chunk = [0; 8192];
@@ -267,7 +271,7 @@ mod timeouts {
                 let n = match within(&self.0, Dir::Read, deadline.left(), |mut s| {
                     s.read(&mut chunk)
                 }) {
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) if e.kind() == seam_core::io::ErrorKind::Interrupted => continue,
                     r => r?,
                 };
                 if n == 0 {
@@ -280,21 +284,21 @@ mod timeouts {
     }
 
     impl Perform<Timeout<Write<'_>>> for TcpStream {
-        fn perform(&mut self, op: Timeout<Write<'_>>) -> io::Result<usize> {
+        fn perform(&mut self, op: Timeout<Write<'_>>) -> seam_core::io::Result<usize> {
             let buf = op.op.0;
             within(&self.0, Dir::Write, Some(op.after), |mut s| s.write(buf))
         }
     }
 
     impl Perform<Timeout<WriteAll<'_>>> for TcpStream {
-        fn perform(&mut self, op: Timeout<WriteAll<'_>>) -> io::Result<()> {
+        fn perform(&mut self, op: Timeout<WriteAll<'_>>) -> seam_core::io::Result<()> {
             let deadline = Deadline::after(op.after);
             let mut buf = op.op.0;
             while !buf.is_empty() {
                 match within(&self.0, Dir::Write, deadline.left(), |mut s| s.write(buf)) {
-                    Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                    Ok(0) => return Err(seam_core::io::ErrorKind::WriteZero.into()),
                     Ok(n) => buf = &buf[n..],
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) if e.kind() == seam_core::io::ErrorKind::Interrupted => {}
                     Err(e) => return Err(e),
                 }
             }
@@ -303,7 +307,10 @@ mod timeouts {
     }
 
     impl Perform<Timeout<RecvFrom<'_>>> for UdpSocket {
-        fn perform(&mut self, op: Timeout<RecvFrom<'_>>) -> io::Result<(usize, SocketAddr)> {
+        fn perform(
+            &mut self,
+            op: Timeout<RecvFrom<'_>>,
+        ) -> seam_core::io::Result<(usize, SocketAddr)> {
             let buf = op.op.0;
             within(&self.0, Dir::Read, Some(op.after), |s| s.recv_from(buf))
         }
@@ -314,26 +321,26 @@ mod timeouts {
             &mut self,
             op: Timeout<TcpConnect<TcpStream>>,
             _: Token,
-        ) -> io::Result<TcpStream> {
+        ) -> seam_core::io::Result<TcpStream> {
             if op.after.is_zero() {
                 return Err(op.op.timed_out()); // a connection cannot be made instantly
             }
             std::net::TcpStream::connect_timeout(&op.op.addr, op.after)
                 .map_err(|e| match e.kind() {
                     io::ErrorKind::WouldBlock => timed_out(),
-                    _ => e,
+                    _ => e.into(),
                 })
                 .map(TcpStream)
         }
 
-        fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+        fn close(&mut self, stream: TcpStream) -> seam_core::io::Result<()> {
             stream.commit()
         }
     }
 
     impl TcpListener {
         /// Accepts a connection, polling until the deadline.
-        fn accept_within(&self, after: Duration) -> io::Result<std::net::TcpStream> {
+        fn accept_within(&self, after: Duration) -> seam_core::io::Result<std::net::TcpStream> {
             let deadline = Deadline::after(after);
             self.0.set_nonblocking(true)?;
             let mut nap = Duration::from_micros(500);
@@ -342,7 +349,7 @@ mod timeouts {
                     Ok((stream, _)) => break Ok(stream),
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(e) => break Err(e),
+                    Err(e) => break Err(e.into()),
                 }
                 let left = deadline.left();
                 if left.is_some_and(|l| l.is_zero()) {
@@ -360,11 +367,15 @@ mod timeouts {
     }
 
     impl Provide<Timeout<Accept<TcpStream>>> for TcpListener {
-        fn provide(&mut self, op: Timeout<Accept<TcpStream>>, _: Token) -> io::Result<TcpStream> {
+        fn provide(
+            &mut self,
+            op: Timeout<Accept<TcpStream>>,
+            _: Token,
+        ) -> seam_core::io::Result<TcpStream> {
             self.accept_within(op.after).map(TcpStream)
         }
 
-        fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+        fn close(&mut self, stream: TcpStream) -> seam_core::io::Result<()> {
             stream.commit()
         }
     }
@@ -377,19 +388,19 @@ mod timeouts {
     where
         B: FnOnce(&mut TcpStream) -> Result<T, E> + Send + 'static,
         T: Send + 'static,
-        E: From<io::Error> + Send + 'static,
+        E: From<seam_core::io::Error> + Send + 'static,
     {
         fn provide(
             &mut self,
             op: Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>,
             _: Token,
-        ) -> io::Result<JoinHandle<Result<T, E>>> {
+        ) -> seam_core::io::Result<JoinHandle<Result<T, E>>> {
             let stream = self.accept_within(op.after)?;
             Ok(spawn_connection(stream, op.op.body))
         }
 
-        fn close(&mut self, task: JoinHandle<Result<T, E>>) -> io::Result<()> {
-            task.finish().map_err(io::Error::from)
+        fn close(&mut self, task: JoinHandle<Result<T, E>>) -> seam_core::io::Result<()> {
+            task.finish().map_err(seam_core::io::Error::from)
         }
     }
 }
@@ -401,7 +412,7 @@ fn spawn_connection<B, T, E>(stream: std::net::TcpStream, body: B) -> JoinHandle
 where
     B: FnOnce(&mut TcpStream) -> Result<T, E> + Send + 'static,
     T: Send + 'static,
-    E: From<io::Error> + Send + 'static,
+    E: From<seam_core::io::Error> + Send + 'static,
 {
     crate::task::spawn(
         move || {

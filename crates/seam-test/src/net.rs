@@ -5,9 +5,11 @@
 //! dropped, as on a real network. Nothing blocks: reading an empty stream,
 //! or accepting with no connection pending, fails with `WouldBlock`.
 
+use seam_core::io::{self, ErrorKind};
 use std::collections::{BTreeMap, VecDeque};
-use std::io::{self, ErrorKind};
-use std::net::{IpAddr, Ipv4Addr, Shutdown as How, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+use seam_core::ops::net::How;
 use std::string::String;
 use std::task::Waker;
 use std::vec::Vec;

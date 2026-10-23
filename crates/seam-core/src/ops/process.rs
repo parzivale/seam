@@ -18,7 +18,7 @@
 //! fails, panics or is cancelled, the child is killed.
 //!
 //! ```
-//! use std::io;
+//! use seam_core::io;
 //! use std::process::Command;
 //! use seam_core::{Acquire, Perform, Provide};
 //! use seam_core::ops::io::{ReadToEnd, WriteAll};
@@ -38,7 +38,7 @@
 //!         child.perform(ReadToEnd(&mut out))?;
 //!         let status = child.perform(Wait)?;
 //!         if !status.success() {
-//!             return Err(io::Error::other(format!("{program} failed: {status:?}")));
+//!             return Err(io::Error::other("the filter failed"));
 //!         }
 //!         Ok(out)
 //!     })
@@ -46,7 +46,7 @@
 //! ```
 //!
 //! ```
-//! use std::io;
+//! use seam_core::io;
 //! use std::process::Command;
 //! use seam_core::Perform;
 //! use seam_core::ops::process::{Exit, RunCommand};
@@ -62,9 +62,9 @@
 //! }
 //! ```
 
+use crate::io;
 use core::convert::Infallible;
 use core::marker::PhantomData;
-use std::io;
 use std::process::Command;
 use std::vec::Vec;
 

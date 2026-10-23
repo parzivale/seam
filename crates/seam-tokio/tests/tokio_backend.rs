@@ -1,8 +1,8 @@
 //! Runs the Tokio backend against the real OS.
 #![cfg(feature = "full")]
 
+use seam_core::io;
 use std::future::{Future, poll_fn};
-use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::pin;

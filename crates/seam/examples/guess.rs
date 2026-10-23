@@ -9,8 +9,8 @@
 //! cargo run -p seam-rs --example guess --features std,test,io-std,random
 //! ```
 
+use seam::io;
 use std::cmp::Ordering;
-use std::io;
 
 use seam::ops::random::RandomU64;
 use seam::ops::stdio::{Print, ReadLine};

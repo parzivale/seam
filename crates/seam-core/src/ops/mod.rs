@@ -29,7 +29,7 @@
 //!
 //! ```
 //! # #[cfg(feature = "fs")] {
-//! use std::io;
+//! use seam_core::io;
 //! use seam_core::prelude::*;
 //! use seam_core::ops::fs::Open;
 //! use seam_core::ops::io::WriteAll;

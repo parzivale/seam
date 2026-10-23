@@ -1,7 +1,7 @@
 //! Simulated child processes: filters scripted by handlers.
 #![cfg(feature = "full")]
 
-use std::io;
+use seam_core::io;
 use std::process::Command;
 
 use seam_core::ops::io::{Read, ReadToEnd, WriteAll};

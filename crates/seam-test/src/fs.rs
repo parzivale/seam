@@ -5,9 +5,9 @@
 //! There are no symlinks or permissions. Files are inodes, so an open handle keeps working after its
 //! path is renamed or removed, as on Unix.
 
+use seam_core::io::{self, ErrorKind};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::io::{self, ErrorKind};
 use std::path::{Component, Path, PathBuf};
 use std::string::String;
 use std::time::SystemTime;

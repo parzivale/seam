@@ -1,7 +1,7 @@
 //! Runs the std backend against the real OS.
 #![cfg(feature = "full")]
 
-use std::io;
+use seam_core::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -380,7 +380,9 @@ mod threads {
                 let client = Spawn::<_, JoinHandle<io::Result<Vec<u8>>>>::new(move || {
                     client_std.acquire(TcpConnect::<TcpStream>::new(addr), |_, s| {
                         s.perform(WriteAll(b"hello"))?;
-                        s.perform(seam_core::ops::net::Shutdown(std::net::Shutdown::Write))?;
+                        s.perform(seam_core::ops::net::Shutdown(
+                            seam_core::ops::net::How::Write,
+                        ))?;
                         let mut reply = Vec::new();
                         s.perform(ReadToEnd(&mut reply))?;
                         Ok(reply)

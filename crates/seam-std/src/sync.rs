@@ -183,7 +183,8 @@ impl<T> Perform<Channel<Sender<T>, Receiver<T>>> for Std {
     fn perform(&mut self, op: Channel<Sender<T>, Receiver<T>>) -> (Sender<T>, Receiver<T>) {
         let chan = Arc::new(Chan {
             queue: Mutex::new(Queue {
-                items: VecDeque::new(),
+                // A bounded queue is allocated once, at its full size.
+                items: VecDeque::with_capacity(op.capacity.unwrap_or(0)),
                 capacity: op.capacity,
                 senders: 1,
                 receiver: true,

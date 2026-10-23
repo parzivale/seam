@@ -53,11 +53,8 @@ fn stdio(pipe: Pipe) -> Stdio {
     }
 }
 
-fn not_piped(stream: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::BrokenPipe,
-        format!("the child's {stream} is not piped to this scope, or is closed"),
-    )
+fn not_piped(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::BrokenPipe, message)
 }
 
 fn status(s: std::process::ExitStatus) -> ExitStatus {
@@ -66,21 +63,21 @@ fn status(s: std::process::ExitStatus) -> ExitStatus {
 
 impl Child {
     fn stdin(&mut self) -> io::Result<&mut ChildStdin> {
-        self.stdin
-            .as_mut()
-            .ok_or_else(|| not_piped("standard input"))
+        self.stdin.as_mut().ok_or_else(|| {
+            not_piped("the child's standard input is not piped to this scope, or is closed")
+        })
     }
 
     fn stdout(&mut self) -> io::Result<&mut ChildStdout> {
         self.stdout
             .as_mut()
-            .ok_or_else(|| not_piped("standard output"))
+            .ok_or_else(|| not_piped("the child's standard output is not piped to this scope"))
     }
 
     fn stderr(&mut self) -> io::Result<&mut ChildStderr> {
         self.stderr
             .as_mut()
-            .ok_or_else(|| not_piped("standard error"))
+            .ok_or_else(|| not_piped("the child's standard error is not piped to this scope"))
     }
 
     fn wait(&mut self) -> io::Result<ExitStatus> {

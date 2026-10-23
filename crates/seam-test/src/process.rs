@@ -13,7 +13,7 @@
 //! runs at spawn, and otherwise when its scope closes; nothing is printed
 //! for a child that is killed or abandoned. Nothing in a `Sim` waits, so
 //! timed operations on a child behave like untimed ones.
-#![allow(clippy::disallowed_types)] // the scripts and log are shared with child handles
+#![allow(clippy::disallowed_types)] // the scripts, and each child's input, are shared with child handles
 
 use std::boxed::Box;
 use std::collections::VecDeque;
@@ -23,7 +23,7 @@ use std::format;
 use std::io::{self, ErrorKind};
 use std::process::Command;
 use std::string::{String, ToString};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::vec::Vec;
 
 use seam_core::ops::io::{Flush, Read, ReadToEnd, Write, WriteAll};
@@ -37,24 +37,35 @@ use crate::{Sim, error};
 
 type Handler = Box<dyn FnMut(&Command, &[u8]) -> io::Result<Output> + Send + Sync>;
 
-/// The scripts and the log, shared with the children they run.
-#[derive(Default)]
-struct Inner {
-    handlers: Vec<(OsString, Handler)>,
-    log: Vec<Invocation>,
+/// The scripts, shared with the children they run.
+#[derive(Default, Clone)]
+struct Handlers(Arc<Mutex<Vec<(OsString, Handler)>>>);
+
+impl Handlers {
+    fn lock(&self) -> MutexGuard<'_, Vec<(OsString, Handler)>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn has(&self, program: &std::ffi::OsStr) -> bool {
+        self.lock().iter().any(|(p, _)| p == program)
+    }
+
+    fn run(&self, cmd: &Command, stdin: &[u8]) -> io::Result<Output> {
+        let mut handlers = self.lock();
+        let (_, handler) = handlers
+            .iter_mut()
+            .find(|(p, _)| p == cmd.get_program())
+            .ok_or_else(|| error(ErrorKind::NotFound, "no handler scripted for this program"))?;
+        handler(cmd, stdin)
+    }
 }
 
-#[derive(Default, Clone)]
+#[derive(Default)]
 pub(crate) struct Processes {
-    inner: Arc<Mutex<Inner>>,
+    handlers: Handlers,
+    log: Vec<Invocation>,
     /// Fixed responses from world files, shared with their handlers.
     rules: Rules,
-}
-
-impl Processes {
-    fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
-    }
 }
 
 /// A fixed response to a program, with its arguments if they must match.
@@ -67,17 +78,32 @@ struct Rule {
 type Rules = Arc<Mutex<Vec<Rule>>>;
 
 /// A command the core ran or spawned, recorded for assertions.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
+#[derive(Debug, Clone)]
 pub struct Invocation {
     /// The program.
     pub program: OsString,
     /// Its arguments, without the program name.
     pub args: Vec<OsString>,
-    /// What was written to its standard input: empty for `RunCommand`, and
-    /// for a spawned child, what it was given before it ran.
-    pub stdin: Vec<u8>,
+    /// Filled once, by the child, when it runs or ends.
+    stdin: Arc<OnceLock<Vec<u8>>>,
 }
+
+impl Invocation {
+    /// What was written to its standard input: nothing for `RunCommand`;
+    /// for a spawned child, what it was given before it ran, or before it
+    /// was killed or dropped. Empty while the child has yet to run.
+    pub fn stdin(&self) -> &[u8] {
+        self.stdin.get().map_or(&[], Vec::as_slice)
+    }
+}
+
+impl PartialEq for Invocation {
+    fn eq(&self, other: &Self) -> bool {
+        self.program == other.program && self.args == other.args && self.stdin() == other.stdin()
+    }
+}
+
+impl Eq for Invocation {}
 
 /// The panic payload a simulated [`Exit`] unwinds with. Use [`catch_exit`]
 /// to turn it back into an exit code.
@@ -122,7 +148,7 @@ impl Sim {
     ///     std::io::Result::Ok(out)
     /// }).unwrap();
     /// assert_eq!(shouted, b"QUIET");
-    /// assert_eq!(sim.invocations()[0].stdin, b"quiet");
+    /// assert_eq!(sim.invocations()[0].stdin(), b"quiet");
     /// # }
     /// ```
     pub fn on_command_with_stdin(
@@ -131,10 +157,10 @@ impl Sim {
         handler: impl FnMut(&Command, &[u8]) -> io::Result<Output> + Send + Sync + 'static,
     ) -> &mut Self {
         let program = program.into();
-        let mut inner = self.process.lock();
-        inner.handlers.retain(|(p, _)| *p != program);
-        inner.handlers.push((program, Box::new(handler)));
-        drop(inner);
+        let mut handlers = self.process.handlers.lock();
+        handlers.retain(|(p, _)| *p != program);
+        handlers.push((program, Box::new(handler)));
+        drop(handlers);
         self
     }
 
@@ -181,43 +207,35 @@ impl Sim {
     }
 
     /// Every command the core has run or spawned, in order.
-    pub fn invocations(&self) -> Vec<Invocation> {
-        self.process.lock().log.clone()
+    pub fn invocations(&self) -> &[Invocation] {
+        &self.process.log
     }
-}
 
-/// Records `cmd` and returns its index in the log, failing with `NotFound`
-/// if no handler is scripted for it.
-fn record(inner: &mut Inner, cmd: &Command) -> io::Result<usize> {
-    inner.log.push(Invocation {
-        program: cmd.get_program().to_os_string(),
-        args: cmd.get_args().map(|a| a.to_os_string()).collect(),
-        stdin: Vec::new(),
-    });
-    if !inner.handlers.iter().any(|(p, _)| p == cmd.get_program()) {
-        return Err(error(
-            ErrorKind::NotFound,
-            "no handler scripted for this program",
-        ));
+    /// Records `cmd`, failing with `NotFound` if no handler is scripted for
+    /// it. Returns its index, and the cell for its input.
+    fn record(&mut self, cmd: &Command) -> io::Result<(usize, Arc<OnceLock<Vec<u8>>>)> {
+        let stdin = Arc::new(OnceLock::new());
+        self.process.log.push(Invocation {
+            program: cmd.get_program().to_os_string(),
+            args: cmd.get_args().map(|a| a.to_os_string()).collect(),
+            stdin: Arc::clone(&stdin),
+        });
+        if !self.process.handlers.has(cmd.get_program()) {
+            return Err(error(
+                ErrorKind::NotFound,
+                "no handler scripted for this program",
+            ));
+        }
+        Ok((self.process.log.len() - 1, stdin))
     }
-    Ok(inner.log.len() - 1)
-}
-
-fn run(inner: &mut Inner, cmd: &Command, stdin: &[u8]) -> io::Result<Output> {
-    let (_, handler) = inner
-        .handlers
-        .iter_mut()
-        .find(|(p, _)| p == cmd.get_program())
-        .ok_or_else(|| error(ErrorKind::NotFound, "no handler scripted for this program"))?;
-    handler(cmd, stdin)
 }
 
 impl Perform<RunCommand> for Sim {
     fn perform(&mut self, op: RunCommand) -> io::Result<Output> {
         let cmd = op.0;
-        let mut inner = self.process.lock();
-        record(&mut inner, &cmd)?;
-        run(&mut inner, &cmd, &[])
+        let (_, stdin) = self.record(&cmd)?;
+        let _ = stdin.set(Vec::new());
+        self.process.handlers.run(&cmd, &[])
     }
 }
 
@@ -225,8 +243,10 @@ impl Perform<RunCommand> for Sim {
 /// scripted handler runs when its output is first needed. See the
 /// [module docs](self).
 pub struct Child {
-    processes: Processes,
+    handlers: Handlers,
     entry: usize,
+    /// The log's record of this child's input.
+    given: Arc<OnceLock<Vec<u8>>>,
     command: Command,
     pipes: [Pipe; 3],
     stdin: Vec<u8>,
@@ -271,12 +291,8 @@ impl Child {
     fn run(&mut self) -> &mut Ran {
         if self.ran.is_none() {
             self.stdin_open = false;
-            let mut inner = self.processes.lock();
-            if let Some(entry) = inner.log.get_mut(self.entry) {
-                entry.stdin = self.stdin.clone();
-            }
-            let result = run(&mut inner, &self.command, &self.stdin);
-            drop(inner);
+            self.record_input();
+            let result = self.handlers.run(&self.command, &self.stdin);
             let ran = match result {
                 Ok(out) => {
                     let route = |pipe: Pipe, bytes: Vec<u8>| match pipe {
@@ -368,6 +384,11 @@ impl Child {
         Ok(ExitStatus { code })
     }
 
+    /// Puts the input so far in the log, once.
+    fn record_input(&self) {
+        let _ = self.given.set(self.stdin.clone());
+    }
+
     /// Output the child inherited, for the `Sim` to print.
     fn take_inherited(&mut self) -> (Vec<u8>, Vec<u8>) {
         self.ran
@@ -390,10 +411,11 @@ impl Sim {
 
 impl Provide<SpawnChild<Child>> for Sim {
     fn provide(&mut self, op: SpawnChild<Child>, _: Token) -> io::Result<Child> {
-        let entry = record(&mut self.process.lock(), &op.command)?;
+        let (entry, given) = self.record(&op.command)?;
         let mut child = Child {
-            processes: self.process.clone(),
+            handlers: self.process.handlers.clone(),
             entry,
+            given,
             command: op.command,
             pipes: [op.stdin, op.stdout, op.stderr],
             stdin: Vec::new(),
@@ -480,9 +502,7 @@ impl Perform<Kill> for Child {
     fn perform(&mut self, _: Kill) -> io::Result<()> {
         if self.ran.is_none() {
             self.stdin_open = false;
-            if let Some(entry) = self.processes.lock().log.get_mut(self.entry) {
-                entry.stdin = self.stdin.clone();
-            }
+            self.record_input();
             self.ran = Some(Ran {
                 stdout: VecDeque::new(),
                 stderr: VecDeque::new(),
@@ -492,6 +512,14 @@ impl Perform<Kill> for Child {
             });
         }
         Ok(())
+    }
+}
+
+/// A child dropped before it ran (its scope failed) leaves its input in the
+/// log all the same.
+impl Drop for Child {
+    fn drop(&mut self) {
+        self.record_input();
     }
 }
 

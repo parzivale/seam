@@ -45,7 +45,7 @@ fn a_child_runs_on_its_input() -> io::Result<()> {
     assert!(status.success());
     let ran = &sim.invocations()[0];
     assert_eq!(
-        (ran.program.to_str(), ran.stdin.as_slice()),
+        (ran.program.to_str(), ran.stdin()),
         (Some("tr"), &b"hello there"[..])
     );
     Ok(())
@@ -172,4 +172,18 @@ fn children_on_the_runtime_and_threads() {
         })
     });
     assert_eq!(out.unwrap(), b"THREADED");
+}
+
+/// A child whose scope fails before it runs still leaves its input in the
+/// log, and the log is a plain slice of the `Sim`.
+#[test]
+fn an_abandoned_child_records_its_input() {
+    let mut sim = shouting();
+    let result = sim.acquire(SpawnChild::<Child>::new(Command::new("tr")), |_, child| {
+        child.perform(WriteAll(b"half"))?;
+        Err::<(), _>(io::Error::other("give up"))
+    });
+    assert!(result.is_err());
+    let log: &[seam_test::Invocation] = sim.invocations();
+    assert_eq!(log[0].stdin(), b"half");
 }

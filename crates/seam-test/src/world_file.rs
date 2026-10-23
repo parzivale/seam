@@ -825,7 +825,7 @@ impl Sim {
                     for (n, (pos, words, stdin)) in want.iter().enumerate() {
                         match got.get(n) {
                             Some(g) if g == words => {
-                                let given = &log[n].stdin;
+                                let given = log[n].stdin();
                                 if let Some(stdin) = stdin.as_ref().filter(|s| *s != given) {
                                     fail(
                                         failures,

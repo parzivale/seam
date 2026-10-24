@@ -78,6 +78,14 @@
 //! operation blocks the thread while it runs. For real async I/O, use
 //! `seam-tokio`.
 //!
+//! Nothing stops an async core on a runtime from using `Std`, and that is
+//! fine for operations that never wait: `Now`, `WallClock`, `Var`, `Args`,
+//! `CurrentDir`, `TempDir`, `SetVar`, `RemoveVar`, `FillRandom` and `Exit`.
+//! Everything else (files, sockets, processes, stdio, sleeping, channels,
+//! threads, DNS) blocks the runtime's thread for as long as it takes, which
+//! stalls every task on that thread. Under a runtime, take those from
+//! `seam-tokio`.
+//!
 //! # Features
 //!
 //! One per capability group: `fs`, `net`, `time`, `env`, `process`,

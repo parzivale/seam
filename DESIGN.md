@@ -473,6 +473,13 @@ with generation counters (runtime detection of stale handles).
   implement both (`seam-tokio` does this with a macro).
 - `seam-tokio` futures are `Send` and are tested on Tokio's multithreaded
   runtime.
+- Raising does not make a backend non-blocking: a raised `Std` operation
+  blocks the runtime's thread. That is documented, not prevented. Blocking
+  only some operations from being raised was considered (a marker per
+  backend and operation that the async lifts require) and dropped: it is
+  slow rather than wrong, is sometimes what a program wants (a CLI under
+  `block_on`, a test, an instant operation like `Now`), and would cost two
+  traits and a list of marks per backend.
 
 ## Shared state
 
@@ -621,6 +628,12 @@ Not implemented yet:
   child in `ExitStatus`, and the process's own ID.
 - **Environment.** `SetCurrentDir` (safe in std, unlike `set_var`) and
   listing every variable.
+- **A lint for blocking under async.** A `dylint` lint, in its own crate,
+  warning where a concrete backend meets an async bound for an operation it
+  does not mark as instant (`block_on(core(&mut Std::new()))` with a core
+  that reads files). It needs a per-backend `Instant<O>` marker for the
+  operations that never wait, and checks after monomorphization; users
+  would run it with `cargo dylint`.
 - **Polish.** An optional run-time message on `io::Error` behind `alloc`;
   `Sim::list_dir` for tests; buffer-filling forms of the std-only
   primitives that still return owned data (`Args`, `Var`, `NextEntry`).

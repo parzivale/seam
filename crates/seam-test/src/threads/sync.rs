@@ -11,10 +11,7 @@
 
 #![allow(clippy::disallowed_types)] // the simulated shared state itself
 
-use seam_core::ops::sync::{
-    Channel, Load, RecvError, RecvMsg, SendError, SendMsg, Share, Store, TryRecvMsg, TrySendMsg,
-    Update,
-};
+use seam_core::ops::sync::{Channel, Load, RecvError, RecvMsg, SendError, SendMsg, Share, Update};
 use std::sync::{Arc, Mutex};
 use std::task::Waker;
 use std::vec::Vec;
@@ -133,13 +130,6 @@ impl<T> Perform<SendMsg<T>> for Sender<T> {
     }
 }
 
-impl<T> Perform<TrySendMsg<T>> for Sender<T> {
-    fn perform(&mut self, op: TrySendMsg<T>) -> Result<(), SendError<T>> {
-        self.1.switch();
-        self.0.perform(op)
-    }
-}
-
 /// Blocks until a message arrives, or every sender is gone.
 impl<T> Perform<RecvMsg<T>> for Receiver<T> {
     fn perform(&mut self, _: RecvMsg<T>) -> Result<T, RecvError> {
@@ -148,13 +138,6 @@ impl<T> Perform<RecvMsg<T>> for Receiver<T> {
             Err(RecvError::Empty) => None,
             done => Some(done),
         })
-    }
-}
-
-impl<T> Perform<TryRecvMsg<T>> for Receiver<T> {
-    fn perform(&mut self, op: TryRecvMsg<T>) -> Result<T, RecvError> {
-        self.1.switch();
-        self.0.perform(op)
     }
 }
 
@@ -171,12 +154,6 @@ impl<T> Perform<Share<T, Shared<T>>> for ThreadSim {
 impl<T: Clone> Inspect<Load<T>> for Shared<T> {
     fn inspect(&self, _: Load<T>) -> T {
         self.with(|v| v.clone())
-    }
-}
-
-impl<T> Perform<Store<T>> for Shared<T> {
-    fn perform(&mut self, op: Store<T>) {
-        self.with(|v| *v = op.0);
     }
 }
 

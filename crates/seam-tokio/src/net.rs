@@ -4,8 +4,8 @@ use std::io;
 use std::net::SocketAddr;
 
 use seam_core::ops::net::{
-    Accept, How, LocalAddr, PeerAddr, RecvFrom, Resolve, ResolveInto, SendTo, Shutdown, TcpBind,
-    TcpConnect, UdpBind,
+    Accept, How, LocalAddr, PeerAddr, RecvFrom, ResolveInto, SendTo, Shutdown, TcpBind, TcpConnect,
+    UdpBind,
 };
 use seam_core::{AsyncProvide, Inspect, Token};
 
@@ -34,7 +34,8 @@ pub struct TcpListener(pub(crate) tokio::net::TcpListener);
 #[derive(Debug)]
 pub struct UdpSocket(pub(crate) tokio::net::UdpSocket);
 
-io_ops!(TcpStream);
+read_ops!([] TcpStream);
+write_ops!([] TcpStream);
 
 impl TcpStream {
     /// Flushes and shuts down the write half, so the peer sees end of input.
@@ -139,9 +140,6 @@ where
     }
 }
 
-async_op!(inspect ['a] Tokio, Resolve<'a>, |_s, op| {
-    seam_core::io::Result::Ok(tokio::net::lookup_host((op.host, op.port)).await?.collect())
-});
 async_op!(inspect ['a] Tokio, ResolveInto<'a>, |_s, op| {
     let mut n = 0;
     for addr in tokio::net::lookup_host((op.host, op.port)).await? {

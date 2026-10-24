@@ -94,8 +94,9 @@
 //! feature. `time`, `random`, `io`, `net`, `io-std`, `signal`, `rt` and
 //! `sync` need no std; `fs`, `process` and `env` need std's types (`Path`,
 //! `Command`, `OsString`) and turn on `std`. `alloc` adds the operations
-//! that return owned data (`ReadToEnd`, `Resolve`, `ReadLine`), each of
-//! which has a buffer-filling form that does not need it, and boxed tasks.
+//! that return owned data (`read_to_end`, `read_file`, `resolve`, ...),
+//! each of which has a buffer-filling primitive beneath it, and boxed
+//! tasks.
 //! `full` turns on every group. With `std`, [`block_on`](future::block_on)
 //! parks the thread instead of spinning.
 #![forbid(unsafe_code)]
@@ -103,7 +104,7 @@
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
-#[cfg(feature = "std")]
+#[cfg(any(feature = "std", test))]
 extern crate std;
 
 pub mod acquire;
@@ -115,6 +116,7 @@ pub mod ops;
 pub mod prelude;
 mod push;
 pub mod root;
+mod three_ways;
 
 pub use acquire::{Acquire, Acquisition, AsyncAcquire, AsyncProvide, Provide, Token};
 pub use capability::{Capability, Inspect, Perform};

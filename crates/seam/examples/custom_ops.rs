@@ -6,9 +6,9 @@
 //! and gives it two implementations:
 //!
 //! - `Memory`, a plain in-memory map, for unit tests of the core.
-//! - `FileStore<C, F>`, which keeps the store in a file. It is a capability
-//!   built from other capabilities: it needs only `ReadToString` and
-//!   `CreateAtomic` from whatever `C` it wraps, so it runs on the real
+//! - `FileStore<C, F, R>`, which keeps the store in a file. It is a
+//!   capability built from other capabilities: it needs only to open files
+//!   read-only and `CreateAtomic` from whatever `C` it wraps, so it runs on the real
 //!   filesystem in `main` and on the simulated one in tests. Every write
 //!   goes through an atomic file in a scope, so a crash, an error or a
 //!   cancellation mid-write never leaves a half-written store.
@@ -22,26 +22,28 @@
 //! ```
 
 use seam::io;
+use seam::ops::fs::{Open, ReadOnly, read_to_string};
+use seam::ops::io::{Read, Write, write_all};
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::path::PathBuf;
 
 use seam::ops::env::TempDir;
-use seam::ops::fs::{CreateAtomic, ReadToString};
-use seam::ops::io::WriteAll;
+use seam::ops::fs::CreateAtomic;
 use seam::prelude::*;
 
 /// The store's operations.
 mod kv {
     use seam::io;
 
-    use seam::{InKind, Operation, Query};
+    use seam::{InKind, Operation};
 
     /// The kind of these operations, so a root can tell which part serves
     /// them.
     pub struct Kv;
 
-    /// Read a key.
+    /// Read a key. Not a query: a store kept in a file opens it to read
+    /// it, and opening a file is an acquisition, which takes `&mut`.
     pub struct Get(pub String);
 
     /// Set a key.
@@ -50,7 +52,6 @@ mod kv {
     impl Operation for Get {
         type Outcome = io::Result<Option<String>>;
     }
-    impl Query for Get {}
 
     impl Operation for Put {
         type Outcome = io::Result<()>;
@@ -67,9 +68,9 @@ use kv::{Get, Put};
 
 /// The core: counts visits to a page. Knows nothing about where the store
 /// lives.
-fn visit<K: Inspect<Get> + Perform<Put>>(store: &mut K, page: &str) -> io::Result<u64> {
+fn visit<K: Perform<Get> + Perform<Put>>(store: &mut K, page: &str) -> io::Result<u64> {
     let key = format!("visits:{page}");
-    let n = match store.inspect(Get(key.clone()))? {
+    let n = match store.perform(Get(key.clone()))? {
         Some(n) => {
             n.parse::<u64>().map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidData, "a count is not a number")
@@ -87,8 +88,8 @@ fn visit<K: Inspect<Get> + Perform<Put>>(store: &mut K, page: &str) -> io::Resul
 struct Memory(BTreeMap<String, String>);
 impl Capability for Memory {}
 
-impl Inspect<Get> for Memory {
-    fn inspect(&self, op: Get) -> io::Result<Option<String>> {
+impl Perform<Get> for Memory {
+    fn perform(&mut self, op: Get) -> io::Result<Option<String>> {
         Ok(self.0.get(&op.0).cloned())
     }
 }
@@ -101,27 +102,32 @@ impl Perform<Put> for Memory {
 }
 
 /// A store kept in a file of `key\tvalue` lines, on top of any filesystem
-/// capability `C` whose atomic files are of type `F`.
-struct FileStore<C, F> {
+/// capability `C` whose atomic files are of type `F` and read-only files of
+/// type `R`.
+struct FileStore<C, F, R> {
     fs: C,
     path: PathBuf,
-    atomic: PhantomData<fn() -> F>,
+    files: PhantomData<fn() -> (F, R)>,
 }
-impl<C, F> Capability for FileStore<C, F> {}
+impl<C, F, R> Capability for FileStore<C, F, R> {}
 
-impl<C, F> FileStore<C, F> {
+impl<C, F, R> FileStore<C, F, R> {
     fn new(fs: C, path: impl Into<PathBuf>) -> Self {
         Self {
             fs,
             path: path.into(),
-            atomic: PhantomData,
+            files: PhantomData,
         }
     }
 }
 
-impl<C: for<'a> Inspect<ReadToString<'a>>, F> FileStore<C, F> {
-    fn load(&self) -> io::Result<BTreeMap<String, String>> {
-        match self.fs.inspect(ReadToString::new(&self.path)) {
+impl<C, F, R> FileStore<C, F, R>
+where
+    C: for<'a> Provide<Open<'a, ReadOnly, R>>,
+    R: for<'a> Perform<Read<'a>>,
+{
+    fn load(&mut self) -> io::Result<BTreeMap<String, String>> {
+        match read_to_string(&mut self.fs, &self.path) {
             Ok(text) => Ok(text
                 .lines()
                 .filter_map(|line| line.split_once('\t'))
@@ -133,16 +139,21 @@ impl<C: for<'a> Inspect<ReadToString<'a>>, F> FileStore<C, F> {
     }
 }
 
-impl<C: for<'a> Inspect<ReadToString<'a>>, F> Inspect<Get> for FileStore<C, F> {
-    fn inspect(&self, op: Get) -> io::Result<Option<String>> {
+impl<C, F, R> Perform<Get> for FileStore<C, F, R>
+where
+    C: for<'a> Provide<Open<'a, ReadOnly, R>>,
+    R: for<'a> Perform<Read<'a>>,
+{
+    fn perform(&mut self, op: Get) -> io::Result<Option<String>> {
         Ok(self.load()?.remove(&op.0))
     }
 }
 
-impl<C, F> Perform<Put> for FileStore<C, F>
+impl<C, F, R> Perform<Put> for FileStore<C, F, R>
 where
-    C: for<'a> Inspect<ReadToString<'a>> + for<'a> Provide<CreateAtomic<'a, F>>,
-    F: for<'a> Perform<WriteAll<'a>>,
+    C: for<'a> Provide<Open<'a, ReadOnly, R>> + for<'a> Provide<CreateAtomic<'a, F>>,
+    F: for<'a> Perform<Write<'a>>,
+    R: for<'a> Perform<Read<'a>>,
 {
     /// Rewrites the whole file, atomically: the new file is renamed into
     /// place only if the scope succeeds, that is, if every line was written.
@@ -151,7 +162,7 @@ where
         map.insert(op.0, op.1);
         self.fs.acquire(CreateAtomic::new(&self.path), |_, file| {
             for (k, v) in &map {
-                file.perform(WriteAll(format!("{k}\t{v}\n").as_bytes()))?;
+                write_all(file, format!("{k}\t{v}\n").as_bytes())?;
             }
             Ok(())
         })
@@ -160,13 +171,13 @@ where
 
 fn main() -> io::Result<()> {
     use seam::stdlib::Std;
-    use seam::stdlib::fs::AtomicFile;
+    use seam::stdlib::fs::{AtomicFile, File};
 
     let path = Std::new().inspect(TempDir).join("seam-custom-ops.tsv");
     // The program's root: `Std` for the OS, the file store for `Kv`.
     let mut root = seam::root! {
         std: Std::new() => [seam::kinds::Env],
-        store: FileStore::<_, AtomicFile>::new(Std::new(), path) => [kv::Kv],
+        store: FileStore::<_, AtomicFile, File<ReadOnly>>::new(Std::new(), path) => [kv::Kv],
     };
     let n = visit(&mut root, "home")?;
     // `main` is the edge, so it may print directly.
@@ -181,12 +192,12 @@ fn main() -> io::Result<()> {
 mod tests {
     use seam::ops::fs::{NextEntry, ReadDir};
     use seam::test::Sim;
-    use seam::test::fs::AtomicFile;
+    use seam::test::fs::{AtomicFile, File};
 
     use super::*;
 
     /// One behaviour, checked against both implementations.
-    fn counts_visits(store: &mut (impl Inspect<Get> + Perform<Put>)) {
+    fn counts_visits(store: &mut (impl Perform<Get> + Perform<Put>)) {
         assert_eq!(visit(store, "home").unwrap(), 1);
         assert_eq!(visit(store, "home").unwrap(), 2);
         assert_eq!(visit(store, "about").unwrap(), 1);
@@ -199,7 +210,7 @@ mod tests {
 
     #[test]
     fn in_a_simulated_file() {
-        let mut store = FileStore::<_, AtomicFile>::new(Sim::new(), "/tmp/kv.tsv");
+        let mut store = FileStore::<_, AtomicFile, File<ReadOnly>>::new(Sim::new(), "/tmp/kv.tsv");
         counts_visits(&mut store);
         assert_eq!(
             store.fs.file("/tmp/kv.tsv").unwrap(),
@@ -216,7 +227,7 @@ mod tests {
     fn corrupt_store_is_an_error() {
         let mut sim = Sim::new();
         sim.add_file("/tmp/kv.tsv", "visits:home\tmany\n");
-        let mut store = FileStore::<_, AtomicFile>::new(sim, "/tmp/kv.tsv");
+        let mut store = FileStore::<_, AtomicFile, File<ReadOnly>>::new(sim, "/tmp/kv.tsv");
         assert_eq!(
             visit(&mut store, "home").unwrap_err().kind(),
             io::ErrorKind::InvalidData

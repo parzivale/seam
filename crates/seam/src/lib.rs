@@ -16,26 +16,30 @@
 //!
 //! ```toml
 //! [dependencies]
-//! seam = { package = "seam-rs", version = "0.2", features = ["fs", "io-std", "std"] }
+//! seam = { package = "seam-rs", version = "0.3", features = ["fs", "io-std", "std"] }
 //!
 //! [dev-dependencies]
-//! seam = { package = "seam-rs", version = "0.2", features = ["test"] }
+//! seam = { package = "seam-rs", version = "0.3", features = ["test"] }
 //! ```
 //!
 //! ```
 //! # #[cfg(all(feature = "std", feature = "test", feature = "fs", feature = "io-std"))] {
 //! use seam::io;
 //! use seam::prelude::*;
-//! use seam::ops::fs::ReadToString;
-//! use seam::ops::stdio::Print;
+//! use seam::ops::fs::{Open, ReadOnly, read_to_string};
+//! use seam::ops::io::{Read, Write};
+//! use seam::ops::stdio::{OpenStdout, print};
 //!
-//! /// The core. It can read files and print, and nothing else.
-//! fn shout<C>(c: &mut C, path: &str) -> io::Result<()>
+//! /// The core. It can open files read-only and print, and nothing else.
+//! /// `F` and `O` are the backend's file and stdout types, inferred.
+//! fn shout<C, F, O>(c: &mut C, path: &str) -> io::Result<()>
 //! where
-//!     C: for<'a> Inspect<ReadToString<'a>> + for<'a> Perform<Print<'a>>,
+//!     C: for<'a> Provide<Open<'a, ReadOnly, F>> + Provide<OpenStdout<O>>,
+//!     F: for<'a> Perform<Read<'a>>,
+//!     O: for<'a> Perform<Write<'a>>,
 //! {
-//!     let text = c.inspect(ReadToString::new(path))?;
-//!     c.perform(Print(text.to_uppercase().as_bytes()))
+//!     let text = read_to_string(c, path)?;
+//!     print(c, text.to_uppercase().as_bytes())
 //! }
 //!
 //! // In `main`, the real world:
@@ -53,8 +57,11 @@
 //!
 //! **Operations** describe effects as values. Each is a type implementing
 //! [`Operation`], which names what it produces. Read-only ones are also
-//! [`Query`]s. Ready-made operations for the OS are in [`ops`], and you can
-//! define your own (see the `custom_ops` example).
+//! [`Query`]s. Ready-made operations for the OS are in [`ops`]: the
+//! primitives a backend provides, and beside them the helpers built from
+//! those (`read_file`, `write_all`, lines through `BufReader`, `print`, ...),
+//! in sync, `_async` and `_send` forms. You can define your own operations
+//! too (see the `custom_ops` example).
 //!
 //! **Capabilities** run operations. [`Inspect<Q>`] runs a query through
 //! `&self`; [`Perform<O>`] runs anything through `&mut self`. Every
@@ -115,15 +122,15 @@
 //! use seam::io;
 //! use seam::prelude::*;
 //! use seam::ops::fs::CreateAtomic;
-//! use seam::ops::io::WriteAll;
+//! use seam::ops::io::{Write, write_all};
 //!
 //! fn save<C, F>(c: &mut C, text: &str) -> io::Result<()>
 //! where
 //!     C: for<'a> Provide<CreateAtomic<'a, F>>,
-//!     F: for<'a> Perform<WriteAll<'a>>,
+//!     F: for<'a> Perform<Write<'a>>,
 //! {
 //!     c.acquire(CreateAtomic::new("notes.txt"), |_c, file| {
-//!         file.perform(WriteAll(text.as_bytes()))
+//!         write_all(file, text.as_bytes())
 //!     })
 //! }
 //! # }
@@ -182,7 +189,7 @@
 //! | `time`, `random` | operation types; no std needed |
 //! | `rt` | task operations (`Spawn`, `Join`, ...); no std needed |
 //! | `sync` | channels and shared cells; no std needed |
-//! | `alloc` | `Spawn::boxed`, `SpawnWith::boxed` (tasks of unnameable type, boxed); `ReadToEnd`, `Resolve`, `ReadLine` |
+//! | `alloc` | `Spawn::boxed`, `SpawnWith::boxed` (tasks of unnameable type, boxed); the helpers returning owned data (`read_to_end`, `resolve`, ...) |
 //! | `io`, `net`, `io-std`, `signal` | operation types; no std needed |
 //! | `fs`, `process`, `env` | operation types (links std for `Path`, `Command`, `OsString`) |
 //! | `full` | every group above |
@@ -200,15 +207,15 @@
 //! ```toml
 //! # The library holding the core: operations only.
 //! [dependencies]
-//! seam = { package = "seam-rs", version = "0.2", features = ["fs", "time"] }
+//! seam = { package = "seam-rs", version = "0.3", features = ["fs", "time"] }
 //!
 //! # The binary: also picks the real backend...
 //! [dependencies]
-//! seam = { package = "seam-rs", version = "0.2", features = ["fs", "time", "std"] }
+//! seam = { package = "seam-rs", version = "0.3", features = ["fs", "time", "std"] }
 //!
 //! # ...and its tests pick the simulation.
 //! [dev-dependencies]
-//! seam = { package = "seam-rs", version = "0.2", features = ["test"] }
+//! seam = { package = "seam-rs", version = "0.3", features = ["test"] }
 //! ```
 #![forbid(unsafe_code)]
 #![no_std]

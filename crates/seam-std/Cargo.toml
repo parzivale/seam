@@ -22,7 +22,8 @@ env = ["seam-core/env"]
 process = ["seam-core/process"]
 random = ["seam-core/random"]
 io-std = ["seam-core/io-std"]
-sync = ["seam-core/sync"]
+# `time` too: `try_send` and `try_recv` are a timeout of zero.
+sync = ["time", "seam-core/sync"]
 # Tasks on OS threads.
 rt = ["seam-core/rt"]
 full = ["fs", "net", "time", "env", "process", "random", "io-std", "sync", "rt"]

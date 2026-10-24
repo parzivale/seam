@@ -13,12 +13,12 @@
 //! # #[cfg(all(feature = "time", feature = "random"))] {
 //! use core::time::Duration;
 //! use seam_core::{Inspect, Perform};
-//! use seam_core::ops::random::RandomU64;
+//! use seam_core::ops::random::{FillRandom, random_u64};
 //! use seam_core::ops::time::{Now, Sleep};
 //! use seam_test::Sim;
 //!
-//! fn backoff<C: Perform<RandomU64> + Perform<Sleep>>(c: &mut C) {
-//!     let ms = 100 + c.perform(RandomU64) % 100;
+//! fn backoff<C: for<'a> Perform<FillRandom<'a>> + Perform<Sleep>>(c: &mut C) {
+//!     let ms = 100 + random_u64(c) % 100;
 //!     c.perform(Sleep(Duration::from_millis(ms)));
 //! }
 //!
@@ -41,7 +41,7 @@
 //! | fs | `add_file`, `add_dir` | `file`, `exists` |
 //! | env | `set_var`, `remove_var`, `set_args`, `set_current_dir` | inspect `Var` |
 //! | net | `add_host` | bind and connect sockets |
-//! | io-std | `feed_stdin` | `stdout`, `take_stdout` |
+//! | io-std | `feed_stdin` | `stdout`, `stderr`, `take_stdout` |
 //! | process | `on_command` | `invocations`, `catch_exit` |
 //! | signal | `raise_ctrl_c` | |
 //!
@@ -56,21 +56,28 @@
 //! use seam_core::io;
 //! use seam_core::prelude::*;
 //! use seam_core::ops::env::Var;
-//! use seam_core::ops::fs::{ReadToString, WriteFile};
-//! use seam_core::ops::stdio::Print;
+//! use seam_core::ops::fs::{Open, ReadOnly, WriteOnly, read_to_string, write_file};
+//! use seam_core::ops::io::{Read, Write};
+//! use seam_core::ops::stdio::{OpenStdout, print};
 //! use seam_test::Sim;
 //!
 //! /// The core under test: greets `$USER` and remembers it did.
-//! fn greet<C>(c: &mut C) -> io::Result<()>
+//! fn greet<C, R, W, O>(c: &mut C) -> io::Result<()>
 //! where
-//!     C: for<'a> Inspect<Var<'a>> + for<'a> Inspect<ReadToString<'a>> + for<'a> Perform<WriteFile<'a>> + for<'a> Perform<Print<'a>>,
+//!     C: for<'a> Inspect<Var<'a>>
+//!         + for<'a> Provide<Open<'a, ReadOnly, R>>
+//!         + for<'a> Provide<Open<'a, WriteOnly, W>>
+//!         + Provide<OpenStdout<O>>,
+//!     R: for<'a> Perform<Read<'a>>,
+//!     W: for<'a> Perform<Write<'a>>,
+//!     O: for<'a> Perform<Write<'a>>,
 //! {
 //!     let user = c.inspect(Var::new("USER")).map(|u| u.to_string_lossy().into_owned());
 //!     let user = user.unwrap_or_else(|| "stranger".into());
-//!     let seen = c.inspect(ReadToString::new("/tmp/seen")).unwrap_or_default();
+//!     let seen = read_to_string(c, "/tmp/seen").unwrap_or_default();
 //!     let word = if seen.lines().any(|l| l == user) { "Welcome back" } else { "Hello" };
-//!     c.perform(Print(format!("{word}, {user}!\n").as_bytes()))?;
-//!     c.perform(WriteFile::new("/tmp/seen", &format!("{seen}{user}\n")))
+//!     print(c, format!("{word}, {user}!\n").as_bytes())?;
+//!     write_file(c, "/tmp/seen", &format!("{seen}{user}\n"))
 //! }
 //!
 //! let mut sim = Sim::new();
@@ -140,7 +147,7 @@ pub mod rt;
 #[cfg(feature = "signal")]
 mod signal;
 #[cfg(feature = "io-std")]
-mod stdio;
+pub mod stdio;
 #[cfg(feature = "sync")]
 pub mod sync;
 #[cfg(feature = "rt")]
@@ -152,6 +159,7 @@ mod timeouts;
 #[cfg(any(
     feature = "fs",
     feature = "net",
+    feature = "io-std",
     all(feature = "time", feature = "std")
 ))]
 mod world;
@@ -180,13 +188,12 @@ pub struct Sim {
     #[cfg(any(
         feature = "fs",
         feature = "net",
+        feature = "io-std",
         all(feature = "time", feature = "std")
     ))]
     world: world::Shared,
     #[cfg(feature = "process")]
     process: process::Processes,
-    #[cfg(feature = "io-std")]
-    stdio: stdio::Stdio,
     #[cfg(feature = "signal")]
     ctrl_c: u32,
     #[cfg(feature = "rt")]
@@ -220,13 +227,12 @@ impl Sim {
             #[cfg(any(
                 feature = "fs",
                 feature = "net",
+                feature = "io-std",
                 all(feature = "time", feature = "std")
             ))]
             world: world::Shared::default(),
             #[cfg(feature = "process")]
             process: process::Processes::default(),
-            #[cfg(feature = "io-std")]
-            stdio: stdio::Stdio::default(),
             #[cfg(feature = "signal")]
             ctrl_c: 0,
             #[cfg(feature = "rt")]
@@ -278,7 +284,6 @@ impl core::fmt::Debug for Sim {
     feature = "fs",
     feature = "net",
     feature = "process",
-    feature = "io-std",
     feature = "signal"
 ))]
 fn error(kind: seam_core::io::ErrorKind, msg: &'static str) -> seam_core::io::Error {

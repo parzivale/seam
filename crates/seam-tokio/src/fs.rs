@@ -1,71 +1,79 @@
 //! Filesystem operations, and the [`File`], [`AtomicFile`] and [`Dir`]
 //! handles.
 
+use core::marker::PhantomData;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use seam_core::ops::fs::{
-    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, NextEntry, Open, ReadDir,
-    ReadFile, ReadToString, RemoveDir, RemoveFile, Rename, SweepAtomic, WriteFile,
+    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Mode, NextEntry, Open,
+    ReadDir, Readable, RemoveDir, RemoveFile, Rename, SetLen, Stat, SyncAll, SyncData, Writable,
 };
 use seam_core::{AsyncProvide, Token};
 use tokio::io::AsyncWriteExt;
 
 use crate::Tokio;
-use seam_core::ops::fs::{SetLen, Stat, SyncAll, SyncData};
 
-/// Implements the file handle operations for a wrapper around a
-/// `tokio::fs::File`.
-macro_rules! file_ops {
-    ($ty:ty) => {
-        async_op!(perform [] $ty, seam_core::ops::io::Seek, |s, op| {
+/// Implements the operations every open file has: `Seek` and `Stat`.
+macro_rules! any_file_ops {
+    ([$($g:tt)*] $ty:ty) => {
+        async_op!(perform [$($g)*] $ty, seam_core::ops::io::Seek, |s, op| {
             tokio::io::AsyncSeekExt::seek(&mut s.0, op.0.into()).await
         });
-        async_op!(perform [] $ty, SetLen, |s, op| s.0.set_len(op.0).await);
-        async_op!(perform [] $ty, SyncAll, |s, _op| s.0.sync_all().await);
-        async_op!(perform [] $ty, SyncData, |s, _op| s.0.sync_data().await);
-        async_op!(inspect [] $ty, Stat, |s, _op| s.0.metadata().await.map(file_info));
+        async_op!(inspect [$($g)*] $ty, Stat, |s, _op| s.0.metadata().await.map(file_info));
     };
 }
 
-/// An open file, acquired with [`Open`]. Read and write it with the `io`
-/// operations.
+/// Implements the operations a writable file has: `SetLen` and the syncs.
+macro_rules! writable_file_ops {
+    ([$($g:tt)*] $ty:ty) => {
+        async_op!(perform [$($g)*] $ty, SetLen, |s, op| s.0.set_len(op.0).await);
+        async_op!(perform [$($g)*] $ty, SyncAll, |s, _op| s.0.sync_all().await);
+        async_op!(perform [$($g)*] $ty, SyncData, |s, _op| s.0.sync_data().await);
+    };
+}
+
+/// An open file in mode `M`, acquired with [`Open`]. It performs `Read` if
+/// `M` is readable, and `Write`, `Flush`, `SetLen`, `SyncAll` and
+/// `SyncData` if `M` is writable; `Seek` and `Stat` in any mode.
 ///
 /// When its scope succeeds, a file opened for writing is flushed and synced,
 /// and an error is returned from the scope. Otherwise it is dropped. Tokio
 /// writes in the background, so writes still in flight when a failed or
 /// cancelled scope drops the file may or may not land.
 #[derive(Debug)]
-pub struct File(tokio::fs::File, Writable);
+pub struct File<M>(tokio::fs::File, PhantomData<fn() -> M>);
 
-io_ops!(File);
-file_ops!(File);
+read_ops!([M: Readable] File<M>);
+write_ops!([M: Writable] File<M>);
+any_file_ops!([M: Mode] File<M>);
+writable_file_ops!([M: Writable] File<M>);
 
-/// Whether a [`File`] was opened for writing. Only those are synced on
-/// close; some platforms refuse to sync a read-only handle.
-#[derive(Debug, Clone, Copy)]
-struct Writable(bool);
-
-impl AsyncProvide<Open<'_, File>> for Tokio {
-    async fn provide_async(&mut self, op: Open<'_, File>, _: Token) -> seam_core::io::Result<File> {
+impl<M: Mode> AsyncProvide<Open<'_, M, File<M>>> for Tokio {
+    async fn provide_async(
+        &mut self,
+        op: Open<'_, M, File<M>>,
+        _: Token,
+    ) -> seam_core::io::Result<File<M>> {
         let o = op.options;
         crate::sio(
             tokio::fs::OpenOptions::new()
-                .read(o.read)
-                .write(o.write)
-                .append(o.append)
+                .read(M::READ)
+                .write(M::WRITE && !M::APPEND)
+                .append(M::APPEND)
                 .truncate(o.truncate)
                 .create(o.create)
                 .create_new(o.create_new)
                 .open(op.path)
                 .await
-                .map(|f| File(f, Writable(o.write || o.append))),
+                .map(|f| File(f, PhantomData)),
         )
     }
 
-    async fn close_async(&mut self, mut file: File) -> seam_core::io::Result<()> {
-        if !file.1.0 {
+    async fn close_async(&mut self, mut file: File<M>) -> seam_core::io::Result<()> {
+        // Only writable files are synced; some platforms refuse to sync a
+        // read-only handle.
+        if !M::WRITE {
             return Ok(());
         }
         file.0.flush().await?;
@@ -84,8 +92,9 @@ impl AsyncProvide<Open<'_, File>> for Tokio {
 #[derive(Debug)]
 pub struct AtomicFile(tokio::fs::File, Pending);
 
-io_ops!(AtomicFile);
-file_ops!(AtomicFile);
+write_ops!([] AtomicFile);
+any_file_ops!([] AtomicFile);
+writable_file_ops!([] AtomicFile);
 
 /// The temporary file of an [`AtomicFile`], deleted on drop unless it was
 /// renamed into place.
@@ -113,7 +122,7 @@ impl Drop for Pending {
     }
 }
 
-/// A fresh temporary path beside `target`, named so that [`SweepAtomic`]
+/// A fresh temporary path beside `target`, named so that `sweep_atomic`
 /// recognises it.
 fn temp_path(target: &Path) -> PathBuf {
     use std::hash::{BuildHasher, Hasher, RandomState};
@@ -188,34 +197,6 @@ impl AsyncProvide<CreateAtomic<'_, AtomicFile>> for Tokio {
     }
 }
 
-async_op!(perform ['a] Tokio, SweepAtomic<'a>, |_s, op| {
-    // The blocking task needs its own copy of the directory's path.
-    let (dir, older_than) = (op.dir.to_path_buf(), op.older_than);
-    blocking(move || {
-        let now = SystemTime::now();
-        let mut removed = 0;
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            if !SweepAtomic::is_temp_name(&entry.file_name()) {
-                continue;
-            }
-            let age = now.duration_since(entry.metadata()?.modified()?).unwrap_or_default();
-            if age >= older_than {
-                match std::fs::remove_file(entry.path()) {
-                    Ok(()) => removed += 1,
-                    // Finished or cleaned up by its writer in the meantime.
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(seam_core::io::Error::from(e)),
-                }
-            }
-        }
-        Ok(removed)
-    })
-    .await
-});
-
-async_op!(inspect ['a] Tokio, ReadFile<'a>, |_s, op| tokio::fs::read(op.path).await);
-async_op!(inspect ['a] Tokio, ReadToString<'a>, |_s, op| tokio::fs::read_to_string(op.path).await);
 async_op!(inspect ['a] Tokio, Metadata<'a>, |_s, op| tokio::fs::metadata(op.path).await.map(file_info));
 
 /// A directory being listed, acquired with [`ReadDir`]. Perform
@@ -241,14 +222,7 @@ async_op!(perform [] Dir, NextEntry, |s, _op| {
     s.0.next_entry().await.map(|e| e.map(|e| e.path()))
 });
 
-async_op!(perform ['a] Tokio, WriteFile<'a>, |_s, op| tokio::fs::write(op.path, op.contents).await);
-async_op!(perform ['a] Tokio, CreateDir<'a>, |_s, op| {
-    if op.recursive {
-        tokio::fs::create_dir_all(op.path).await
-    } else {
-        tokio::fs::create_dir(op.path).await
-    }
-});
+async_op!(perform ['a] Tokio, CreateDir<'a>, |_s, op| tokio::fs::create_dir(op.path).await);
 async_op!(perform ['a] Tokio, RemoveFile<'a>, |_s, op| tokio::fs::remove_file(op.path).await);
 async_op!(perform ['a] Tokio, RemoveDir<'a>, |_s, op| {
     if op.recursive {
@@ -282,4 +256,4 @@ fn file_info(m: std::fs::Metadata) -> FileInfo {
 // Every capability type opts in to seam's lifts.
 impl seam_core::Capability for AtomicFile {}
 impl seam_core::Capability for Dir {}
-impl seam_core::Capability for File {}
+impl<M> seam_core::Capability for File<M> {}

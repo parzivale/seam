@@ -4,7 +4,7 @@ Sans-effect programming for Rust.
 
 ```toml
 [dependencies]
-seam = { package = "seam-rs", version = "0.2", features = ["fs", "std"] }
+seam = { package = "seam-rs", version = "0.3", features = ["fs", "std"] }
 ```
 
 The crates are published as `seam-rs`, `seam-rs-core`, `seam-rs-std`,
@@ -20,14 +20,52 @@ A function's bounds are an audit of what it can do:
 
 ```rust
 use seam::prelude::*;
-use seam::ops::random::RandomU64;
+use seam::ops::random::{FillRandom, random_u64};
 use seam::ops::time::Sleep;
 use core::time::Duration;
 
 /// Can sleep and draw random numbers. Nothing else.
-fn jitter<C: Perform<RandomU64> + Perform<Sleep>>(c: &mut C) {
-    let ms = c.perform(RandomU64) % 100;
+fn jitter<C: for<'a> Perform<FillRandom<'a>> + Perform<Sleep>>(c: &mut C) {
+    let ms = random_u64(c) % 100;
     c.perform(Sleep(Duration::from_millis(ms)));
+}
+```
+
+## Primitives and helpers
+
+The operations are **primitives**: the smallest effects a backend must
+provide, such as `Read` and `Write` on a handle, `Open` a file, `FillRandom`.
+Everything that can be built from them is, in seam-core, as plain functions
+next to the operations: `read_exact`, `write_all`, `read_file`,
+`write_file`, `create_dir_all`, `resolve`, `random_u64`, `print`,
+`try_send`, and `BufReader` for lines (or any delimited record) from any
+handle. A backend implements only the primitives, and every helper then
+works on it, so lines come from stdin, a socket, a child or a file alike.
+
+Rust cannot be generic over sync and async, or over whether a future is
+`Send`, so each helper comes in three forms, generated from one body:
+`write_all` for sync capabilities, `write_all_async`, and `write_all_send`
+for multithreaded runtimes.
+
+A few effects that could be built from primitives stay primitives, each for
+a reason: `CreateAtomic` (cleanup on a panic or a cancelled future must run
+in `Drop`, where a core cannot perform effects), recursive `RemoveDir`
+(a walk that follows a symlink deletes outside the tree), `CopyFile`
+(platforms copy faster, and copy permissions) and `RunCommand` (collecting
+both outputs means reading two pipes at once).
+
+Files open in a mode named by a type, `Open<'a, ReadOnly, F>`,
+`Open<'a, WriteOnly, F>`, ..., and a backend's handle implements `Read` or
+`Write` only for modes that allow it. A core bounded on `ReadOnly` cannot
+write, and that is checked at compile time:
+
+```rust
+fn word_count<C, F>(c: &mut C, path: &str) -> io::Result<usize>
+where
+    C: for<'a> Provide<Open<'a, ReadOnly, F>>,
+    F: for<'a> Perform<Read<'a>>,
+{
+    Ok(read_to_string(c, path)?.split_whitespace().count())
 }
 ```
 
@@ -53,10 +91,10 @@ and only the binary (or its tests) picks a backend.
 
 | Capability group | Gives you |
 |---|---|
-| `time`, `random` | `Sleep`, `Now`, `RandomU64`, `FillRandom`. No std needed. |
+| `time`, `random` | `Sleep`, `Now`, `FillRandom`, `random_u64`. No std needed. |
 | `rt` | `Spawn`, `SpawnSet`, `SpawnWith`, `Join`, `Detach`, `YieldNow`, `AvailableParallelism`. No std or alloc needed. On `std` the tasks are closures on OS threads; on Tokio and the simulated runtime, futures. |
-| `sync` | Channels (`Channel`, `SendMsg`, `RecvMsg`) and shared cells (`Share`, `Load`, `Store`, `Update`). No std or alloc needed. |
-| `alloc` | `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type; the operations that return owned data (`ReadToEnd`, `Resolve`, `ReadLine`). Each has a no-allocation form that fills a buffer you pass: `ReadExact`, `ResolveInto`, `ReadLineInto`. |
+| `sync` | Channels (`Channel`, `SendMsg`, `RecvMsg`, `try_send`, `try_recv`) and shared cells (`Share`, `Load`, `Update`, `store`). No std or alloc needed. Turns on `time`: the `try_` helpers are a timeout of zero. |
+| `alloc` | `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type; the helpers that return owned data (`read_to_end`, `read_file`, `resolve`, ...). Each has a primitive beneath it that fills a buffer you pass. |
 | `io`, `net`, `io-std`, `signal` | Those operation types. No std needed. |
 | `fs`, `process`, `env` | Those operation types. Links std for their types (`Path`, `Command`, `OsString`). `env` includes `SetVar` and `RemoveVar`, which std serves only through `WritableEnv` (see Roots). |
 | `full` | Every capability group. Still no backend. |
@@ -126,7 +164,7 @@ add to it, so crates built with and without std agree on the type.
 ```rust
 use seam::io;
 
-match c.inspect(ReadToString::new("config.toml")) {
+match read_to_string(c, "config.toml") {
     Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Config::default()),
     other => parse(other?),
 }
@@ -197,13 +235,12 @@ visit(&mut root, "home")?;
 core, assert on what it left behind:
 
 ```rust
-use seam::Perform;
-use seam::ops::fs::WriteFile;
+use seam::ops::fs::write_file;
 use seam::test::Sim;
 
 let mut sim = Sim::with_seed(7);
 sim.add_dir("/data");
-sim.perform(WriteFile::new("/data/out", "ok")).unwrap(); // your core here
+write_file(&mut sim, "/data/out", "ok").unwrap(); // your core here
 assert_eq!(sim.file("/data/out").unwrap(), b"ok");
 ```
 
@@ -260,7 +297,7 @@ a closure, which borrows it and gets the capability back:
 
 ```rust
 c.acquire(CreateAtomic::new("settings.conf"), |c, file| {
-    file.perform(WriteAll(b"..."))?; // an error, a panic, or (with
+    write_all(file, b"...")?;        // an error, a panic, or (with
     Ok(())                           // acquire_async) cancellation here...
 })?;                                 // ...leaves the old file untouched
 ```
@@ -275,7 +312,9 @@ after every possible number of polls.
 
 Inside the scope, a file is read and written with the `io` operations, and
 also moved (`Seek`), truncated or extended (`SetLen`), synced (`SyncAll`,
-`SyncData`) and asked for its metadata (`Stat`).
+`SyncData`) and asked for its metadata (`Stat`). Standard input, output and
+error are handles too (`OpenStdin`, `OpenStdout`, `OpenStderr`), so the
+same helpers read and write them.
 
 A resource reaches a task only through the provider: `SpawnWith` has a
 listener accept a connection into a new task that owns it, running a named
@@ -283,17 +322,12 @@ listener accept a connection into a new task that owns it, running a named
 joined or aborted together. None of the task API allocates in seam itself;
 `alloc` only adds boxed conveniences (`Spawn::boxed`, `SpawnWith::boxed`).
 Temporary files left by a process that was killed outright are cleaned up
-with `SweepAtomic`. Listing a directory works the same way: `ReadDir` lends
+with `sweep_atomic`. Listing a directory works the same way: `ReadDir` lends
 a listing that `NextEntry` steps through one path at a time.
 
-Operations borrow their inputs (paths, contents, names), so describing one
-allocates nothing. Bounds name them for every lifetime, as for buffers:
-
-```rust
-fn load<C: for<'a> Inspect<ReadToString<'a>>>(c: &C, path: &Path) -> io::Result<String> {
-    c.inspect(ReadToString::new(path))
-}
-```
+Operations borrow their inputs (paths, buffers, names), so describing one
+allocates nothing. Bounds name them for every lifetime:
+`for<'a> Perform<Read<'a>>`.
 
 ## World files
 
@@ -356,11 +390,12 @@ match rx.perform(Timeout::new(Duration::from_secs(1), RecvMsg::new())) {
 
 A receive that times out reports `Empty`, a send `Full` with the value
 handed back, I/O `io::ErrorKind::TimedOut`, and a join `JoinError::TimedOut`
-with the task still running. An expired operation had no effect, except
-`ReadToEnd` and `ReadExact`, which keep what arrived, and `WriteAll`, which
-may have written part of its buffer. `Timeout` covers channel sends and receives, socket
-reads and writes, accept (also with `SpawnWith`), connect, `RecvFrom`, joins
-and `CtrlC`, on `seam-std`, `seam-tokio` and the simulation. On the
+with the task still running. An expired operation had no effect.
+`Timeout` wraps primitives: channel sends and receives, reads and writes
+on sockets and children, accept (also with `SpawnWith`), connect,
+`RecvFrom`, waits, joins and `CtrlC`, on `seam-std`, `seam-tokio` and the
+simulation. A helper built from several primitives has no timed form; a
+core that needs one times each primitive against a deadline it keeps. On the
 simulated runtime and threads, timeouts run on the virtual clock, so a test
 can check exactly when one fired.
 

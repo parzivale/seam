@@ -32,7 +32,8 @@ time = ["tokio/time", "seam-core/time"]
 process = ["tokio/process", "io-util", "seam-core/process"]
 io-std = ["tokio/io-std", "io-util", "rt", "seam-core/io-std"]
 signal = ["tokio/signal", "seam-core/signal"]
-sync = ["tokio/sync", "seam-core/sync"]
+# `time` too: `try_send` and `try_recv` are a timeout of zero.
+sync = ["time", "tokio/sync", "seam-core/sync"]
 test-util = ["tokio/test-util"]
 
 

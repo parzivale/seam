@@ -7,11 +7,12 @@ use std::task::Poll;
 use std::time::Duration;
 
 use seam_core::future::{SendInspect, SendPerform};
-use seam_core::ops::fs::{ReadToString, WriteFile};
-use seam_core::ops::sync::{
-    Channel, Load, RecvError, RecvMsg, SendError, SendMsg, Share, Store, TryRecvMsg, TrySendMsg,
-    Update,
-};
+use seam_core::ops::fs::read_to_string_send;
+use seam_core::ops::fs::write_file_send;
+use seam_core::ops::sync::try_recv_send;
+use seam_core::ops::sync::{store, store_send, try_recv, try_send};
+
+use seam_core::ops::sync::{Channel, Load, RecvError, RecvMsg, SendError, SendMsg, Share, Update};
 use seam_core::ops::task::{JoinError, JoinNext, SpawnInto, SpawnSet, YieldNow};
 use seam_core::ops::time::Sleep;
 use seam_core::{AsyncAcquire, Inspect, Perform};
@@ -30,9 +31,9 @@ mod plain {
         let (mut tx, mut rx): (Sender<u8>, Receiver<u8>) = sim.perform(Channel::bounded(1));
         assert_eq!(rx.perform(RecvMsg::new()), Err(RecvError::Empty));
         tx.perform(SendMsg(1)).unwrap();
-        assert_eq!(tx.perform(TrySendMsg(2)), Err(SendError::Full(2)));
+        assert_eq!(try_send(&mut tx, 2), Err(SendError::Full(2)));
         assert_eq!(tx.perform(SendMsg(2)), Err(SendError::Full(2)));
-        assert_eq!(rx.perform(TryRecvMsg::new()), Ok(1));
+        assert_eq!(try_recv(&mut rx), Ok(1));
 
         let mut tx2 = tx.clone();
         drop(tx);
@@ -62,7 +63,7 @@ mod plain {
             [1, 2],
             "both clones see the same value"
         );
-        b.perform(Store(vec![7]));
+        store(&mut b, vec![7]);
         assert_eq!(a.inspect(Load::new()), [7]);
     }
 }
@@ -173,7 +174,7 @@ fn operations_are_atomic_under_cancellation() {
                 }
             }
             drop(tx);
-            while let Ok(v) = rx.perform(TryRecvMsg::new()) {
+            while let Ok(v) = try_recv_send(&mut rx).await {
                 got.push(v);
             }
             (sent, got, cancelled)
@@ -209,7 +210,7 @@ fn update_closes_the_race() {
                         } else {
                             let n = counter.inspect_send(Load::new()).await;
                             sim.perform_send(YieldNow).await; // the window
-                            counter.perform_send(Store(n + 1)).await;
+                            store_send(&mut counter, n + 1).await;
                         }
                     };
                     let _ = set.perform_send(SpawnInto::new(task)).await;
@@ -242,28 +243,37 @@ fn a_worker_pool() {
             seam_test::rt::sync::Sender<u32>,
             seam_test::rt::sync::Receiver<u32>,
         ) = sim.perform(Channel::bounded(2));
-        let queue: Shared<seam_test::rt::sync::Receiver<u32>> = sim.perform(Share::new(rx));
+        // Workers take turns holding the receiver: a non-waiting receive is a
+        // zero timeout, which the runtime's receivers perform asynchronously,
+        // so it cannot run inside a (synchronous) `Update`.
+        let queue: Shared<Option<seam_test::rt::sync::Receiver<u32>>> =
+            sim.perform(Share::new(Some(rx)));
         sim.acquire_async(SpawnSet::<TaskSet<()>>::new(), async |sim, workers| {
             for _ in 0..3 {
                 let mut sim = sim.clone();
                 let mut queue = queue.clone();
                 let worker = async move {
                     loop {
-                        let job = queue
-                            .perform_send(Update::new(
-                                &mut |rx: &mut seam_test::rt::sync::Receiver<u32>| {
-                                    rx.perform(TryRecvMsg::new())
-                                },
-                            ))
+                        let taken = queue
+                            .perform_send(Update::new(&mut |q: &mut Option<
+                                seam_test::rt::sync::Receiver<u32>,
+                            >| q.take()))
                             .await;
+                        let Some(mut rx) = taken else {
+                            sim.perform_send(Sleep(Duration::from_millis(1))).await;
+                            continue;
+                        };
+                        let job = try_recv_send(&mut rx).await;
+                        store_send(&mut queue, Some(rx)).await;
                         match job {
                             Ok(n) => {
                                 sim.perform_send(Sleep(Duration::from_millis(u64::from(n))))
                                     .await;
-                                sim.perform_send(WriteFile::new(
+                                write_file_send(
+                                    &mut sim,
                                     &format!("/tmp/{n}"),
                                     &(n * n).to_string(),
-                                ))
+                                )
                                 .await
                                 .unwrap();
                             }
@@ -290,8 +300,7 @@ fn a_worker_pool() {
         .await
         .unwrap();
         for n in 1..=6u32 {
-            let out = sim
-                .inspect_send(ReadToString::new(&format!("/tmp/{n}")))
+            let out = read_to_string_send(&mut sim, &format!("/tmp/{n}"))
                 .await
                 .unwrap();
             assert_eq!(out, (n * n).to_string());

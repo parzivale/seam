@@ -1,90 +1,148 @@
-//! Standard input, output and error.
+//! Standard input, output and error, as handles.
+//!
+//! Each stream is an acquisition, lending a handle for a scope:
+//! [`OpenStdin`] a handle to [`Read`] from, [`OpenStdout`] and
+//! [`OpenStderr`] handles to [`Write`] to and [`Flush`]. Everything else is
+//! the [`io`](super::io) helpers on those handles: lines through
+//! [`BufReader`](super::io::BufReader), fixed-size frames through
+//! [`read_exact`](super::io::read_exact), and [`print`] and [`eprint`] here.
 //!
 //! ```
 //! use seam_core::io;
-//! use seam_core::Perform;
-//! use seam_core::ops::stdio::{Print, ReadLine};
+//! use seam_core::prelude::*;
+//! use seam_core::ops::io::{BufReader, Flush, Read, Write, write_all};
+//! use seam_core::ops::stdio::{OpenStdin, OpenStdout};
 //!
 //! /// Asks a yes/no question. End of input counts as no.
-//! fn confirm<C>(c: &mut C, question: &str) -> io::Result<bool>
+//! fn confirm<C, I, O>(c: &mut C, question: &str) -> io::Result<bool>
 //! where
-//!     C: for<'a> Perform<Print<'a>> + Perform<ReadLine>,
+//!     C: Provide<OpenStdin<I>> + Provide<OpenStdout<O>>,
+//!     I: for<'a> Perform<Read<'a>>,
+//!     O: for<'a> Perform<Write<'a>> + Perform<Flush>,
 //! {
-//!     c.perform(Print(format!("{question} [y/N] ").as_bytes()))?;
-//!     let answer = c.perform(ReadLine)?.unwrap_or_default();
-//!     Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
+//!     c.acquire(OpenStdout::new(), |_, out| {
+//!         write_all(out, format!("{question} [y/N] ").as_bytes())?;
+//!         out.perform(Flush)
+//!     })?;
+//!     c.acquire(OpenStdin::new(), |_, input| {
+//!         let mut answer = [0; 8];
+//!         let len = BufReader::<64>::new()
+//!             .read_line(input, &mut answer)?
+//!             .map_or(0, |line| line.len);
+//!         Ok(matches!(answer[..len].trim_ascii(), b"y" | b"Y" | b"yes"))
+//!     })
 //! }
 //! ```
+//!
+//! A `BufReader` keeps what it read past the end of a line. Read stdin
+//! through one reader for as long as it is in use; one made per call, as
+//! above, drops anything the user typed ahead.
 
+#[allow(unused_imports)]
+use super::io::{Flush, Read, Write};
 use crate::io;
-#[cfg(feature = "alloc")]
-use alloc::string::String;
+use crate::three_ways::three_ways;
+use core::marker::PhantomData;
 
-/// Write bytes to standard output.
-#[derive(Debug, Clone, Copy)]
-pub struct Print<'a>(pub &'a [u8]);
+macro_rules! streams {
+    ($($(#[$m:meta])* $ty:ident;)*) => {$(
+        $(#[$m])*
+        pub struct $ty<H> {
+            handle: PhantomData<fn() -> H>,
+        }
 
-/// Write bytes to standard error.
-#[derive(Debug, Clone, Copy)]
-pub struct EPrint<'a>(pub &'a [u8]);
+        impl<H> $ty<H> {
+            /// Describes opening the stream.
+            pub const fn new() -> Self {
+                Self { handle: PhantomData }
+            }
+        }
 
-/// Read one line from standard input, including the newline. `None` at end
-/// of input. Needs the `alloc` feature.
-#[cfg(feature = "alloc")]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ReadLine;
+        impl<H> Default for $ty<H> {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
 
-/// Read one line from standard input into the buffer, including the
-/// newline, without allocating. `None` at end of input. The bytes are not
-/// checked to be UTF-8.
-///
-/// A line longer than the buffer fills it and comes back with
-/// [`complete`](Line::complete) false; the next read continues the same
-/// line. An empty buffer reads nothing.
-///
-/// ```
-/// use seam_core::io;
-/// use seam_core::Perform;
-/// use seam_core::ops::stdio::{Line, ReadLineInto};
-///
-/// /// Counts the newlines on standard input, as `wc -l` does, however long
-/// /// the lines are.
-/// fn count_lines<C>(c: &mut C) -> io::Result<u64>
-/// where
-///     C: for<'a> Perform<ReadLineInto<'a>>,
-/// {
-///     let mut buf = [0; 256];
-///     let mut lines = 0;
-///     while let Some(Line { len, .. }) = c.perform(ReadLineInto(&mut buf))? {
-///         lines += u64::from(buf[..len].ends_with(b"\n"));
-///     }
-///     Ok(lines)
-/// }
-/// ```
-#[derive(Debug)]
-pub struct ReadLineInto<'a>(pub &'a mut [u8]);
+        impl<H> Clone for $ty<H> {
+            fn clone(&self) -> Self {
+                *self
+            }
+        }
 
-/// What [`ReadLineInto`] read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Line {
-    /// How many bytes were read, from the start of the buffer.
-    pub len: usize,
-    /// Whether the line ended: with a newline, which is then the last byte
-    /// read, or with the end of input. False when the buffer filled first.
-    pub complete: bool,
+        impl<H> Copy for $ty<H> {}
+
+        impl<H> core::fmt::Debug for $ty<H> {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str(stringify!($ty))
+            }
+        }
+
+        impl<H> crate::Acquisition for $ty<H> {
+            type Resource = H;
+            type Error = io::Error;
+        }
+    )*};
 }
 
-operations! {
-    Print<'_> => io::Result<()>;
-    EPrint<'_> => io::Result<()>;
-    ReadLineInto<'_> => io::Result<Option<Line>>;
+streams! {
+    /// Lend standard input, as a handle of type `H` that performs [`Read`].
+    /// Reads return what has arrived, without waiting for a whole line.
+    OpenStdin;
+    /// Lend standard output, as a handle of type `H` that performs [`Write`]
+    /// and [`Flush`]. A scope that succeeds flushes it.
+    OpenStdout;
+    /// Lend standard error, as a handle of type `H` that performs [`Write`]
+    /// and [`Flush`]. A scope that succeeds flushes it.
+    OpenStderr;
 }
 
-#[cfg(feature = "alloc")]
-operations! {
-    ReadLine => io::Result<Option<String>>;
-}
+crate::root::in_kind!(crate::kinds::Stdio: [H] OpenStdin<H>, [H] OpenStdout<H>, [H] OpenStderr<H>);
 
-crate::root::in_kind!(crate::kinds::Stdio: ['a] Print<'a>, ['a] EPrint<'a>, ['a] ReadLineInto<'a>);
-#[cfg(feature = "alloc")]
-crate::root::in_kind!(crate::kinds::Stdio: [] ReadLine);
+three_ways! {
+    /// Writes `bytes` to standard output, and flushes it (closing the
+    /// handle does).
+    pub fn print, print_async, print_send
+    [C, H] (c: &mut C, bytes: &[u8]) -> io::Result<()>
+    where
+        sync {
+            C: crate::Provide<OpenStdout<H>>,
+            H: for<'a> crate::Perform<Write<'a>>,
+        }
+        async {
+            C: crate::AsyncProvide<OpenStdout<H>>,
+            H: for<'a> crate::future::AsyncPerform<Write<'a>>,
+        }
+        send {
+            C: crate::AsyncProvide<OpenStdout<H>> + Send,
+            H: for<'a> crate::future::SendPerform<Write<'a>> + Send,
+        }
+    {
+        acquire!(c, OpenStdout::new(), |_, out| {
+            call!(super::io::write_all, super::io::write_all_async, super::io::write_all_send; (out, bytes))
+        })
+    }
+
+    /// Writes `bytes` to standard error, and flushes it (closing the handle
+    /// does).
+    pub fn eprint, eprint_async, eprint_send
+    [C, H] (c: &mut C, bytes: &[u8]) -> io::Result<()>
+    where
+        sync {
+            C: crate::Provide<OpenStderr<H>>,
+            H: for<'a> crate::Perform<Write<'a>>,
+        }
+        async {
+            C: crate::AsyncProvide<OpenStderr<H>>,
+            H: for<'a> crate::future::AsyncPerform<Write<'a>>,
+        }
+        send {
+            C: crate::AsyncProvide<OpenStderr<H>> + Send,
+            H: for<'a> crate::future::SendPerform<Write<'a>> + Send,
+        }
+    {
+        acquire!(c, OpenStderr::new(), |_, out| {
+            call!(super::io::write_all, super::io::write_all_async, super::io::write_all_send; (out, bytes))
+        })
+    }
+}

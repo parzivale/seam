@@ -2,15 +2,18 @@
 #![cfg(feature = "full")]
 
 use seam_core::io;
+use seam_core::ops::fs::{create_dir_all, read_file, sweep_atomic, write_file};
+use seam_core::ops::io::{Write, read_exact, read_to_end, write_all};
+use seam_core::ops::sync::{store, try_send};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use seam_core::ops::fs::{CreateAtomic, NextEntry, Open, ReadDir, RemoveDir};
 use seam_core::ops::fs::{
-    CreateAtomic, CreateDir, NextEntry, Open, ReadDir, ReadFile, RemoveDir, SweepAtomic, WriteFile,
+    OpenOptions, ReadOnly, ReadWrite, SetLen, Stat, SyncAll, SyncData, WriteOnly,
 };
-use seam_core::ops::fs::{OpenOptions, SetLen, Stat, SyncAll, SyncData};
-use seam_core::ops::io::{Read, ReadExact, ReadToEnd, WriteAll};
+use seam_core::ops::io::Read;
 use seam_core::ops::io::{Seek, SeekFrom};
 use seam_core::ops::net::{Accept, LocalAddr, ResolveInto, TcpBind, TcpConnect};
 use seam_core::ops::random::FillRandom;
@@ -21,38 +24,37 @@ use seam_std::fs::AtomicFile;
 
 /// Edits a file in place through one handle: every file handle operation.
 /// Generic, so it runs on any backend.
-fn edit_in_place<C, F>(c: &mut C, path: &std::path::Path) -> io::Result<()>
+fn edit_in_place<C, F, R>(c: &mut C, path: &std::path::Path) -> io::Result<()>
 where
-    C: for<'a> Provide<Open<'a, F>> + for<'a> Inspect<ReadFile<'a>>,
+    C: for<'a> Provide<Open<'a, ReadWrite, F>> + for<'a> Provide<Open<'a, ReadOnly, R>>,
+    R: for<'a> Perform<Read<'a>>,
     F: Perform<Seek>
-        + for<'a> Perform<WriteAll<'a>>
-        + for<'a> Perform<ReadExact<'a>>
+        + for<'a> Perform<Write<'a>>
+        + for<'a> Perform<Read<'a>>
         + Perform<SetLen>
         + Perform<SyncAll>
         + Perform<SyncData>
         + Inspect<Stat>,
 {
     let options = OpenOptions {
-        read: true,
-        write: true,
         create: true,
         truncate: true,
         ..OpenOptions::default()
     };
-    c.acquire(Open::new(path, options), |_, f| {
-        f.perform(WriteAll(b"hello world"))?;
+    c.acquire(Open::<ReadWrite, F>::new(path, options), |_, f| {
+        write_all(f, b"hello world")?;
         assert_eq!(f.perform(Seek(SeekFrom::Start(6)))?, 6);
         let mut word = [0; 5];
-        f.perform(ReadExact(&mut word))?;
+        read_exact(f, &mut word)?;
         assert_eq!(&word, b"world");
         assert_eq!(f.perform(Seek(SeekFrom::End(-5)))?, 6);
-        f.perform(WriteAll(b"WORLD"))?;
+        write_all(f, b"WORLD")?;
         assert_eq!(f.perform(Seek(SeekFrom::Current(-11)))?, 0);
         f.perform(SetLen(5))?;
         assert_eq!(f.inspect(Stat)?.len, 5);
         // Past the end: the gap fills with zeros.
         assert_eq!(f.perform(Seek(SeekFrom::End(2)))?, 7);
-        f.perform(WriteAll(b"!"))?;
+        write_all(f, b"!")?;
         f.perform(SyncData)?;
         f.perform(SyncAll)?;
         let err = f.perform(Seek(SeekFrom::Current(-100))).unwrap_err();
@@ -62,12 +64,9 @@ where
         assert_eq!(info.len, 8);
         io::Result::Ok(())
     })?;
-    assert_eq!(c.inspect(ReadFile::new(path))?, b"hello\0\0!");
-    // Truncating needs a handle open for writing.
-    let err = c
-        .acquire(Open::read(path), |_, f| f.perform(SetLen(0)))
-        .unwrap_err();
-    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(read_file(c, path)?, b"hello\0\0!");
+    // Truncating a file opened read-only does not compile: `File<ReadOnly>`
+    // has no `SetLen`.
     Ok(())
 }
 
@@ -90,21 +89,22 @@ fn scratch_dir(std: &mut Std, name: &str) -> io::Result<PathBuf> {
     let mut dir = std.inspect(seam_core::ops::env::TempDir);
     dir.push(format!("seam-std-{name}-{}", std::process::id()));
     let _ = std.perform(RemoveDir::all(&dir));
-    std.perform(CreateDir::all(&dir))?;
+    create_dir_all(std, &dir)?;
     Ok(dir)
 }
 
 /// A core written only against capability bounds: it can open files, and
 /// read and write them, and nothing else.
-fn copy_through_handle<C, F>(c: &mut C, from: &Path, to: &Path) -> io::Result<()>
+fn copy_through_handle<C, R, W>(c: &mut C, from: &Path, to: &Path) -> io::Result<()>
 where
-    C: for<'a> Provide<Open<'a, F>>,
-    F: for<'a> Perform<ReadToEnd<'a>> + for<'a> Perform<WriteAll<'a>>,
+    C: for<'a> Provide<Open<'a, ReadOnly, R>> + for<'a> Provide<Open<'a, WriteOnly, W>>,
+    R: for<'a> Perform<Read<'a>>,
+    W: for<'a> Perform<Write<'a>>,
 {
     c.acquire(Open::read(from), |c, src| {
         let mut bytes = Vec::new();
-        src.perform(ReadToEnd(&mut bytes))?;
-        c.acquire(Open::create(to), |_, dst| dst.perform(WriteAll(&bytes)))
+        read_to_end(src, &mut bytes)?;
+        c.acquire(Open::create(to), |_, dst| write_all(dst, &bytes))
     })
 }
 
@@ -113,10 +113,10 @@ fn filesystem_roundtrip() -> io::Result<()> {
     let mut std = Std::new();
     let dir = scratch_dir(&mut std, "fs")?;
     let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
-    std.perform(WriteFile::new(&a, "hello"))?;
+    write_file(&mut std, &a, "hello")?;
     copy_through_handle(&mut std, &a, &b)?;
 
-    assert_eq!(std.inspect(ReadFile::new(&b))?, b"hello");
+    assert_eq!(read_file(&mut std, &b)?, b"hello");
     let mut listed = list(&mut std, &dir)?;
     listed.sort();
     assert_eq!(listed, [a, b]);
@@ -136,18 +136,18 @@ fn tcp_loopback() -> io::Result<()> {
         );
         let [addr] = addr;
         std.acquire(TcpConnect::new(addr), |_, client| {
-            client.perform(WriteAll(b"ping"))?;
+            write_all(client, b"ping")?;
             listener.acquire(Accept::new(), |_, server| {
                 let mut buf = [0; 4];
                 let n = server.perform(Read(&mut buf))?;
                 assert_eq!(&buf[..n], b"ping");
-                client.perform(WriteAll(b"pong!"))?;
-                server.perform(ReadExact(&mut buf))?;
+                write_all(client, b"pong!")?;
+                read_exact(server, &mut buf)?;
                 assert_eq!(&buf, b"pong");
                 client.perform(seam_core::ops::net::Shutdown(
                     seam_core::ops::net::How::Write,
                 ))?;
-                let err = server.perform(ReadExact(&mut buf)).unwrap_err();
+                let err = read_exact(server, &mut buf).unwrap_err();
                 assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
                 Ok(())
             })
@@ -172,7 +172,7 @@ mod atomic {
 
     fn replace(std: &mut Std, path: &Path, fail: bool) -> io::Result<()> {
         std.acquire(CreateAtomic::<AtomicFile>::new(path), |_, f| {
-            f.perform(WriteAll(b"new"))?;
+            write_all(f, b"new")?;
             if fail {
                 return Err(io::Error::other("failed halfway"));
             }
@@ -185,23 +185,23 @@ mod atomic {
         let mut std = Std::new();
         let dir = scratch_dir(&mut std, "atomic")?;
         let path = dir.join("settings.conf");
-        std.perform(WriteFile::new(&path, "old"))?;
+        write_file(&mut std, &path, "old")?;
 
         assert!(replace(&mut std, &path, true).is_err());
-        assert_eq!(std.inspect(ReadFile::new(&path))?, b"old");
+        assert_eq!(read_file(&mut std, &path)?, b"old");
 
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut std = Std::new();
             std.acquire(
                 CreateAtomic::<AtomicFile>::new(&path),
                 |_, f| -> io::Result<()> {
-                    f.perform(WriteAll(b"new"))?;
+                    write_all(f, b"new")?;
                     panic!("crash halfway")
                 },
             )
         }));
         assert!(panicked.is_err());
-        assert_eq!(std.inspect(ReadFile::new(&path))?, b"old");
+        assert_eq!(read_file(&mut std, &path)?, b"old");
         assert_eq!(
             list(&mut std, &dir)?,
             std::slice::from_ref(&path),
@@ -209,7 +209,7 @@ mod atomic {
         );
 
         replace(&mut std, &path, false)?;
-        assert_eq!(std.inspect(ReadFile::new(&path))?, b"new");
+        assert_eq!(read_file(&mut std, &path)?, b"new");
         assert_eq!(list(&mut std, &dir)?, std::slice::from_ref(&path));
         std.perform(RemoveDir::all(&dir))
     }
@@ -222,15 +222,15 @@ mod atomic {
         let dir = scratch_dir(&mut std, "sweep")?;
         let leftover = dir.join(".settings.conf.seam-0123456789abcdef.tmp");
         let unrelated = dir.join("notes.tmp");
-        std.perform(WriteFile::new(&leftover, "half"))?;
-        std.perform(WriteFile::new(&unrelated, "keep"))?;
+        write_file(&mut std, &leftover, "half")?;
+        write_file(&mut std, &unrelated, "keep")?;
 
         assert_eq!(
-            std.perform(SweepAtomic::new(&dir, Duration::from_secs(3600)))?,
+            sweep_atomic(&mut std, &dir, Duration::from_secs(3600))?,
             0,
             "too recent"
         );
-        assert_eq!(std.perform(SweepAtomic::new(&dir, Duration::ZERO))?, 1);
+        assert_eq!(sweep_atomic(&mut std, &dir, Duration::ZERO)?, 1);
         assert_eq!(list(&mut std, &dir)?, [unrelated]);
         std.perform(RemoveDir::all(&dir))
     }
@@ -238,7 +238,7 @@ mod atomic {
 
 mod sync {
     use seam_core::ops::sync::{
-        Channel, Load, RecvError, RecvMsg, SendError, SendMsg, Share, TrySendMsg, Update,
+        Channel, Load, RecvError, RecvMsg, SendError, SendMsg, Share, Update,
     };
     use seam_std::sync::{Receiver, Sender, Shared};
 
@@ -282,8 +282,8 @@ mod sync {
     fn bounded_channels_push_back() {
         let mut std = Std::new();
         let (mut tx, rx): (Sender<u8>, Receiver<u8>) = std.perform(Channel::bounded(1));
-        tx.perform(TrySendMsg(1)).unwrap();
-        assert_eq!(tx.perform(TrySendMsg(2)), Err(SendError::Full(2)));
+        try_send(&mut tx, 1).unwrap();
+        assert_eq!(try_send(&mut tx, 2), Err(SendError::Full(2)));
         drop(rx);
         assert_eq!(tx.perform(SendMsg(3)), Err(SendError::Closed(3)));
     }
@@ -312,7 +312,7 @@ mod threads {
     use std::time::Instant;
 
     use seam_core::ops::net::LocalAddr;
-    use seam_core::ops::sync::{Load, Share, Store};
+    use seam_core::ops::sync::{Load, Share};
     use seam_core::ops::task::{
         AvailableParallelism, Detach, IsFinished, Join, JoinError, JoinNext, Spawn, SpawnInto,
         SpawnSet, SpawnWith,
@@ -391,7 +391,7 @@ mod threads {
         let mut f = flag.clone();
         let slow = Spawn::<_, JoinHandle<()>>::new(move || {
             thread::sleep(Duration::from_millis(50));
-            f.perform(Store(true));
+            store(&mut f, true);
         });
         let failed = std.acquire(slow, |_, _| Err::<(), _>(JoinError::Cancelled));
         assert!(failed.is_err());
@@ -408,7 +408,7 @@ mod threads {
         let mut f = flag.clone();
         let slow = Spawn::<_, JoinHandle<()>>::new(move || {
             thread::sleep(Duration::from_millis(50));
-            f.perform(Store(true));
+            store(&mut f, true);
         });
         std.acquire(slow, |_, t| {
             t.perform(Detach);
@@ -438,7 +438,7 @@ mod threads {
             .acquire(worker, |_, t| {
                 thread::sleep(Duration::from_millis(20));
                 let mut stop = stop.clone();
-                stop.perform(Store(true));
+                store(&mut stop, true);
                 Ok::<_, JoinError>(t.perform(Join::new()))
             })
             .unwrap()
@@ -459,12 +459,12 @@ mod threads {
                 let mut client_std = std.clone();
                 let client = Spawn::<_, JoinHandle<io::Result<Vec<u8>>>>::new(move || {
                     client_std.acquire(TcpConnect::<TcpStream>::new(addr), |_, s| {
-                        s.perform(WriteAll(b"hello"))?;
+                        write_all(s, b"hello")?;
                         s.perform(seam_core::ops::net::Shutdown(
                             seam_core::ops::net::How::Write,
                         ))?;
                         let mut reply = Vec::new();
-                        s.perform(ReadToEnd(&mut reply))?;
+                        read_to_end(s, &mut reply)?;
                         Ok(reply)
                     })
                 });
@@ -473,8 +473,8 @@ mod threads {
                         Accept::new(),
                         |s: &mut TcpStream| {
                             let mut got = Vec::new();
-                            s.perform(ReadToEnd(&mut got))?;
-                            s.perform(WriteAll(&got))?;
+                            read_to_end(s, &mut got)?;
+                            write_all(s, &got)?;
                             Ok(got.len())
                         },
                     );

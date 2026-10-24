@@ -16,13 +16,14 @@
 //! is what makes "has a manifest" mean "is complete".
 
 use seam::io;
+use seam::ops::fs::create_dir_all;
+use seam::ops::io::{Write, write_all};
+use seam::ops::stdio::{OpenStdout, print};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use seam::ops::env::Args;
 use seam::ops::fs::{CopyFile, CreateAtomic, CreateDir, Metadata, NextEntry, ReadDir, RemoveDir};
-use seam::ops::io::WriteAll;
-use seam::ops::stdio::Print;
 use seam::ops::time::WallClock;
 use seam::prelude::*;
 
@@ -34,9 +35,9 @@ const MANIFEST: &str = "MANIFEST";
 /// copy and delete files, write files atomically, and print. It cannot touch
 /// the network, run commands, or read environment variables.
 ///
-/// `F` is the backend's atomic file type and `D` its directory listing
-/// type; both are inferred from the backend.
-trait BackupEnv<F: AtomicWrite, D: Listing>:
+/// `F` is the backend's atomic file type, `D` its directory listing type and
+/// `O` its standard output type; all are inferred from the backend.
+trait BackupEnv<F: AtomicWrite, D: Listing, O: Output>:
     Inspect<Args>
     + Inspect<WallClock>
     + for<'a> Provide<ReadDir<'a, D>>
@@ -45,11 +46,11 @@ trait BackupEnv<F: AtomicWrite, D: Listing>:
     + for<'a> Perform<CopyFile<'a>>
     + for<'a> Perform<RemoveDir<'a>>
     + for<'a> Provide<CreateAtomic<'a, F>>
-    + for<'a> Perform<Print<'a>>
+    + Provide<OpenStdout<O>>
 {
 }
 
-impl<T, F: AtomicWrite, D: Listing> BackupEnv<F, D> for T where
+impl<T, F: AtomicWrite, D: Listing, O: Output> BackupEnv<F, D, O> for T where
     T: Inspect<Args>
         + Inspect<WallClock>
         + for<'a> Provide<ReadDir<'a, D>>
@@ -58,20 +59,24 @@ impl<T, F: AtomicWrite, D: Listing> BackupEnv<F, D> for T where
         + for<'a> Perform<CopyFile<'a>>
         + for<'a> Perform<RemoveDir<'a>>
         + for<'a> Provide<CreateAtomic<'a, F>>
-        + for<'a> Perform<Print<'a>>
+        + Provide<OpenStdout<O>>
 {
 }
 
 /// What the backup tool does with an atomic file: write to it.
-trait AtomicWrite: for<'a> Perform<WriteAll<'a>> {}
-impl<F: for<'a> Perform<WriteAll<'a>>> AtomicWrite for F {}
+trait AtomicWrite: for<'a> Perform<Write<'a>> {}
+impl<F: for<'a> Perform<Write<'a>>> AtomicWrite for F {}
+
+/// What the backup tool does with standard output: write to it.
+trait Output: for<'a> Perform<Write<'a>> {}
+impl<O: for<'a> Perform<Write<'a>>> Output for O {}
 
 /// What the backup tool does with a directory listing: step through it.
 trait Listing: Perform<NextEntry> {}
 impl<D: Perform<NextEntry>> Listing for D {}
 
 /// Parses the arguments and runs one backup.
-fn run<F: AtomicWrite, D: Listing>(env: &mut impl BackupEnv<F, D>) -> io::Result<()> {
+fn run<F: AtomicWrite, D: Listing, O: Output>(env: &mut impl BackupEnv<F, D, O>) -> io::Result<()> {
     let args = env.inspect(Args);
     let usage = || {
         io::Error::new(
@@ -101,8 +106,8 @@ fn run<F: AtomicWrite, D: Listing>(env: &mut impl BackupEnv<F, D>) -> io::Result
 /// last, through an atomic file acquired for a scope, so it exists completely or not
 /// at all: a run that crashes, fails or is killed partway leaves a snapshot
 /// with no manifest, which the next run removes.
-fn backup<F: AtomicWrite, D: Listing>(
-    env: &mut impl BackupEnv<F, D>,
+fn backup<F: AtomicWrite, D: Listing, O: Output>(
+    env: &mut impl BackupEnv<F, D, O>,
     source: &Path,
     dest: &Path,
     keep: usize,
@@ -119,7 +124,7 @@ fn backup<F: AtomicWrite, D: Listing>(
         .map_err(|_| io::Error::other("the clock is set before 1970"))?;
     // Zero-padded, so that sorting names sorts snapshots by time.
     let snapshot = dest.join(format!("{:020}", now.as_secs()));
-    env.perform(CreateDir::all(&snapshot))?;
+    create_dir_all(env, &snapshot)?;
     let mut copied = Vec::new();
     copy_tree(env, source, &snapshot, Path::new(""), &mut copied)?;
 
@@ -128,7 +133,7 @@ fn backup<F: AtomicWrite, D: Listing>(
         |_, manifest| {
             for (path, bytes) in &copied {
                 let line = format!("{bytes}\t{}\n", path.display());
-                manifest.perform(WriteAll(line.as_bytes()))?;
+                write_all(manifest, line.as_bytes())?;
             }
             io::Result::Ok(())
         },
@@ -157,8 +162,8 @@ fn backup<F: AtomicWrite, D: Listing>(
 
 /// Copies the tree under `from` to `to`, recording each file's path
 /// (relative to the snapshot) and size.
-fn copy_tree<F: AtomicWrite, D: Listing>(
-    env: &mut impl BackupEnv<F, D>,
+fn copy_tree<F: AtomicWrite, D: Listing, O: Output>(
+    env: &mut impl BackupEnv<F, D, O>,
     from: &Path,
     to: &Path,
     rel: &Path,
@@ -181,8 +186,11 @@ fn copy_tree<F: AtomicWrite, D: Listing>(
     })
 }
 
-fn say<F: AtomicWrite, D: Listing>(env: &mut impl BackupEnv<F, D>, text: &str) -> io::Result<()> {
-    env.perform(Print(text.as_bytes()))
+fn say<F: AtomicWrite, D: Listing, O: Output>(
+    env: &mut impl BackupEnv<F, D, O>,
+    text: &str,
+) -> io::Result<()> {
+    print(env, text.as_bytes())
 }
 
 fn main() -> io::Result<()> {
@@ -233,7 +241,7 @@ mod tests {
         assert!(!sim.exists("/backups/00000000000000000500"));
         assert!(sim.exists("/backups/00000000000000001000/MANIFEST"));
         assert!(
-            String::from_utf8_lossy(sim.stdout())
+            String::from_utf8_lossy(&sim.stdout())
                 .contains("removed incomplete /backups/00000000000000000500")
         );
     }
@@ -259,7 +267,7 @@ mod tests {
             ]
         );
         assert!(
-            String::from_utf8_lossy(sim.stdout()).contains("pruned /backups/00000000000000001000")
+            String::from_utf8_lossy(&sim.stdout()).contains("pruned /backups/00000000000000001000")
         );
     }
 

@@ -2,15 +2,18 @@
 #![cfg(feature = "full")]
 
 use seam_core::io;
+use seam_core::ops::fs::{read_to_string, write_file};
+use seam_core::ops::io::{read_to_end, write_all};
+use seam_core::ops::stdio::print;
+use seam_core::ops::sync::store;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use seam_core::ops::fs::{NextEntry, ReadDir, ReadToString, WriteFile};
-use seam_core::ops::io::{ReadToEnd, WriteAll};
+use seam_core::ops::fs::{NextEntry, ReadDir};
+
 use seam_core::ops::net::{Accept, TcpBind, TcpConnect};
 use seam_core::ops::signal::CtrlC;
-use seam_core::ops::stdio::Print;
-use seam_core::ops::sync::{Channel, Load, RecvError, RecvMsg, SendMsg, Share, Store, Update};
+use seam_core::ops::sync::{Channel, Load, RecvError, RecvMsg, SendMsg, Share, Update};
 use seam_core::ops::task::{
     Detach, IsFinished, Join, JoinError, JoinNext, Spawn, SpawnInto, SpawnSet, SpawnWith, YieldNow,
 };
@@ -45,7 +48,7 @@ fn print_order(seed: u64, n: u8) -> Vec<u8> {
             for i in 0..n {
                 let mut sim = sim.clone();
                 let _ = set.perform(SpawnInto::new(move || {
-                    let _ = sim.perform(Print(&[b'0' + i]));
+                    let _ = print(&mut sim, &[b'0' + i]);
                 }));
             }
             Ok::<_, JoinError>(())
@@ -80,7 +83,7 @@ fn a_lost_update_is_found_replayed_and_fixed() {
                             counter.perform(Update::new(&mut |n: &mut u64| *n += 1));
                         } else {
                             let n = counter.inspect(Load::new());
-                            counter.perform(Store(n + 1));
+                            store(&mut counter, n + 1);
                         }
                     }));
                 }
@@ -182,7 +185,7 @@ fn sleeps_run_on_virtual_time() {
                 let mut sim = sim.clone();
                 let _ = set.perform(SpawnInto::new(move || {
                     sim.perform(Sleep(Duration::from_secs(secs)));
-                    let _ = sim.perform(Print(format!("{secs} ").as_bytes()));
+                    let _ = print(&mut sim, format!("{secs} ").as_bytes());
                 }));
             }
             Ok::<_, JoinError>(())
@@ -221,7 +224,7 @@ fn a_failed_scope_joins_its_thread() {
         let mut worker = sim.clone();
         let slow = Spawn::<_, JoinHandle<()>>::new(move || {
             worker.perform(Sleep(Duration::from_secs(5)));
-            worker.perform(WriteFile::new("/done", "yes")).unwrap();
+            write_file(&mut worker, "/done", "yes").unwrap();
         });
         let result = sim.acquire(slow, |_, thread| {
             assert!(!thread.inspect(IsFinished));
@@ -229,7 +232,7 @@ fn a_failed_scope_joins_its_thread() {
         });
         assert_eq!(result.unwrap_err().to_string(), "gave up");
         assert_eq!(
-            sim.inspect(ReadToString::new("/done")).unwrap(),
+            read_to_string(&mut sim, "/done").unwrap(),
             "yes",
             "the thread finished before acquire returned"
         );
@@ -246,7 +249,7 @@ fn a_detached_thread_is_stopped_at_the_end() {
         let forever = Spawn::<_, JoinHandle<()>>::new(move || {
             loop {
                 worker.perform(Sleep(Duration::from_secs(1)));
-                let _ = worker.perform(Print(b"tick\n"));
+                let _ = print(&mut worker, b"tick\n");
             }
         });
         sim.acquire(forever, |sim, thread| {
@@ -324,7 +327,7 @@ fn ctrl_c_wakes_a_waiting_thread() {
         let mut waiter = sim.clone();
         let wait = Spawn::<_, JoinHandle<io::Result<()>>>::new(move || {
             waiter.perform(CtrlC)?;
-            let _ = waiter.perform(Print(b"bye\n"));
+            let _ = print(&mut waiter, b"bye\n");
             Ok(())
         });
         sim.acquire(wait, |sim, thread| {
@@ -344,8 +347,8 @@ fn ctrl_c_wakes_a_waiting_thread() {
 fn a_thread_per_connection_server() {
     fn echo(stream: &mut TcpStream) -> io::Result<usize> {
         let mut buf = Vec::new();
-        stream.perform(ReadToEnd(&mut buf))?;
-        stream.perform(WriteAll(&buf))?;
+        read_to_end(stream, &mut buf)?;
+        write_all(stream, &buf)?;
         Ok(buf.len())
     }
 
@@ -362,11 +365,11 @@ fn a_thread_per_connection_server() {
                             let _ = clients.perform(SpawnInto::new(move || {
                                 let mut reply = Vec::new();
                                 sim.acquire(TcpConnect::<TcpStream>::new(addr), |_, s| {
-                                    s.perform(WriteAll(&[i; 3]))?;
+                                    write_all(s, &[i; 3])?;
                                     s.perform(seam_core::ops::net::Shutdown(
                                         seam_core::ops::net::How::Write,
                                     ))?;
-                                    s.perform(ReadToEnd(&mut reply))?;
+                                    read_to_end(s, &mut reply)?;
                                     io::Result::Ok(())
                                 })?;
                                 Ok(reply)
@@ -414,12 +417,12 @@ fn threads_share_the_world() {
     threads.run(|mut sim| {
         let mut worker = sim.clone();
         let write = Spawn::<_, JoinHandle<io::Result<()>>>::new(move || {
-            worker.perform(WriteFile::new("/note", "hi"))
+            write_file(&mut worker, "/note", "hi")
         });
         sim.acquire(write, |_, t| t.perform(Join::new()))
             .unwrap()
             .unwrap();
-        assert_eq!(sim.inspect(ReadToString::new("/note")).unwrap(), "hi");
+        assert_eq!(read_to_string(&mut sim, "/note").unwrap(), "hi");
     });
     assert_eq!(
         threads.with_sim(|s| s.file("/note").unwrap().to_vec()),
@@ -432,7 +435,7 @@ fn files_through_threads() {
     let mut sim = Sim::new();
     sim.add_file("/d/a", "1");
     let listed = Threads::new(sim).run(|mut sim| {
-        sim.perform(WriteFile::new("/d/b", "2")).unwrap();
+        write_file(&mut sim, "/d/b", "2").unwrap();
         list(&mut sim, "/d").unwrap()
     });
     assert_eq!(

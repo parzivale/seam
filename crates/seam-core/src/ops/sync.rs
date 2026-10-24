@@ -13,9 +13,10 @@
 //! # Channels
 //!
 //! [`Channel`] creates a sender of type `S` and a receiver of type `R`. On
-//! the sender, [`SendMsg`] waits for room in a bounded channel, and
-//! [`TrySendMsg`] does not. On the receiver, [`RecvMsg`] waits for a
-//! message, and [`TryRecvMsg`] does not. The channel closes when every
+//! the sender, [`SendMsg`] waits for room in a bounded channel; on the
+//! receiver, [`RecvMsg`] waits for a message. [`try_send`] and [`try_recv`]
+//! do not wait: they are `SendMsg` and `RecvMsg` with a timeout of zero.
+//! The channel closes when every
 //! sender is dropped (receives then fail with [`RecvError::Closed`] once it
 //! is empty) or when the receiver is dropped (sends fail with
 //! [`SendError::Closed`]).
@@ -49,8 +50,9 @@
 //!
 //! [`Share`] puts a value in a cell of type `C`, which can be cloned to give
 //! other tasks or threads access to the same value. [`Load`] reads a copy,
-//! [`Store`] replaces it, and [`Update`] runs a closure on it atomically,
-//! with no other task able to observe or change it in between.
+//! and [`Update`] runs a closure on it atomically, with no other task able
+//! to observe or change it in between; [`store`] replaces it, as an
+//! `Update`.
 //!
 //! ```
 //! use seam_core::prelude::*;
@@ -81,6 +83,7 @@
 //! Do not touch the same cell from inside an `Update` closure: the cell is
 //! locked while the closure runs.
 
+use crate::three_ways::three_ways;
 use core::fmt;
 use core::marker::PhantomData;
 
@@ -128,21 +131,12 @@ impl<S, R> Channel<S, R> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SendMsg<T>(pub T);
 
-/// Send a message if there is room right now. Performed on a sender.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TrySendMsg<T>(pub T);
-
 /// Receive a message, waiting for one if the channel is empty. Performed
 /// on the receiver.
 ///
 /// A backend that cannot wait (the plain test `Sim`) fails with
 /// [`RecvError::Empty`] instead.
 pub struct RecvMsg<T> {
-    message: PhantomData<fn() -> T>,
-}
-
-/// Receive a message if one is waiting. Performed on the receiver.
-pub struct TryRecvMsg<T> {
     message: PhantomData<fn() -> T>,
 }
 
@@ -175,10 +169,6 @@ pub struct Share<T, C> {
 pub struct Load<T> {
     value: PhantomData<fn() -> T>,
 }
-
-/// Replace a cell's value. Performed on the cell.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Store<T>(pub T);
 
 /// Run a closure on a cell's value, atomically, and return what it
 /// returns. Performed on the cell.
@@ -265,15 +255,6 @@ impl<T> RecvMsg<T> {
     }
 }
 
-impl<T> TryRecvMsg<T> {
-    /// Describes receiving a message if one is waiting.
-    pub fn new() -> Self {
-        Self {
-            message: PhantomData,
-        }
-    }
-}
-
 impl<T, C> Share<T, C> {
     /// Describes sharing `value`.
     pub fn new(value: T) -> Self {
@@ -321,7 +302,7 @@ macro_rules! marker_impls {
         }
     )*};
 }
-marker_impls!(RecvMsg, TryRecvMsg, Load);
+marker_impls!(RecvMsg, Load);
 
 impl<S, R> fmt::Debug for Channel<S, R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -351,15 +332,7 @@ impl<T> crate::Operation for SendMsg<T> {
     type Outcome = Result<(), SendError<T>>;
 }
 
-impl<T> crate::Operation for TrySendMsg<T> {
-    type Outcome = Result<(), SendError<T>>;
-}
-
 impl<T> crate::Operation for RecvMsg<T> {
-    type Outcome = Result<T, RecvError>;
-}
-
-impl<T> crate::Operation for TryRecvMsg<T> {
     type Outcome = Result<T, RecvError>;
 }
 
@@ -372,10 +345,6 @@ impl<T> crate::Operation for Load<T> {
 }
 
 impl<T> crate::Query for Load<T> {}
-
-impl<T> crate::Operation for Store<T> {
-    type Outcome = ();
-}
 
 impl<T, R> crate::Operation for Update<'_, T, R> {
     type Outcome = R;
@@ -402,3 +371,46 @@ impl<T> crate::ops::time::TimesOut for RecvMsg<T> {
 }
 
 crate::root::in_kind!(crate::kinds::Sync: [S, R] Channel<S, R>, [T, C] Share<T, C>);
+
+three_ways! {
+    /// Sends `value` if there is room right now: [`SendMsg`] with a timeout
+    /// of zero. A full channel hands the value back in
+    /// [`SendError::Full`].
+    pub fn try_send, try_send_async, try_send_send
+    [S, T] (tx: &mut S, value: T) -> Result<(), SendError<T>>
+    where
+        sync { S: crate::Perform<crate::ops::time::Timeout<SendMsg<T>>> }
+        async { S: crate::future::AsyncPerform<crate::ops::time::Timeout<SendMsg<T>>> }
+        send { S: crate::future::SendPerform<crate::ops::time::Timeout<SendMsg<T>>> + Send, T: Send }
+    {
+        run!(tx, crate::ops::time::Timeout::new(core::time::Duration::ZERO, SendMsg(value)))
+    }
+
+    /// Receives a message if one is waiting: [`RecvMsg`] with a timeout of
+    /// zero. An empty channel reports [`RecvError::Empty`].
+    pub fn try_recv, try_recv_async, try_recv_send
+    [R, T] (rx: &mut R) -> Result<T, RecvError>
+    where
+        sync { R: crate::Perform<crate::ops::time::Timeout<RecvMsg<T>>> }
+        async { R: crate::future::AsyncPerform<crate::ops::time::Timeout<RecvMsg<T>>> }
+        send { R: crate::future::SendPerform<crate::ops::time::Timeout<RecvMsg<T>>> + Send, T: Send }
+    {
+        run!(rx, crate::ops::time::Timeout::new(core::time::Duration::ZERO, RecvMsg::new()))
+    }
+
+    /// Replaces a cell's value, atomically: an [`Update`].
+    pub fn store, store_async, store_send
+    [C, T] (cell: &mut C, value: T) -> ()
+    where
+        sync { C: for<'a> crate::Perform<Update<'a, T, ()>>, T: Send }
+        async { C: for<'a> crate::future::AsyncPerform<Update<'a, T, ()>>, T: Send }
+        send { C: for<'a> crate::future::SendPerform<Update<'a, T, ()>> + Send, T: Send }
+    {
+        let mut value = Some(value);
+        run!(cell, Update::new(&mut |v: &mut T| {
+            if let Some(new) = value.take() {
+                *v = new;
+            }
+        }))
+    }
+}

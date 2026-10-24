@@ -2,6 +2,16 @@
 #![cfg(feature = "full")]
 
 use seam_core::io::{self, ErrorKind};
+use seam_core::ops::fs::{
+    create_dir_all, read_file, read_to_string, sweep_atomic, write_file, write_file_send,
+};
+
+use seam_core::ops::io::{
+    BufReader, Line, Write, read_exact, read_to_end, write_all, write_all_send,
+};
+use seam_core::ops::net::resolve;
+use seam_core::ops::random::{FillRandom, random_u64, random_u64_send};
+use seam_core::ops::stdio::{OpenStdin, OpenStdout, print};
 use std::ffi::OsString;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -11,20 +21,20 @@ use std::time::Duration;
 use seam_core::future::{SendPerform, block_on};
 use seam_core::ops::env::{Args, Var};
 use seam_core::ops::fs::{
-    CreateDir, Metadata, NextEntry, Open, ReadDir, ReadFile, ReadToString, RemoveDir, RemoveFile,
-    Rename, WriteFile,
+    Append, OpenOptions, ReadOnly, ReadWrite, SetLen, Stat, SyncAll, SyncData,
 };
-use seam_core::ops::fs::{OpenOptions, SetLen, Stat, SyncAll, SyncData};
-use seam_core::ops::io::{Read, ReadExact, ReadToEnd, WriteAll};
+use seam_core::ops::fs::{
+    CreateDir, Metadata, NextEntry, Open, ReadDir, RemoveDir, RemoveFile, Rename,
+};
+use seam_core::ops::io::Read;
 use seam_core::ops::io::{Seek, SeekFrom};
 use seam_core::ops::net::{
-    Accept, LocalAddr, PeerAddr, RecvFrom, Resolve, ResolveInto, SendTo, Shutdown, TcpBind,
-    TcpConnect, UdpBind,
+    Accept, LocalAddr, PeerAddr, RecvFrom, ResolveInto, SendTo, Shutdown, TcpBind, TcpConnect,
+    UdpBind,
 };
 use seam_core::ops::process::{Exit, Output, RunCommand};
-use seam_core::ops::random::RandomU64;
 use seam_core::ops::signal::CtrlC;
-use seam_core::ops::stdio::{Line, Print, ReadLine, ReadLineInto};
+
 use seam_core::ops::time::{Now, Sleep, WallClock};
 use seam_core::{Acquire, AsyncAcquire, Inspect, Perform, Provide};
 use seam_test::fs::File;
@@ -33,38 +43,37 @@ use seam_test::{Sim, catch_exit};
 
 /// Edits a file in place through one handle: every file handle operation.
 /// Generic, so it runs on any backend.
-fn edit_in_place<C, F>(c: &mut C, path: &std::path::Path) -> io::Result<()>
+fn edit_in_place<C, F, R>(c: &mut C, path: &std::path::Path) -> io::Result<()>
 where
-    C: for<'a> Provide<Open<'a, F>> + for<'a> Inspect<ReadFile<'a>>,
+    C: for<'a> Provide<Open<'a, ReadWrite, F>> + for<'a> Provide<Open<'a, ReadOnly, R>>,
+    R: for<'a> Perform<Read<'a>>,
     F: Perform<Seek>
-        + for<'a> Perform<WriteAll<'a>>
-        + for<'a> Perform<ReadExact<'a>>
+        + for<'a> Perform<Write<'a>>
+        + for<'a> Perform<Read<'a>>
         + Perform<SetLen>
         + Perform<SyncAll>
         + Perform<SyncData>
         + Inspect<Stat>,
 {
     let options = OpenOptions {
-        read: true,
-        write: true,
         create: true,
         truncate: true,
         ..OpenOptions::default()
     };
-    c.acquire(Open::new(path, options), |_, f| {
-        f.perform(WriteAll(b"hello world"))?;
+    c.acquire(Open::<ReadWrite, F>::new(path, options), |_, f| {
+        write_all(f, b"hello world")?;
         assert_eq!(f.perform(Seek(SeekFrom::Start(6)))?, 6);
         let mut word = [0; 5];
-        f.perform(ReadExact(&mut word))?;
+        read_exact(f, &mut word)?;
         assert_eq!(&word, b"world");
         assert_eq!(f.perform(Seek(SeekFrom::End(-5)))?, 6);
-        f.perform(WriteAll(b"WORLD"))?;
+        write_all(f, b"WORLD")?;
         assert_eq!(f.perform(Seek(SeekFrom::Current(-11)))?, 0);
         f.perform(SetLen(5))?;
         assert_eq!(f.inspect(Stat)?.len, 5);
         // Past the end: the gap fills with zeros.
         assert_eq!(f.perform(Seek(SeekFrom::End(2)))?, 7);
-        f.perform(WriteAll(b"!"))?;
+        write_all(f, b"!")?;
         f.perform(SyncData)?;
         f.perform(SyncAll)?;
         let err = f.perform(Seek(SeekFrom::Current(-100))).unwrap_err();
@@ -74,12 +83,9 @@ where
         assert_eq!(info.len, 8);
         io::Result::Ok(())
     })?;
-    assert_eq!(c.inspect(ReadFile::new(path))?, b"hello\0\0!");
-    // Truncating needs a handle open for writing.
-    let err = c
-        .acquire(Open::read(path), |_, f| f.perform(SetLen(0)))
-        .unwrap_err();
-    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(read_file(c, path)?, b"hello\0\0!");
+    // Truncating a file opened read-only does not compile: `File<ReadOnly>`
+    // has no `SetLen`.
     Ok(())
 }
 
@@ -106,7 +112,7 @@ fn kind<T: std::fmt::Debug>(r: io::Result<T>) -> ErrorKind {
 fn sim_is_send_and_sync() {
     fn check<T: Send + Sync>() {}
     check::<Sim>();
-    check::<File>();
+    check::<File<ReadOnly>>();
     check::<TcpStream>();
 }
 
@@ -114,7 +120,7 @@ fn sim_is_send_and_sync() {
 fn same_seed_same_world() {
     let draw = |seed| {
         let mut sim = Sim::with_seed(seed);
-        [sim.perform(RandomU64), sim.perform(RandomU64)]
+        [random_u64(&mut sim), random_u64(&mut sim)]
     };
     assert_eq!(draw(1), draw(1));
     assert_ne!(draw(1), draw(2));
@@ -135,20 +141,18 @@ fn clocks_are_virtual() {
 /// A core: an append-only log with rotation, written only against bounds.
 fn append_log<C, F>(c: &mut C, dir: &Path, line: &str, max: u64) -> io::Result<()>
 where
-    C: for<'a> Provide<Open<'a, F>>
+    C: for<'a> Provide<Open<'a, Append, F>>
         + for<'a> Inspect<Metadata<'a>>
         + for<'a> Perform<Rename<'a>>
         + for<'a> Perform<CreateDir<'a>>,
-    F: for<'a> Perform<WriteAll<'a>>,
+    F: for<'a> Perform<Write<'a>>,
 {
-    c.perform(CreateDir::all(dir))?;
+    create_dir_all(c, dir)?;
     let log = dir.join("app.log");
     if c.inspect(Metadata::new(&log)).is_ok_and(|m| m.len >= max) {
         c.perform(Rename::new(&log, &dir.join("app.log.1")))?;
     }
-    c.acquire(Open::append(&log), |_, f| {
-        f.perform(WriteAll(line.as_bytes()))
-    })
+    c.acquire(Open::append(&log), |_, f| write_all(f, line.as_bytes()))
 }
 
 #[test]
@@ -173,20 +177,14 @@ fn filesystem_core() {
 fn filesystem_errors_match_a_real_system() {
     let mut sim = Sim::new();
     sim.add_file("/a/file", "x");
+    assert_eq!(kind(read_file(&mut sim, "/missing")), ErrorKind::NotFound);
+    assert_eq!(kind(read_file(&mut sim, "/a")), ErrorKind::IsADirectory);
     assert_eq!(
-        kind(sim.inspect(ReadFile::new("/missing"))),
-        ErrorKind::NotFound
-    );
-    assert_eq!(
-        kind(sim.inspect(ReadFile::new("/a"))),
-        ErrorKind::IsADirectory
-    );
-    assert_eq!(
-        kind(sim.inspect(ReadFile::new("/a/file/x"))),
+        kind(read_file(&mut sim, "/a/file/x")),
         ErrorKind::NotADirectory
     );
     assert_eq!(
-        kind(sim.perform(WriteFile::new("/nope/f", "x"))),
+        kind(write_file(&mut sim, "/nope/f", "x")),
         ErrorKind::NotFound
     );
     assert_eq!(
@@ -206,13 +204,13 @@ fn filesystem_errors_match_a_real_system() {
         ErrorKind::InvalidInput
     );
     assert_eq!(
-        kind(sim.acquire(Open::<File>::create("/a"), |_, _| Ok(()))),
+        kind(sim.acquire(Open::<_, File<_>>::create("/a"), |_, _| Ok(()))),
         ErrorKind::IsADirectory
     );
 
     sim.add_file("/bad", [0xff]);
     assert_eq!(
-        kind(sim.inspect(ReadToString::new("/bad"))),
+        kind(read_to_string(&mut sim, "/bad")),
         ErrorKind::InvalidData
     );
 
@@ -225,23 +223,19 @@ fn relative_paths_and_open_handles() {
     let mut sim = Sim::new();
     sim.set_current_dir("/home/me");
     sim.add_dir("/home/me");
-    sim.perform(WriteFile::new("notes/../a.txt", "hi"))
-        .unwrap_err();
+    write_file(&mut sim, "notes/../a.txt", "hi").unwrap_err();
     sim.add_dir("notes");
-    sim.perform(WriteFile::new("notes/../a.txt", "hi")).unwrap();
+    write_file(&mut sim, "notes/../a.txt", "hi").unwrap();
     assert_eq!(sim.file("/home/me/a.txt").unwrap(), b"hi");
 
     // A handle survives its path being renamed, as on Unix. The body gets
     // the capability back, so it can rename while it holds the file.
-    sim.acquire(Open::<File>::read("a.txt"), |sim, f| {
+    sim.acquire(Open::<_, File<_>>::read("a.txt"), |sim, f| {
         sim.perform(Rename::new("a.txt", "b.txt"))?;
         let mut out = Vec::new();
-        f.perform(ReadToEnd(&mut out))?;
+        read_to_end(f, &mut out)?;
         assert_eq!(out, b"hi");
-        assert_eq!(
-            kind(f.perform(WriteAll(b"no"))),
-            ErrorKind::PermissionDenied
-        );
+        // Writing to it does not compile: it was opened `ReadOnly`.
         io::Result::Ok(())
     })
     .unwrap();
@@ -261,7 +255,7 @@ fn tcp_in_memory() -> io::Result<()> {
             ErrorKind::WouldBlock
         );
 
-        let addr = sim.inspect(Resolve::new("localhost", 8080))?[0];
+        let addr = resolve(sim, "localhost", 8080)?[0];
         sim.acquire(TcpConnect::<TcpStream>::new(addr), |_, client| {
             listener.acquire(Accept::new(), |_, server| {
                 assert_eq!(server.inspect(PeerAddr)?, client.inspect(LocalAddr)?);
@@ -269,7 +263,7 @@ fn tcp_in_memory() -> io::Result<()> {
 
                 let mut buf = [0; 8];
                 assert_eq!(kind(server.perform(Read(&mut buf))), ErrorKind::WouldBlock);
-                client.perform(WriteAll(b"ping"))?;
+                write_all(client, b"ping")?;
                 client.perform(Shutdown(seam_core::ops::net::How::Write))?;
                 assert_eq!(server.perform(Read(&mut buf))?, 4);
                 assert_eq!(&buf[..4], b"ping");
@@ -282,7 +276,7 @@ fn tcp_in_memory() -> io::Result<()> {
             })?;
             // The server's end is gone now that its scope is over.
             client.perform(Shutdown(seam_core::ops::net::How::Read))?;
-            assert_eq!(kind(client.perform(WriteAll(b"x"))), ErrorKind::BrokenPipe);
+            assert_eq!(kind(write_all(client, b"x")), ErrorKind::BrokenPipe);
             io::Result::Ok(())
         })
     })?;
@@ -308,10 +302,10 @@ fn closing_a_stream_shuts_it_down() -> io::Result<()> {
                 TcpConnect::<TcpStream>::new(([127, 0, 0, 1], 80)),
                 |_, client| {
                     listener.acquire(Accept::<TcpStream>::new(), |_, server| {
-                        server.perform(WriteAll(b"bye"))
+                        write_all(server, b"bye")
                     })?;
                     let mut reply = Vec::new();
-                    client.perform(ReadToEnd(&mut reply))?;
+                    read_to_end(client, &mut reply)?;
                     assert_eq!(reply, b"bye");
                     assert_eq!(client.perform(Read(&mut [0; 4]))?, 0);
                     Ok(())
@@ -325,7 +319,7 @@ fn closing_a_stream_shuts_it_down() -> io::Result<()> {
 fn udp_in_memory() -> io::Result<()> {
     let mut sim = Sim::new();
     sim.add_host("peer.test", Ipv4Addr::new(10, 0, 0, 2));
-    let to = sim.inspect(Resolve::new("peer.test", 53))?[0];
+    let to = resolve(&sim, "peer.test", 53)?[0];
     sim.acquire(UdpBind::<UdpSocket>::new(([10, 0, 0, 1], 0)), |sim, a| {
         sim.acquire(UdpBind::<UdpSocket>::new(([10, 0, 0, 2], 53)), |_, b| {
             a.perform(SendTo {
@@ -342,29 +336,36 @@ fn udp_in_memory() -> io::Result<()> {
 }
 
 /// A core: a tiny shell that runs the commands it reads until `exit`.
-fn shell<C>(c: &mut C) -> io::Result<()>
+fn shell<C, I, O>(c: &mut C) -> io::Result<()>
 where
-    C: Perform<ReadLine> + for<'a> Perform<Print<'a>> + Perform<RunCommand> + Perform<Exit>,
+    C: Provide<OpenStdin<I>> + Provide<OpenStdout<O>> + Perform<RunCommand> + Perform<Exit>,
+    I: for<'a> Perform<Read<'a>>,
+    O: for<'a> Perform<Write<'a>>,
 {
-    while let Some(line) = c.perform(ReadLine)? {
-        let mut words = line.split_whitespace();
-        match words.next() {
-            Some("exit") => {
-                let code = words.next().map_or(Ok(0), str::parse).unwrap_or(2);
-                c.perform(Exit(code));
-            }
-            Some(program) => {
-                let mut cmd = Command::new(program);
-                cmd.args(words);
-                match c.perform(RunCommand(cmd)) {
-                    Ok(out) => c.perform(Print(&out.stdout))?,
-                    Err(e) => c.perform(Print(format!("{program}: {e}\n").as_bytes()))?,
+    let mut reader = BufReader::<256>::new();
+    let mut buf = [0; 128];
+    c.acquire(OpenStdin::new(), |c, stdin| {
+        while let Some(line) = reader.read_line(stdin, &mut buf)? {
+            let line = String::from_utf8_lossy(&buf[..line.len]).into_owned();
+            let mut words = line.split_whitespace();
+            match words.next() {
+                Some("exit") => {
+                    let code = words.next().map_or(Ok(0), str::parse).unwrap_or(2);
+                    c.perform(Exit(code));
                 }
+                Some(program) => {
+                    let mut cmd = Command::new(program);
+                    cmd.args(words);
+                    match c.perform(RunCommand(cmd)) {
+                        Ok(out) => print(c, &out.stdout)?,
+                        Err(e) => print(c, format!("{program}: {e}\n").as_bytes())?,
+                    }
+                }
+                None => {}
             }
-            None => {}
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 #[test]
@@ -392,10 +393,10 @@ fn scripted_processes_stdio_and_exit() {
     assert_eq!(ran.program, "echo");
     assert_eq!(ran.args, [OsString::from("hi"), OsString::from("there")]);
     assert_eq!(
-        sim.perform(ReadLine).unwrap().as_deref(),
-        Some("never read\n")
+        sim.invocations().len(),
+        2,
+        "`exit` stopped it before `never`"
     );
-    assert_eq!(sim.perform(ReadLine).unwrap(), None);
 }
 
 #[test]
@@ -416,18 +417,21 @@ fn env_and_signals() {
 /// the simulation through the blanket lifts.
 #[test]
 fn async_send_core() {
-    async fn retry<
-        C: SendPerform<RandomU64> + SendPerform<Sleep> + for<'a> SendPerform<WriteFile<'a>>,
-    >(
-        c: &mut C,
-    ) -> io::Result<()> {
+    async fn retry<C, W>(c: &mut C) -> io::Result<()>
+    where
+        C: for<'r> SendPerform<FillRandom<'r>>
+            + SendPerform<Sleep>
+            + for<'a> seam_core::AsyncProvide<Open<'a, seam_core::ops::fs::WriteOnly, W>>
+            + Send,
+        W: for<'a> SendPerform<Write<'a>> + Send,
+    {
         for attempt in 0.. {
             let ms = 10 << attempt;
-            let jitter = c.perform_send(RandomU64).await % 10;
+            let jitter = random_u64_send(c).await % 10;
             c.perform_send(Sleep(Duration::from_millis(ms + jitter)))
                 .await;
             if attempt == 3 {
-                return c.perform_send(WriteFile::new("/tmp/done", "ok")).await;
+                return write_file_send(c, "/tmp/done", "ok").await;
             }
         }
         unreachable!()
@@ -441,7 +445,7 @@ fn async_send_core() {
 }
 
 mod atomic {
-    use seam_core::ops::fs::{CreateAtomic, SweepAtomic};
+    use seam_core::ops::fs::CreateAtomic;
     use seam_test::fs::AtomicFile;
 
     use super::*;
@@ -464,7 +468,7 @@ mod atomic {
     fn the_temporary_file_is_visible_until_the_scope_succeeds() {
         let mut sim = sim();
         sim.acquire(create(), |sim, f| {
-            f.perform(WriteAll(b"new"))?;
+            write_all(f, b"new")?;
             assert_eq!(
                 listing(sim),
                 [
@@ -484,14 +488,14 @@ mod atomic {
     fn errors_and_panics_roll_back() {
         let mut sim = sim();
         let err = sim.acquire(create(), |_, f| {
-            f.perform(WriteAll(b"half"))?;
+            write_all(f, b"half")?;
             Err::<(), _>(io::Error::other("validation failed"))
         });
         assert!(err.is_err());
 
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             sim.acquire(create(), |_, f| -> io::Result<()> {
-                f.perform(WriteAll(b"half"))?;
+                write_all(f, b"half")?;
                 panic!("crash")
             })
         }));
@@ -522,7 +526,7 @@ mod atomic {
         let mut sim = sim();
         {
             let fut = sim.acquire_async(create(), async |_, f| {
-                f.perform_send(WriteAll(b"half")).await?;
+                write_all_send(f, b"half").await?;
                 Suspend(false).await;
                 io::Result::Ok(())
             });
@@ -542,11 +546,8 @@ mod atomic {
         sim.add_file("/etc/.app.conf.seam-crashed.tmp", "half");
         sim.advance(Duration::from_secs(600));
         sim.acquire(create(), |sim, f| {
-            f.perform(WriteAll(b"new"))?;
-            assert_eq!(
-                sim.perform(SweepAtomic::new("/etc", Duration::from_secs(60)))?,
-                1
-            );
+            write_all(f, b"new")?;
+            assert_eq!(sweep_atomic(sim, "/etc", Duration::from_secs(60))?, 1);
             Ok::<_, io::Error>(())
         })
         .unwrap();
@@ -556,14 +557,19 @@ mod atomic {
 }
 
 #[test]
-fn read_line_into_a_buffer() {
+fn lines_from_stdin_through_a_reader() {
     let mut sim = Sim::new();
     sim.feed_stdin("ab\ncdefg\nh");
+    // One reader across scopes: it keeps what it read past a line.
+    let mut reader = BufReader::<3>::new();
     let mut buf = [0; 4];
     let mut read = |sim: &mut Sim| {
-        sim.perform(ReadLineInto(&mut buf))
-            .unwrap()
-            .map(|Line { len, complete }| (buf[..len].to_vec(), complete))
+        let line = sim
+            .acquire(OpenStdin::<seam_test::stdio::Stdin>::new(), |_, stdin| {
+                reader.read_line(stdin, &mut buf)
+            })
+            .unwrap();
+        line.map(|Line { len, complete }| (buf[..len].to_vec(), complete))
     };
     assert_eq!(read(&mut sim), Some((b"ab\n".to_vec(), true)));
     // Too long for the buffer: the rest comes with the next read.
@@ -589,7 +595,7 @@ fn resolve_into_a_buffer() -> io::Result<()> {
     let mut out = [none; 2];
     // Three addresses; the buffer holds the first two.
     assert_eq!(sim.inspect(ResolveInto::new("many.test", 80, &mut out))?, 3);
-    assert_eq!(out, sim.inspect(Resolve::new("many.test", 80))?[..2]);
+    assert_eq!(out, resolve(&sim, "many.test", 80)?[..2]);
     assert_eq!(sim.inspect(ResolveInto::new("10.9.9.9", 7, &mut out))?, 1);
     assert_eq!(out[0], SocketAddr::from(([10, 9, 9, 9], 7)));
     assert_eq!(
@@ -603,19 +609,16 @@ fn resolve_into_a_buffer() -> io::Result<()> {
 fn read_exact_fills_or_fails() -> io::Result<()> {
     let mut sim = Sim::new();
     sim.add_file("/data", "abcdef");
-    sim.acquire(Open::<File>::read("/data"), |_, f| {
+    sim.acquire(Open::<_, File<_>>::read("/data"), |_, f| {
         let mut buf = [0; 4];
-        f.perform(ReadExact(&mut buf))?;
+        read_exact(f, &mut buf)?;
         assert_eq!(&buf, b"abcd");
-        assert_eq!(
-            kind(f.perform(ReadExact(&mut buf))),
-            ErrorKind::UnexpectedEof
-        );
+        assert_eq!(kind(read_exact(f, &mut buf)), ErrorKind::UnexpectedEof);
         assert_eq!(&buf[..2], b"ef");
         io::Result::Ok(())
     })?;
 
-    // A stream takes nothing until the whole buffer is there.
+    // On a stream, a read takes what has arrived.
     sim.acquire(
         TcpBind::<TcpListener>::new(([127, 0, 0, 1], 80)),
         |sim, listener| {
@@ -624,20 +627,16 @@ fn read_exact_fills_or_fails() -> io::Result<()> {
                 |_, client| {
                     listener.acquire(Accept::<TcpStream>::new(), |_, server| {
                         let mut buf = [0; 4];
-                        client.perform(WriteAll(b"pi"))?;
-                        assert_eq!(
-                            kind(server.perform(ReadExact(&mut buf))),
-                            ErrorKind::WouldBlock
-                        );
-                        client.perform(WriteAll(b"ng!"))?;
-                        server.perform(ReadExact(&mut buf))?;
+                        write_all(client, b"pi")?;
+                        // Nothing in the plain simulation waits: what arrived is
+                        // kept, then the read would block.
+                        assert_eq!(kind(read_exact(server, &mut buf)), ErrorKind::WouldBlock);
+                        assert_eq!(&buf[..2], b"pi");
+                        write_all(client, b"ng")?;
+                        read_exact(server, &mut buf[2..])?;
                         assert_eq!(&buf, b"ping");
                         client.perform(Shutdown(seam_core::ops::net::How::Write))?;
-                        assert_eq!(
-                            kind(server.perform(ReadExact(&mut buf))),
-                            ErrorKind::UnexpectedEof
-                        );
-                        assert_eq!(buf[0], b'!');
+                        assert_eq!(kind(read_exact(server, &mut buf)), ErrorKind::UnexpectedEof);
                         io::Result::Ok(())
                     })
                 },
@@ -674,7 +673,7 @@ fn file_handles() -> io::Result<()> {
     sim.add_dir("/d");
     edit_in_place(&mut sim, std::path::Path::new("/d/f"))?;
     // A handle's metadata follows the file, not the path.
-    sim.acquire(Open::<File>::read("/d/f"), |sim, f| {
+    sim.acquire(Open::<_, File<_>>::read("/d/f"), |sim, f| {
         sim.perform(RemoveFile::new("/d/f"))?;
         assert_eq!(f.inspect(Stat)?.len, 8);
         io::Result::Ok(())
@@ -683,7 +682,7 @@ fn file_handles() -> io::Result<()> {
     sim.acquire(
         seam_core::ops::fs::CreateAtomic::<seam_test::fs::AtomicFile>::new("/d/g"),
         |_, f| {
-            f.perform(WriteAll(b"abc"))?;
+            write_all(f, b"abc")?;
             f.perform(SetLen(1))?;
             assert_eq!(f.perform(Seek(SeekFrom::Current(0)))?, 3);
             assert_eq!(f.inspect(Stat)?.len, 1);

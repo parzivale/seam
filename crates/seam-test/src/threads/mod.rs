@@ -8,7 +8,7 @@
 //! # #[cfg(all(feature = "time", feature = "io-std"))] {
 //! use std::time::Duration;
 //! use seam_core::prelude::*;
-//! use seam_core::ops::stdio::Print;
+//! use seam_core::ops::stdio::print;
 //! use seam_core::ops::task::{Join, Spawn};
 //! use seam_core::ops::time::Sleep;
 //! use seam_test::Sim;
@@ -19,10 +19,10 @@
 //!     let mut worker = sim.clone();
 //!     let late = Spawn::<_, JoinHandle<()>>::new(move || {
 //!         worker.perform(Sleep(Duration::from_secs(60)));
-//!         let _ = worker.perform(Print(b"a minute later\n"));
+//!         let _ = print(&mut worker, b"a minute later\n");
 //!     });
 //!     sim.acquire(late, |sim, thread| {
-//!         let _ = sim.perform(Print(b"right away\n"));
+//!         let _ = print(sim, b"right away\n");
 //!         thread.perform(Join::new())
 //!     })
 //!     .unwrap();

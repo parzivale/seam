@@ -2,12 +2,13 @@
 #![cfg(all(feature = "full", unix))]
 
 use seam_core::io;
+use seam_core::ops::io::{read_to_end_send, write_all_send};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 use seam_core::future::SendPerform;
-use seam_core::ops::io::{ReadToEnd, WriteAll};
-use seam_core::ops::process::{ChildId, CloseStdin, Kill, Pipe, ReadErrToEnd, SpawnChild, Wait};
+
+use seam_core::ops::process::{ChildId, CloseStdin, Kill, Pipe, ReadErr, SpawnChild, Wait};
 use seam_core::ops::time::Timeout;
 use seam_core::{AsyncAcquire, Inspect, Perform};
 use seam_tokio::Tokio;
@@ -25,10 +26,10 @@ async fn write_close_read_wait() -> io::Result<()> {
         .acquire_async(
             SpawnChild::<Child>::new(Command::new("cat")),
             async |_, child| {
-                child.perform_send(WriteAll(b"hello child")).await?;
+                write_all_send(child, b"hello child").await?;
                 child.perform(CloseStdin);
                 let mut out = Vec::new();
-                child.perform_send(ReadToEnd(&mut out)).await?;
+                read_to_end_send(child, &mut out).await?;
                 assert!(child.perform_send(Wait).await?.success());
                 io::Result::Ok(out)
             },
@@ -43,12 +44,13 @@ async fn stderr_exit_codes_timeouts_and_kill() -> io::Result<()> {
     let spawn = SpawnChild::<Child>::new(sh("echo err >&2; sleep 30")).stderr(Pipe::Piped);
     Tokio::new()
         .acquire_async(spawn, async |_, child| {
-            let mut err = Vec::new();
+            let mut buf = [0; 16];
+            let n = child
+                .perform_send(Timeout::new(Duration::from_secs(10), ReadErr(&mut buf)))
+                .await?;
+            assert_eq!(&buf[..n], b"err\n");
             let e = child
-                .perform_send(Timeout::new(
-                    Duration::from_millis(200),
-                    ReadErrToEnd(&mut err),
-                ))
+                .perform_send(Timeout::new(Duration::from_millis(200), ReadErr(&mut buf)))
                 .await
                 .unwrap_err();
             assert_eq!(
@@ -56,7 +58,6 @@ async fn stderr_exit_codes_timeouts_and_kill() -> io::Result<()> {
                 io::ErrorKind::TimedOut,
                 "stderr stays open while it sleeps"
             );
-            assert_eq!(err, b"err\n", "what arrived is kept");
             let e = child
                 .perform_send(Timeout::new(Duration::from_millis(50), Wait))
                 .await

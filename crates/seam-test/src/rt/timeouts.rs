@@ -2,8 +2,7 @@
 //!
 //! Every operation that waits here is atomic under cancellation, so a
 //! timeout is a race between the operation and a timer: whichever finishes
-//! first wins, and an operation that loses has had no effect, except where
-//! `TimesOut` says otherwise (`ReadToEnd` keeps what it read). The timer is
+//! first wins, and an operation that loses has had no effect. The timer is
 //! removed when the race ends, so a timeout that did not expire does not
 //! move the clock later.
 
@@ -109,7 +108,7 @@ mod sync {
 mod net {
     use std::net::SocketAddr;
 
-    use seam_core::ops::io::{Read, ReadExact, ReadToEnd, Write, WriteAll};
+    use seam_core::ops::io::{Read, Write};
     use seam_core::ops::net::{Accept, RecvFrom, TcpConnect};
     use seam_core::ops::task::{SpawnWith, TaskBody};
     use seam_core::{AsyncProvide, Provide, Token};
@@ -123,25 +122,9 @@ mod net {
         within(&shared, op.after, s.perform_send(op.op)).await.unwrap_or_else(|| Err(timed_out()))
     });
 
-    async_op!(['a] TcpStream, Timeout<ReadExact<'a>>, |s, op| {
-        let shared = Arc::clone(&s.1);
-        within(&shared, op.after, s.perform_send(op.op)).await.unwrap_or_else(|| Err(timed_out()))
-    });
-
-    async_op!(['a] TcpStream, Timeout<ReadToEnd<'a>>, |s, op| {
-        let shared = Arc::clone(&s.1);
-        within(&shared, op.after, s.perform_send(op.op)).await.unwrap_or_else(|| Err(timed_out()))
-    });
-
     // Writing never waits in the simulation.
     impl Perform<Timeout<Write<'_>>> for TcpStream {
         fn perform(&mut self, op: Timeout<Write<'_>>) -> io::Result<usize> {
-            self.perform(op.op)
-        }
-    }
-
-    impl Perform<Timeout<WriteAll<'_>>> for TcpStream {
-        fn perform(&mut self, op: Timeout<WriteAll<'_>>) -> io::Result<()> {
             self.perform(op.op)
         }
     }

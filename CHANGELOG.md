@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.3.0
+
+Every effect is now a primitive or built from primitives. A backend
+implements only the primitives; everything else is a plain function in
+seam-core, in three forms (sync, `_async`, `_send`), that works on every
+backend. All of these are breaking.
+
+### Removed operations, and what replaces them
+
+| Removed | Use |
+|---|---|
+| `ReadExact`, `WriteAll`, `ReadToEnd` | `read_exact`, `write_all`, `read_to_end` (and `copy`) on any `Read`/`Write` handle |
+| `ReadFile`, `ReadToString`, `WriteFile` | `read_file`, `read_to_string`, `write_file`, through `Open` |
+| `CreateDir { recursive: true }` | `create_dir_all`; `CreateDir` creates one directory |
+| `SweepAtomic` | `sweep_atomic` (also needs `WallClock`); `SweepAtomic::is_temp_name` is `is_temp_name` |
+| `Resolve` | `resolve` (alloc), built on `ResolveInto` |
+| `ReadErrToEnd` | `read_err_to_end`, built on `ReadErr` |
+| `RandomU64` | `random_u64`, built on `FillRandom` |
+| `TrySendMsg`, `TryRecvMsg` | `try_send`, `try_recv`: a `Timeout` of zero |
+| `Store` | `store`, an `Update` |
+| `Print`, `EPrint` | `print`, `eprint`, or `write_all` on a stdout or stderr handle |
+| `ReadLine`, `ReadLineInto` | `BufReader::read_line` (or `read_until`) on any `Read` handle, such as stdin's |
+
+### New
+
+- Standard input, output and error are handles: `OpenStdin<H>`,
+  `OpenStdout<H>` and `OpenStderr<H>` lend handles that `Read`, or `Write`
+  and `Flush`. Raw, unbuffered bytes from stdin, not only lines.
+- `BufReader<N>`, in `ops::io`: reads lines, or records ending in any byte,
+  from any handle through a fixed buffer, with no allocation or std. `Line`
+  moved here from `ops::stdio`.
+- `Open<'a, M, F>` takes a mode type, `ReadOnly`, `WriteOnly`, `Append` or
+  `ReadWrite`, and backends' files are `File<M>`: `Read` only for readable
+  modes, `Write`, `SetLen` and the syncs only for writable ones, checked at
+  compile time. `OpenOptions` keeps only `create`, `create_new` and
+  `truncate`.
+- `copy(src, dst, buf)` in `ops::io`.
+
+### Changed
+
+- `Timeout` covers primitives only. Backends no longer time `ReadExact`,
+  `ReadToEnd`, `WriteAll` or `ReadErrToEnd`.
+- `sync` turns on `time`, for `try_send` and `try_recv`.
+- `io-std` turns on `io`.
+- In the simulation, stdio lives in the shared world, and `Sim::stdout` and
+  `Sim::stderr` return a copy (`Vec<u8>`) instead of a slice.
+- `write_file` syncs the file when it closes it, as every writable file is
+  synced on close; `std::fs::write` did not.
+- Reading a file is an acquisition, which takes `&mut`, so a query
+  (`Inspect`) can no longer read a file.
+- Tokio's and the simulated runtime's receivers have no sync non-blocking
+  receive: `try_recv` is a zero `Timeout`, which they implement
+  asynchronously. Use `try_recv_send` from async code.
+
 ## 0.2.0
 
 Breaking changes are marked **(breaking)**.

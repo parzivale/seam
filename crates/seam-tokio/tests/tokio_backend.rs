@@ -2,6 +2,8 @@
 #![cfg(feature = "full")]
 
 use seam_core::io;
+use seam_core::ops::fs::{create_dir_all_send, read_file_send, write_file_send};
+use seam_core::ops::io::{Read, Write, read_exact_send, read_to_end_send, write_all_send};
 use std::future::{Future, poll_fn};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -10,11 +12,11 @@ use std::task::Poll;
 use std::time::Duration;
 
 use seam_core::future::{SendInspect, SendPerform};
+use seam_core::ops::fs::{CreateAtomic, NextEntry, Open, ReadDir, RemoveDir};
 use seam_core::ops::fs::{
-    CreateAtomic, CreateDir, NextEntry, Open, ReadDir, ReadFile, RemoveDir, WriteFile,
+    OpenOptions, ReadOnly, ReadWrite, SetLen, Stat, SyncAll, SyncData, WriteOnly,
 };
-use seam_core::ops::fs::{OpenOptions, SetLen, Stat, SyncAll, SyncData};
-use seam_core::ops::io::{ReadExact, ReadToEnd, WriteAll};
+
 use seam_core::ops::io::{Seek, SeekFrom};
 use seam_core::ops::net::{Accept, LocalAddr, ResolveInto, TcpBind, TcpConnect};
 use seam_core::ops::time::{Now, Sleep};
@@ -25,12 +27,15 @@ use seam_tokio::net::{TcpListener, TcpStream};
 
 /// Edits a file in place through one handle: every file handle operation.
 /// Generic, so it runs on any backend.
-async fn edit_in_place<C, F>(c: &mut C, path: &std::path::Path) -> io::Result<()>
+async fn edit_in_place<C, F, R>(c: &mut C, path: &std::path::Path) -> io::Result<()>
 where
-    C: for<'a> AsyncProvide<Open<'a, F>> + for<'a> SendInspect<ReadFile<'a>> + Send,
+    C: for<'a> AsyncProvide<Open<'a, ReadWrite, F>>
+        + for<'a> AsyncProvide<Open<'a, ReadOnly, R>>
+        + Send,
+    R: for<'a> SendPerform<Read<'a>> + Send,
     F: SendPerform<Seek>
-        + for<'a> SendPerform<WriteAll<'a>>
-        + for<'a> SendPerform<ReadExact<'a>>
+        + for<'a> SendPerform<Write<'a>>
+        + for<'a> SendPerform<Read<'a>>
         + SendPerform<SetLen>
         + SendPerform<SyncAll>
         + SendPerform<SyncData>
@@ -38,26 +43,24 @@ where
         + Send,
 {
     let options = OpenOptions {
-        read: true,
-        write: true,
         create: true,
         truncate: true,
         ..OpenOptions::default()
     };
-    c.acquire_async(Open::new(path, options), async |_, f| {
-        f.perform_send(WriteAll(b"hello world")).await?;
+    c.acquire_async(Open::<ReadWrite, F>::new(path, options), async |_, f| {
+        write_all_send(f, b"hello world").await?;
         assert_eq!(f.perform_send(Seek(SeekFrom::Start(6))).await?, 6);
         let mut word = [0; 5];
-        f.perform_send(ReadExact(&mut word)).await?;
+        read_exact_send(f, &mut word).await?;
         assert_eq!(&word, b"world");
         assert_eq!(f.perform_send(Seek(SeekFrom::End(-5))).await?, 6);
-        f.perform_send(WriteAll(b"WORLD")).await?;
+        write_all_send(f, b"WORLD").await?;
         assert_eq!(f.perform_send(Seek(SeekFrom::Current(-11))).await?, 0);
         f.perform_send(SetLen(5)).await?;
         assert_eq!(f.inspect_send(Stat).await?.len, 5);
         // Past the end: the gap fills with zeros.
         assert_eq!(f.perform_send(Seek(SeekFrom::End(2))).await?, 7);
-        f.perform_send(WriteAll(b"!")).await?;
+        write_all_send(f, b"!").await?;
         f.perform_send(SyncData).await?;
         f.perform_send(SyncAll).await?;
         let err = f
@@ -71,15 +74,9 @@ where
         io::Result::Ok(())
     })
     .await?;
-    assert_eq!(c.inspect_send(ReadFile::new(path)).await?, b"hello\0\0!");
-    // Truncating needs a handle open for writing.
-    let err = c
-        .acquire_async(Open::read(path), async |_, f| {
-            f.perform_send(SetLen(0)).await
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(read_file_send(c, path).await?, b"hello\0\0!");
+    // Truncating a file opened read-only does not compile: `File<ReadOnly>`
+    // has no `SetLen`.
     Ok(())
 }
 
@@ -103,21 +100,24 @@ async fn scratch_dir(tokio: &mut Tokio, name: &str) -> io::Result<PathBuf> {
     let mut dir = std::env::temp_dir();
     dir.push(format!("seam-tokio-{name}-{}", std::process::id()));
     let _ = tokio.perform_send(RemoveDir::all(&dir)).await;
-    tokio.perform_send(CreateDir::all(&dir)).await?;
+    create_dir_all_send(tokio, &dir).await?;
     Ok(dir)
 }
 
 /// A core written only against capability bounds.
-async fn copy_file<C, F>(c: &mut C, from: PathBuf, to: PathBuf) -> io::Result<()>
+async fn copy_file<C, R, W>(c: &mut C, from: PathBuf, to: PathBuf) -> io::Result<()>
 where
-    C: for<'a> AsyncProvide<Open<'a, F>> + Send,
-    F: for<'a> SendPerform<ReadToEnd<'a>> + for<'a> SendPerform<WriteAll<'a>> + Send,
+    C: for<'a> AsyncProvide<Open<'a, ReadOnly, R>>
+        + for<'a> AsyncProvide<Open<'a, WriteOnly, W>>
+        + Send,
+    R: for<'a> SendPerform<Read<'a>> + Send,
+    W: for<'a> SendPerform<Write<'a>> + Send,
 {
     c.acquire_async(Open::read(&from), async |c, src| {
         let mut bytes = Vec::new();
-        src.perform_send(ReadToEnd(&mut bytes)).await?;
+        read_to_end_send(src, &mut bytes).await?;
         c.acquire_async(Open::create(&to), async |_, dst| {
-            dst.perform_send(WriteAll(&bytes)).await
+            write_all_send(dst, &bytes).await
         })
         .await
     })
@@ -127,10 +127,13 @@ where
 /// Generic cores that acquire resources produce `Send` futures, so they can
 /// be spawned on a multithreaded runtime.
 #[allow(dead_code)]
-fn copy_file_is_send<C, F>(c: &mut C)
+fn copy_file_is_send<C, R, W>(c: &mut C)
 where
-    C: for<'a> AsyncProvide<Open<'a, F>> + Send,
-    F: for<'a> SendPerform<ReadToEnd<'a>> + for<'a> SendPerform<WriteAll<'a>> + Send,
+    C: for<'a> AsyncProvide<Open<'a, ReadOnly, R>>
+        + for<'a> AsyncProvide<Open<'a, WriteOnly, W>>
+        + Send,
+    R: for<'a> SendPerform<Read<'a>> + Send,
+    W: for<'a> SendPerform<Write<'a>> + Send,
 {
     fn assert_send<T: Future + Send>(_: T) {}
     assert_send(copy_file(c, PathBuf::new(), PathBuf::new()));
@@ -141,12 +144,12 @@ async fn spawned_core_on_multithreaded_runtime() -> io::Result<()> {
     let mut tokio = Tokio::new();
     let dir = scratch_dir(&mut tokio, "fs").await?;
     let (a, b) = (dir.join("a"), dir.join("b"));
-    tokio.perform_send(WriteFile::new(&a, "hello")).await?;
+    write_file_send(&mut tokio, &a, "hello").await?;
 
     let copied = tokio::spawn(async move {
         let mut tokio = Tokio::new();
         copy_file(&mut tokio, a, b.clone()).await?;
-        tokio.inspect_send(ReadFile::new(&b)).await
+        read_file_send(&mut tokio, &b).await
     });
     assert_eq!(copied.await.unwrap()?, b"hello");
     tokio.perform_send(RemoveDir::all(&dir)).await
@@ -172,14 +175,14 @@ async fn tcp_loopback() -> io::Result<()> {
                 let server = listener.acquire_async(Accept::<TcpStream>::new(), async |_, s| {
                     // Waits for the whole buffer, across the client's writes.
                     let mut buf = [0; 4];
-                    s.perform_send(ReadExact(&mut buf)).await?;
+                    read_exact_send(s, &mut buf).await?;
                     io::Result::Ok(buf.to_vec())
                 });
                 let client =
                     tokio.acquire_async(TcpConnect::<TcpStream>::new(addr), async |tokio, c| {
-                        c.perform_send(WriteAll(b"pi")).await?;
+                        write_all_send(c, b"pi").await?;
                         tokio.perform_send(Sleep(Duration::from_millis(5))).await;
-                        c.perform_send(WriteAll(b"ng")).await
+                        write_all_send(c, b"ng").await
                     });
                 let (received, sent) = tokio::join!(server, client);
                 sent?;
@@ -236,12 +239,12 @@ async fn atomic_write_is_safe_to_cancel_at_every_poll() -> io::Result<()> {
     let mut cut_points = 0;
 
     for cut in 0.. {
-        tokio.perform_send(WriteFile::new(&path, "old")).await?;
+        write_file_send(&mut tokio, &path, "old").await?;
         let finished = {
             let write =
                 tokio.acquire_async(CreateAtomic::<AtomicFile>::new(&path), async |_, f| {
-                    f.perform_send(WriteAll(b"new ")).await?;
-                    f.perform_send(WriteAll(b"contents")).await
+                    write_all_send(f, b"new ").await?;
+                    write_all_send(f, b"contents").await
                 });
             let mut write = pin!(write);
             let mut polls = 0;
@@ -282,10 +285,10 @@ async fn atomic_file_listing_is_clean_after_success() -> io::Result<()> {
     let path = dir.join("state.json");
     tokio
         .acquire_async(CreateAtomic::<AtomicFile>::new(&path), async |_, f| {
-            f.perform_send(WriteAll(b"new")).await
+            write_all_send(f, b"new").await
         })
         .await?;
-    assert_eq!(tokio.inspect_send(ReadFile::new(&path)).await?, b"new");
+    assert_eq!(read_file_send(&mut tokio, &path).await?, b"new");
     assert_eq!(list(&mut tokio, &dir).await?, std::slice::from_ref(&path));
     tokio.perform_send(RemoveDir::all(&dir)).await
 }

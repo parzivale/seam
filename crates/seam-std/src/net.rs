@@ -4,8 +4,8 @@ use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
 
 use seam_core::ops::net::{
-    Accept, LocalAddr, PeerAddr, RecvFrom, Resolve, ResolveInto, SendTo, Shutdown, TcpBind,
-    TcpConnect, UdpBind,
+    Accept, LocalAddr, PeerAddr, RecvFrom, ResolveInto, SendTo, Shutdown, TcpBind, TcpConnect,
+    UdpBind,
 };
 use seam_core::{Inspect, Perform, Provide, Token};
 
@@ -33,7 +33,8 @@ pub struct TcpListener(std::net::TcpListener);
 #[derive(Debug)]
 pub struct UdpSocket(std::net::UdpSocket);
 
-crate::io_ops!(TcpStream);
+crate::read_ops!([] TcpStream);
+crate::write_ops!([] TcpStream);
 
 impl TcpStream {
     /// Flushes and shuts down both directions. A peer that has already
@@ -44,12 +45,6 @@ impl TcpStream {
             Err(e) if e.kind() == io::ErrorKind::NotConnected => Ok(()),
             result => crate::sio(result),
         }
-    }
-}
-
-impl Inspect<Resolve<'_>> for Std {
-    fn inspect(&self, op: Resolve<'_>) -> seam_core::io::Result<Vec<SocketAddr>> {
-        Ok((op.host, op.port).to_socket_addrs()?.collect())
     }
 }
 
@@ -179,7 +174,7 @@ mod timeouts {
     use std::io::{Read as _, Write as _};
     use std::time::{Duration, Instant};
 
-    use seam_core::ops::io::{Read, ReadExact, ReadToEnd, Write, WriteAll};
+    use seam_core::ops::io::{Read, Write};
     use seam_core::ops::time::{Timeout, TimesOut};
 
     use super::*;
@@ -275,64 +270,10 @@ mod timeouts {
         }
     }
 
-    impl Perform<Timeout<ReadExact<'_>>> for TcpStream {
-        fn perform(&mut self, op: Timeout<ReadExact<'_>>) -> seam_core::io::Result<()> {
-            let deadline = Deadline::after(op.after);
-            let mut buf = op.op.0;
-            while !buf.is_empty() {
-                match within(&self.0, Dir::Read, deadline.left(), |mut s| s.read(buf)) {
-                    Ok(0) => return Err(seam_core::io::ErrorKind::UnexpectedEof.into()),
-                    Ok(n) => buf = &mut buf[n..],
-                    Err(e) if e.kind() == seam_core::io::ErrorKind::Interrupted => {}
-                    Err(e) => return Err(e),
-                }
-            }
-            Ok(())
-        }
-    }
-
-    impl Perform<Timeout<ReadToEnd<'_>>> for TcpStream {
-        fn perform(&mut self, op: Timeout<ReadToEnd<'_>>) -> seam_core::io::Result<usize> {
-            let deadline = Deadline::after(op.after);
-            let out = op.op.0;
-            let mut chunk = [0; 8192];
-            let mut total = 0;
-            loop {
-                let n = match within(&self.0, Dir::Read, deadline.left(), |mut s| {
-                    s.read(&mut chunk)
-                }) {
-                    Err(e) if e.kind() == seam_core::io::ErrorKind::Interrupted => continue,
-                    r => r?,
-                };
-                if n == 0 {
-                    return Ok(total);
-                }
-                out.extend_from_slice(&chunk[..n]);
-                total += n;
-            }
-        }
-    }
-
     impl Perform<Timeout<Write<'_>>> for TcpStream {
         fn perform(&mut self, op: Timeout<Write<'_>>) -> seam_core::io::Result<usize> {
             let buf = op.op.0;
             within(&self.0, Dir::Write, Some(op.after), |mut s| s.write(buf))
-        }
-    }
-
-    impl Perform<Timeout<WriteAll<'_>>> for TcpStream {
-        fn perform(&mut self, op: Timeout<WriteAll<'_>>) -> seam_core::io::Result<()> {
-            let deadline = Deadline::after(op.after);
-            let mut buf = op.op.0;
-            while !buf.is_empty() {
-                match within(&self.0, Dir::Write, deadline.left(), |mut s| s.write(buf)) {
-                    Ok(0) => return Err(seam_core::io::ErrorKind::WriteZero.into()),
-                    Ok(n) => buf = &buf[n..],
-                    Err(e) if e.kind() == seam_core::io::ErrorKind::Interrupted => {}
-                    Err(e) => return Err(e),
-                }
-            }
-            Ok(())
         }
     }
 

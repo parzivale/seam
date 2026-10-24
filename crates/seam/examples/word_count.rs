@@ -16,10 +16,11 @@
 //! output does not depend on how the threads interleave.
 
 use seam::io;
+use seam::ops::fs::{Open, ReadOnly, read_to_string};
+use seam::ops::io::{Read, Write};
+use seam::ops::stdio::{OpenStdout, print};
 
 use seam::ops::env::Args;
-use seam::ops::fs::ReadToString;
-use seam::ops::stdio::Print;
 use seam::ops::sync::{Share, Update};
 use seam::ops::task::{AvailableParallelism, JoinNext, SpawnInto, SpawnSet};
 use seam::prelude::*;
@@ -32,28 +33,30 @@ type Counts = Vec<(String, usize)>;
 type Worker = Box<dyn FnOnce() -> io::Result<Counts> + Send>;
 
 /// Takes paths from `queue` until it is empty, counting each file's words.
-fn worker<C, Q>(c: C, mut queue: Q) -> io::Result<Counts>
+fn worker<C, R, Q>(mut c: C, mut queue: Q) -> io::Result<Counts>
 where
-    C: for<'a> Inspect<ReadToString<'a>>,
+    C: for<'a> Provide<Open<'a, ReadOnly, R>>,
+    R: for<'a> Perform<Read<'a>>,
     Q: for<'a> Perform<Update<'a, Vec<String>, Option<String>>>,
 {
     let mut counts = Vec::new();
     // Popping is one `Update`, so no two workers take the same path.
     while let Some(path) = queue.perform(Update::new(&mut |q: &mut Vec<String>| q.pop())) {
-        let text = c.inspect(ReadToString::new(&path))?;
+        let text = read_to_string(&mut c, &path)?;
         counts.push((path, text.split_whitespace().count()));
     }
     Ok(counts)
 }
 
-/// The program. `Q` is the backend's shared cell and `S` its set of
-/// threads; both are inferred from the backend.
-fn run<C, Q, S>(c: &mut C) -> io::Result<()>
+/// The program. `Q` is the backend's shared cell, `S` its set of threads,
+/// `R` its read-only file and `O` its standard output; all are inferred from
+/// the backend.
+fn run<C, Q, S, R, O>(c: &mut C) -> io::Result<()>
 where
     C: Inspect<Args>
         + Inspect<AvailableParallelism>
-        + for<'a> Inspect<ReadToString<'a>>
-        + for<'a> Perform<Print<'a>>
+        + for<'a> Provide<Open<'a, ReadOnly, R>>
+        + Provide<OpenStdout<O>>
         + Perform<Share<Vec<String>, Q>>
         + Provide<SpawnSet<S>>
         + Clone
@@ -61,6 +64,8 @@ where
         + 'static,
     Q: for<'a> Perform<Update<'a, Vec<String>, Option<String>>> + Clone + Send + 'static,
     S: Perform<SpawnInto<Worker>> + Perform<JoinNext<io::Result<Counts>>>,
+    R: for<'a> Perform<Read<'a>>,
+    O: for<'a> Perform<Write<'a>>,
 {
     let paths: Vec<String> = c
         .inspect(Args)
@@ -95,15 +100,15 @@ where
     counts.sort();
     let total: usize = counts.iter().map(|(_, n)| n).sum();
     for (path, n) in counts {
-        c.perform(Print(format!("{n:>8} {path}\n").as_bytes()))?;
+        print(c, format!("{n:>8} {path}\n").as_bytes())?;
     }
-    c.perform(Print(format!("{total:>8} total\n").as_bytes()))
+    print(c, format!("{total:>8} total\n").as_bytes())
 }
 
 fn main() -> io::Result<()> {
     use seam::stdlib::{Std, sync::Shared, task::TaskSet};
 
-    run::<_, Shared<_>, TaskSet<_>>(&mut Std::new())
+    run::<_, Shared<_>, TaskSet<_>, _, _>(&mut Std::new())
 }
 
 #[cfg(test)]
@@ -123,7 +128,7 @@ mod tests {
 
     fn output(sim: Sim, seed: u64) -> io::Result<String> {
         let threads = Threads::with_seed(sim, seed);
-        threads.run(|mut sim| run::<_, Shared<_>, ThreadSet<_>>(&mut sim))?;
+        threads.run(|mut sim| run::<_, Shared<_>, ThreadSet<_>, _, _>(&mut sim))?;
         Ok(String::from_utf8(threads.with_sim(|s| s.take_stdout())).unwrap())
     }
 
@@ -132,7 +137,7 @@ mod tests {
     fn the_world_afterwards() {
         let threads = Threads::with_seed(world(2), 3);
         threads
-            .run(|mut sim| run::<_, Shared<_>, ThreadSet<_>>(&mut sim))
+            .run(|mut sim| run::<_, Shared<_>, ThreadSet<_>, _, _>(&mut sim))
             .unwrap();
         threads.with_sim(|sim| {
             sim.assert_world(

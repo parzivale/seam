@@ -10,20 +10,24 @@
 //! use seam_core::io;
 //! use seam_core::prelude::*;
 //! use seam_core::ops::env::Args;
-//! use seam_core::ops::fs::ReadToString;
-//! use seam_core::ops::stdio::Print;
+//! use seam_core::ops::fs::{Open, ReadOnly, read_to_string};
+//! use seam_core::ops::io::{Read, Write};
+//! use seam_core::ops::stdio::{OpenStdout, print};
 //! use seam_std::Std;
 //!
 //! /// The core: counts the lines of the file named on the command line.
-//! /// Pure apart from the capabilities in its bounds.
-//! fn count_lines<C>(c: &mut C) -> io::Result<()>
+//! /// Pure apart from the capabilities in its bounds: it can read its
+//! /// arguments, read files and print.
+//! fn count_lines<C, F, O>(c: &mut C) -> io::Result<()>
 //! where
-//!     C: Inspect<Args> + for<'a> Inspect<ReadToString<'a>> + for<'a> Perform<Print<'a>>,
+//!     C: Inspect<Args> + for<'a> Provide<Open<'a, ReadOnly, F>> + Provide<OpenStdout<O>>,
+//!     F: for<'a> Perform<Read<'a>>,
+//!     O: for<'a> Perform<Write<'a>>,
 //! {
 //!     let args = c.inspect(Args);
 //!     let path = args.get(1).ok_or(io::ErrorKind::InvalidInput)?;
-//!     let n = c.inspect(ReadToString::new(path))?.lines().count();
-//!     c.perform(Print(format!("{n}\n").as_bytes()))
+//!     let n = read_to_string(c, path)?.lines().count();
+//!     print(c, format!("{n}\n").as_bytes())
 //! }
 //!
 //! /// The edge: the only place real effects are chosen.
@@ -37,8 +41,9 @@
 //!
 //! # Handles
 //!
-//! Files and sockets are newtypes (`fs::File`, `net::TcpStream`, ...)
-//! that expose no std I/O traits and no way to get the std value back, so
+//! Files, sockets and the standard streams are newtypes (`fs::File<M>`,
+//! `net::TcpStream`, `stdio::Stdout`, ...) that expose no std I/O traits
+//! and no way to get the std value back, so
 //! every effect on them also goes through [`Perform`](seam_core::Perform)
 //! or [`Inspect`](seam_core::Inspect). A core only ever borrows one inside
 //! an [`acquire`](seam_core::Acquire::acquire) scope. When the scope
@@ -109,7 +114,7 @@ pub mod process;
 #[cfg(feature = "random")]
 mod random;
 #[cfg(feature = "io-std")]
-mod stdio;
+pub mod stdio;
 #[cfg(feature = "sync")]
 pub mod sync;
 #[cfg(feature = "rt")]
@@ -123,12 +128,12 @@ pub(crate) fn sio<T>(r: std::io::Result<T>) -> seam_core::io::Result<T> {
     r.map_err(Into::into)
 }
 
-/// Implements the handle-level `io` operations for a wrapper around a std
-/// type that implements `Read` and `Write`.
-#[cfg(any(feature = "fs", feature = "net"))]
-macro_rules! io_ops {
-    ($ty:ty) => {
-        impl seam_core::Perform<seam_core::ops::io::Read<'_>> for $ty {
+/// Implements `Read` for a wrapper around a std type that implements
+/// `std::io::Read`: `read_ops!([generics] Type)`.
+#[cfg(any(feature = "fs", feature = "net", feature = "io-std"))]
+macro_rules! read_ops {
+    ([$($g:tt)*] $ty:ty) => {
+        impl<$($g)*> seam_core::Perform<seam_core::ops::io::Read<'_>> for $ty {
             fn perform(
                 &mut self,
                 op: seam_core::ops::io::Read<'_>,
@@ -136,26 +141,17 @@ macro_rules! io_ops {
                 crate::sio(std::io::Read::read(&mut self.0, op.0))
             }
         }
+    };
+}
+#[cfg(any(feature = "fs", feature = "net", feature = "io-std"))]
+use read_ops;
 
-        impl seam_core::Perform<seam_core::ops::io::ReadExact<'_>> for $ty {
-            fn perform(
-                &mut self,
-                op: seam_core::ops::io::ReadExact<'_>,
-            ) -> seam_core::io::Result<()> {
-                crate::sio(std::io::Read::read_exact(&mut self.0, op.0))
-            }
-        }
-
-        impl seam_core::Perform<seam_core::ops::io::ReadToEnd<'_>> for $ty {
-            fn perform(
-                &mut self,
-                op: seam_core::ops::io::ReadToEnd<'_>,
-            ) -> seam_core::io::Result<usize> {
-                crate::sio(std::io::Read::read_to_end(&mut self.0, op.0))
-            }
-        }
-
-        impl seam_core::Perform<seam_core::ops::io::Write<'_>> for $ty {
+/// Implements `Write` and `Flush` for a wrapper around a std type that
+/// implements `std::io::Write`: `write_ops!([generics] Type)`.
+#[cfg(any(feature = "fs", feature = "net", feature = "io-std"))]
+macro_rules! write_ops {
+    ([$($g:tt)*] $ty:ty) => {
+        impl<$($g)*> seam_core::Perform<seam_core::ops::io::Write<'_>> for $ty {
             fn perform(
                 &mut self,
                 op: seam_core::ops::io::Write<'_>,
@@ -164,24 +160,15 @@ macro_rules! io_ops {
             }
         }
 
-        impl seam_core::Perform<seam_core::ops::io::WriteAll<'_>> for $ty {
-            fn perform(
-                &mut self,
-                op: seam_core::ops::io::WriteAll<'_>,
-            ) -> seam_core::io::Result<()> {
-                crate::sio(std::io::Write::write_all(&mut self.0, op.0))
-            }
-        }
-
-        impl seam_core::Perform<seam_core::ops::io::Flush> for $ty {
+        impl<$($g)*> seam_core::Perform<seam_core::ops::io::Flush> for $ty {
             fn perform(&mut self, _: seam_core::ops::io::Flush) -> seam_core::io::Result<()> {
                 crate::sio(std::io::Write::flush(&mut self.0))
             }
         }
     };
 }
-#[cfg(any(feature = "fs", feature = "net"))]
-use io_ops;
+#[cfg(any(feature = "fs", feature = "net", feature = "io-std"))]
+use write_ops;
 
 // Every capability type opts in to seam's lifts.
 impl seam_core::Capability for Std {}

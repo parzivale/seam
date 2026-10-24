@@ -3,14 +3,17 @@
 #![cfg(all(feature = "std", feature = "tokio", feature = "test", feature = "full"))]
 
 use seam::io;
+use seam::ops::fs::{read_to_string_send, write_file_send};
+use seam::ops::io::write_all;
+use seam::ops::random::random_u64;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use seam::kinds;
 use seam::ops::env::Var;
-use seam::ops::fs::{CreateAtomic, ReadToString, WriteFile};
-use seam::ops::io::WriteAll;
-use seam::ops::random::RandomU64;
+use seam::ops::fs::CreateAtomic;
+use seam::ops::fs::{Open, ReadOnly, WriteOnly};
+use seam::ops::io::{Read, Write};
 use seam::ops::sync::{Channel, RecvMsg, SendMsg};
 use seam::ops::task::{Join, JoinError, Spawn};
 use seam::ops::time::{Now, Sleep};
@@ -76,19 +79,21 @@ where
 }
 
 /// An async core with `Send` bounds, for a multithreaded runtime.
-async fn save<C>(c: &mut C, path: &str) -> io::Result<String>
+async fn save<C, W, R>(c: &mut C, path: &str) -> io::Result<String>
 where
     C: SendPerform<Sleep>
-        + for<'a> SendPerform<WriteFile<'a>>
-        + for<'a> SendInspect<ReadToString<'a>>
+        + for<'a> AsyncProvide<Open<'a, WriteOnly, W>>
+        + for<'a> AsyncProvide<Open<'a, ReadOnly, R>>
         + Inspect<Now>
         + Send,
+    W: for<'a> SendPerform<Write<'a>> + Send,
+    R: for<'a> SendPerform<Read<'a>> + Send,
 {
     let before = c.inspect(Now);
     c.perform_send(Sleep(Duration::from_millis(5))).await;
     assert!(c.inspect(Now) > before);
-    c.perform_send(WriteFile::new(path, "saved")).await?;
-    c.inspect_send(ReadToString::new(path)).await
+    write_file_send(c, path, "saved").await?;
+    read_to_string_send(c, path).await
 }
 
 #[test]
@@ -111,7 +116,7 @@ fn a_sync_root_with_a_simulated_world_and_an_own_part() {
 
     // Acquisitions go through the root too.
     root.acquire(CreateAtomic::new("/tmp/out"), |_, file| {
-        file.perform(WriteAll(b"ok"))
+        write_all(file, b"ok")
     })
     .unwrap();
     assert_eq!(root.parts().sim.file("/tmp/out").unwrap(), b"ok");
@@ -135,7 +140,7 @@ async fn tokio_and_std_in_one_root() {
     let path = path.to_str().unwrap().to_owned();
     let read = tokio::spawn(async move {
         let out = save(&mut root, &path).await;
-        let _ = root.perform(RandomU64); // from the std part
+        let _ = random_u64(&mut root); // from the std part
         let _ = std::fs::remove_file(&path);
         out
     })

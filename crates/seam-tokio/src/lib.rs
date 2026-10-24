@@ -18,7 +18,7 @@
 //! use std::net::SocketAddr;
 //! use std::time::Duration;
 //! use seam_core::prelude::*;
-//! use seam_core::ops::io::WriteAll;
+//! use seam_core::ops::io::{Write, write_all_send};
 //! use seam_core::ops::net::{ResolveInto, TcpConnect};
 //! use seam_core::ops::time::Sleep;
 //!
@@ -27,7 +27,7 @@
 //! async fn heartbeat<C, S>(c: &mut C, host: &str) -> io::Result<()>
 //! where
 //!     C: for<'a> SendInspect<ResolveInto<'a>> + AsyncProvide<TcpConnect<S>> + SendPerform<Sleep> + Send,
-//!     S: for<'a> SendPerform<WriteAll<'a>> + Send,
+//!     S: for<'a> SendPerform<Write<'a>> + Send,
 //! {
 //!     let mut addr = [SocketAddr::from(([0, 0, 0, 0], 0))];
 //!     if c.inspect_send(ResolveInto::new(host, 9000, &mut addr)).await? == 0 {
@@ -38,7 +38,7 @@
 //!         // The stream exists only inside this scope, and is shut down
 //!         // cleanly when the scope succeeds.
 //!         let sent = c
-//!             .acquire_async(TcpConnect::new(addr), async |_, s| s.perform_send(WriteAll(b"alive\n")).await)
+//!             .acquire_async(TcpConnect::new(addr), async |_, s| write_all_send(s, b"alive\n").await)
 //!             .await;
 //!         match sent {
 //!             Ok(()) => return Ok(()),
@@ -192,27 +192,26 @@ macro_rules! async_op {
     };
 }
 
-/// Implements the handle-level `io` operations for a wrapper around a Tokio
-/// type that implements `AsyncRead` and `AsyncWrite`.
-#[cfg(any(feature = "fs", feature = "net"))]
-macro_rules! io_ops {
-    ($ty:ty) => {
-        async_op!(perform ['a] $ty, seam_core::ops::io::Read<'a>, |s, op| {
+/// Implements `Read` for a wrapper around a Tokio type that implements
+/// `AsyncRead`: `read_ops!([generics] Type)`.
+#[cfg(any(feature = "fs", feature = "net", feature = "io-std"))]
+macro_rules! read_ops {
+    ([$($g:tt)*] $ty:ty) => {
+        async_op!(perform ['a, $($g)*] $ty, seam_core::ops::io::Read<'a>, |s, op| {
             tokio::io::AsyncReadExt::read(&mut s.0, op.0).await
         });
-        async_op!(perform ['a] $ty, seam_core::ops::io::ReadExact<'a>, |s, op| {
-            tokio::io::AsyncReadExt::read_exact(&mut s.0, op.0).await.map(drop)
-        });
-        async_op!(perform ['a] $ty, seam_core::ops::io::ReadToEnd<'a>, |s, op| {
-            tokio::io::AsyncReadExt::read_to_end(&mut s.0, op.0).await
-        });
-        async_op!(perform ['a] $ty, seam_core::ops::io::Write<'a>, |s, op| {
+    };
+}
+
+/// Implements `Write` and `Flush` for a wrapper around a Tokio type that
+/// implements `AsyncWrite`: `write_ops!([generics] Type)`.
+#[cfg(any(feature = "fs", feature = "net", feature = "io-std"))]
+macro_rules! write_ops {
+    ([$($g:tt)*] $ty:ty) => {
+        async_op!(perform ['a, $($g)*] $ty, seam_core::ops::io::Write<'a>, |s, op| {
             tokio::io::AsyncWriteExt::write(&mut s.0, op.0).await
         });
-        async_op!(perform ['a] $ty, seam_core::ops::io::WriteAll<'a>, |s, op| {
-            tokio::io::AsyncWriteExt::write_all(&mut s.0, op.0).await
-        });
-        async_op!(perform [] $ty, seam_core::ops::io::Flush, |s, _op| {
+        async_op!(perform [$($g)*] $ty, seam_core::ops::io::Flush, |s, _op| {
             tokio::io::AsyncWriteExt::flush(&mut s.0).await
         });
     };
@@ -229,7 +228,7 @@ mod runtime;
 #[cfg(feature = "signal")]
 mod signal;
 #[cfg(feature = "io-std")]
-mod stdio;
+pub mod stdio;
 #[cfg(feature = "sync")]
 pub mod sync;
 #[cfg(feature = "rt")]

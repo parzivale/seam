@@ -4,10 +4,10 @@ use std::convert::Infallible;
 use std::io;
 use std::process::Stdio;
 
-use seam_core::ops::io::{Flush, Read, ReadExact, ReadToEnd, Write, WriteAll};
+use seam_core::ops::io::{Flush, Read, Write};
 use seam_core::ops::process::{
-    ChildId, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, ReadErrToEnd, RunCommand,
-    SpawnChild, Wait,
+    ChildId, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, RunCommand, SpawnChild,
+    Wait,
 };
 use seam_core::{AsyncProvide, Inspect, Perform, Token};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -132,13 +132,9 @@ impl AsyncProvide<SpawnChild<Child>> for Tokio {
 }
 
 async_op!(perform ['a] Child, Write<'a>, |s, op| s.stdin()?.write(op.0).await);
-async_op!(perform ['a] Child, WriteAll<'a>, |s, op| s.stdin()?.write_all(op.0).await);
 async_op!(perform [] Child, Flush, |s, _op| s.stdin()?.flush().await);
 async_op!(perform ['a] Child, Read<'a>, |s, op| s.stdout()?.read(op.0).await);
-async_op!(perform ['a] Child, ReadExact<'a>, |s, op| s.stdout()?.read_exact(op.0).await.map(drop));
-async_op!(perform ['a] Child, ReadToEnd<'a>, |s, op| s.stdout()?.read_to_end(op.0).await);
 async_op!(perform ['a] Child, ReadErr<'a>, |s, op| s.stderr()?.read(op.0).await);
-async_op!(perform ['a] Child, ReadErrToEnd<'a>, |s, op| s.stderr()?.read_to_end(op.0).await);
 async_op!(perform [] Child, Wait, |s, _op| s.wait().await);
 
 impl Perform<CloseStdin> for Child {

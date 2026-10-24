@@ -4,11 +4,12 @@
 #![cfg(feature = "full")]
 
 use seam_core::io;
+use seam_core::ops::io::{read_exact, write_all, write_all_send};
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use seam_core::future::SendPerform;
-use seam_core::ops::io::{Read, ReadExact, ReadToEnd, WriteAll};
+use seam_core::ops::io::Read;
 use seam_core::ops::net::{Accept, TcpBind, TcpConnect};
 use seam_core::ops::signal::CtrlC;
 use seam_core::ops::sync::{Channel, RecvError, RecvMsg, SendError, SendMsg};
@@ -225,32 +226,22 @@ mod runtime {
                         .acquire_async(
                             Timeout::new(SEC, Accept::<TcpStream>::new()),
                             async |_, server| {
-                                client.perform_send(WriteAll(b"partial")).await?;
-                                let mut part = [0; 4];
-                                server
-                                    .perform_send(Timeout::new(SEC, ReadExact(&mut part)))
-                                    .await?;
-                                assert_eq!(&part, b"part");
-                                let mut all = Vec::new();
-                                let err = server
-                                    .perform_send(Timeout::new(SEC, ReadToEnd(&mut all)))
-                                    .await
-                                    .unwrap_err();
-                                assert_eq!(
-                                    err.kind(),
-                                    io::ErrorKind::TimedOut,
-                                    "the client never closed"
-                                );
-                                assert_eq!(all, b"ial", "what arrived is kept");
-                                client.perform_send(WriteAll(b"xy")).await?;
+                                // A timed read returns what has arrived at once.
+                                write_all_send(client, b"partial").await?;
+                                let mut buf = [0; 16];
                                 let start = now(sim);
+                                let n = server
+                                    .perform_send(Timeout::new(SEC, Read(&mut buf)))
+                                    .await?;
+                                assert_eq!(&buf[..n], b"partial");
+                                assert_eq!(now(sim), start, "without waiting");
+                                // With nothing more coming, it waits out the deadline.
                                 let err = server
-                                    .perform_send(Timeout::new(SEC, ReadExact(&mut part)))
+                                    .perform_send(Timeout::new(SEC, Read(&mut buf)))
                                     .await
                                     .unwrap_err();
                                 assert_eq!(err.kind(), io::ErrorKind::TimedOut);
                                 assert_eq!(now(sim) - start, SEC);
-                                assert_eq!(&part[..2], b"xy", "what arrived is kept");
                                 io::Result::Ok(())
                             },
                         )
@@ -365,15 +356,12 @@ mod threads {
                                 .perform(Timeout::new(SEC, Read(&mut [0; 4])))
                                 .unwrap_err();
                             assert_eq!(err.kind(), io::ErrorKind::TimedOut);
-                            client.perform(WriteAll(b"pi"))?;
+                            write_all(client, b"pi")?;
                             let mut buf = [0; 4];
-                            let err = server
-                                .perform(Timeout::new(SEC, ReadExact(&mut buf)))
-                                .unwrap_err();
-                            assert_eq!(err.kind(), io::ErrorKind::TimedOut);
-                            assert_eq!(&buf[..2], b"pi", "what arrived is kept");
-                            client.perform(WriteAll(b"ng"))?;
-                            server.perform(ReadExact(&mut buf[2..]))?;
+                            let n = server.perform(Timeout::new(SEC, Read(&mut buf)))?;
+                            assert_eq!(&buf[..n], b"pi", "a timed read returns what arrived");
+                            write_all(client, b"ng")?;
+                            read_exact(server, &mut buf[2..])?;
                             assert_eq!(&buf, b"ping");
                             io::Result::Ok(())
                         },
@@ -381,7 +369,7 @@ mod threads {
                 })
             })
             .unwrap();
-            assert_eq!(now(&sim), 14 * SEC);
+            assert_eq!(now(&sim), 13 * SEC);
         });
     }
 }

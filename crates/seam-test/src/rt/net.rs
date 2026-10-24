@@ -12,7 +12,7 @@ use core::task::Poll;
 use seam_core::io;
 use std::sync::Arc;
 
-use seam_core::ops::io::{Flush, Read, ReadExact, ReadToEnd, Write, WriteAll};
+use seam_core::ops::io::{Flush, Read, Write};
 use seam_core::ops::net::{
     Accept, LocalAddr, PeerAddr, RecvFrom, SendTo, Shutdown, TcpBind, TcpConnect, UdpBind,
 };
@@ -184,42 +184,8 @@ async_op!(['a] TcpStream, Read<'a>, |s, op| {
     s.0.perform(op)
 });
 
-// Waits until the buffer is full or the peer closes its end, as a real
-// stream does.
-async_op!(['a] TcpStream, ReadExact<'a>, |s, op| {
-    let mut buf = op.0;
-    while !buf.is_empty() {
-        s.readable().await;
-        let rest = core::mem::take(&mut buf);
-        match s.0.perform(Read(&mut *rest))? {
-            0 => return Err(crate::error(io::ErrorKind::UnexpectedEof, "the stream ended before the buffer was full")),
-            n => buf = &mut rest[n..],
-        }
-    }
-    Ok(())
-});
-
-// Reads until the peer closes its end, as a real stream does.
-async_op!(['a] TcpStream, ReadToEnd<'a>, |s, op| {
-    let mut total = 0;
-    loop {
-        s.readable().await;
-        let n = s.0.perform(ReadToEnd(&mut *op.0))?;
-        total += n;
-        if n == 0 {
-            return Ok(total);
-        }
-    }
-});
-
 impl Perform<Write<'_>> for TcpStream {
     fn perform(&mut self, op: Write<'_>) -> io::Result<usize> {
-        self.0.perform(op)
-    }
-}
-
-impl Perform<WriteAll<'_>> for TcpStream {
-    fn perform(&mut self, op: WriteAll<'_>) -> io::Result<()> {
         self.0.perform(op)
     }
 }

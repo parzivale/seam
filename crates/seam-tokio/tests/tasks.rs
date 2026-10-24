@@ -2,13 +2,14 @@
 #![cfg(feature = "full")]
 
 use seam_core::io;
+use seam_core::ops::io::{Write, read_to_end_send, write_all_send};
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use seam_core::future::SendPerform;
-use seam_core::ops::io::{Read, ReadToEnd, WriteAll};
+use seam_core::ops::io::Read;
 use seam_core::ops::net::{Accept, LocalAddr, Shutdown, TcpBind, TcpConnect};
 use seam_core::ops::task::{
     Abort, Detach, IsFinished, Join, JoinError, JoinNext, Spawn, SpawnInto, SpawnSet, SpawnWith,
@@ -219,7 +220,7 @@ struct EchoOnce;
 
 impl<S> TaskBody<S> for EchoOnce
 where
-    S: for<'a> SendPerform<Read<'a>> + for<'a> SendPerform<WriteAll<'a>> + Send,
+    S: for<'a> SendPerform<Read<'a>> + for<'a> SendPerform<Write<'a>> + Send,
 {
     type Output = u64;
     type Error = io::Error;
@@ -227,7 +228,7 @@ where
     async fn run(self, s: &mut S) -> io::Result<u64> {
         let mut buf = [0; 64];
         let n = s.perform_send(Read(&mut buf)).await?;
-        s.perform_send(WriteAll(&buf[..n])).await?;
+        write_all_send(s, &buf[..n]).await?;
         Ok(n as u64)
     }
 }
@@ -248,11 +249,11 @@ where
                 let addr = listener.inspect(LocalAddr)?;
                 let client =
                     tokio.acquire_async(TcpConnect::<TcpStream>::new(addr), async |_, c| {
-                        c.perform_send(WriteAll(b"hello")).await?;
+                        write_all_send(c, b"hello").await?;
                         c.perform_send(Shutdown(seam_core::ops::net::How::Write))
                             .await?;
                         let mut reply = Vec::new();
-                        c.perform_send(ReadToEnd(&mut reply)).await?;
+                        read_to_end_send(c, &mut reply).await?;
                         io::Result::Ok(reply)
                     });
                 let server = listener.acquire_async(echo, async |_, task| {
@@ -284,7 +285,7 @@ async fn spawn_with_a_boxed_closure() -> io::Result<()> {
         Box::pin(async move {
             let mut buf = [0; 64];
             let n = s.perform_send(Read(&mut buf)).await?;
-            s.perform_send(WriteAll(&buf[..n])).await?;
+            write_all_send(s, &buf[..n]).await?;
             Ok(n as u64)
         })
     });

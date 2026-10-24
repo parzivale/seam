@@ -160,9 +160,11 @@ impl Sub for Instant {
 /// not being able to finish, as its [`TimesOut`] impl says. A receive that
 /// times out fails with `RecvError::Empty`, a send with `SendError::Full`
 /// (handing the value back), and an I/O operation with
-/// `io::ErrorKind::TimedOut`. An operation that expires had no effect,
-/// except where its own docs say otherwise (`ReadToEnd` keeps what it read,
-/// and `WriteAll` may have written part of its buffer).
+/// `io::ErrorKind::TimedOut`. An operation that expires had no effect.
+///
+/// `Timeout` wraps primitives only. A helper built from several (such as
+/// `read_exact`) has no timed form; a core that needs one times each
+/// primitive it performs, against a deadline it keeps.
 ///
 /// `Timeout` also wraps acquisitions that wait, such as `Accept` and
 /// `TcpConnect`, failing them with their own error.

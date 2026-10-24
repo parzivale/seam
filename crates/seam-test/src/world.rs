@@ -21,6 +21,8 @@ pub(crate) struct World {
     pub(crate) fs: crate::fs::Fs,
     #[cfg(feature = "net")]
     pub(crate) net: crate::net::Net,
+    #[cfg(feature = "io-std")]
+    pub(crate) stdio: crate::stdio::Stdio,
 }
 
 #[allow(clippy::derivable_impls)] // derivable only when `wall` is compiled out
@@ -33,6 +35,8 @@ impl Default for World {
             fs: crate::fs::Fs::default(),
             #[cfg(feature = "net")]
             net: crate::net::Net::default(),
+            #[cfg(feature = "io-std")]
+            stdio: crate::stdio::Stdio::default(),
         }
     }
 }

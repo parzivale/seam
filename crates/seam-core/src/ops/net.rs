@@ -4,12 +4,12 @@
 //! core acquires one for the length of a scope (see
 //! [`acquire`](crate::acquire)). Reading and writing a connected stream use
 //! [`io`](super::io). DNS is an effect too: resolve names with
-//! [`ResolveInto`], or with [`Resolve`] (`alloc`) to get them all.
+//! [`ResolveInto`], or with [`resolve`] (`alloc`) to get them all.
 //!
 //! ```
 //! use seam_core::io;
 //! use seam_core::prelude::*;
-//! use seam_core::ops::io::WriteAll;
+//! use seam_core::ops::io::{Write, write_all};
 //! use seam_core::ops::net::{ResolveInto, TcpConnect};
 //! use core::net::SocketAddr;
 //!
@@ -18,14 +18,14 @@
 //! fn notify<C, S>(c: &mut C, host: &str, port: u16, line: &str) -> io::Result<()>
 //! where
 //!     C: for<'a> Inspect<ResolveInto<'a>> + Provide<TcpConnect<S>>,
-//!     S: for<'a> Perform<WriteAll<'a>>,
+//!     S: for<'a> Perform<Write<'a>>,
 //! {
 //!     let mut addrs = [SocketAddr::from(([0, 0, 0, 0], 0)); 4];
 //!     let n = c.inspect(ResolveInto::new(host, port, &mut addrs))?;
 //!     let mut last = io::Error::new(io::ErrorKind::NotFound, "no addresses");
 //!     for &addr in &addrs[..n.min(addrs.len())] {
 //!         // Closing the stream when the scope succeeds shuts it down cleanly.
-//!         match c.acquire(TcpConnect::new(addr), |_c, s| s.perform(WriteAll(line.as_bytes()))) {
+//!         match c.acquire(TcpConnect::new(addr), |_c, s| write_all(s, line.as_bytes())) {
 //!             Ok(()) => return Ok(()),
 //!             Err(e) => last = e,
 //!         }
@@ -35,21 +35,12 @@
 //! ```
 
 use crate::io;
+#[allow(unused_imports)]
+use crate::three_ways::three_ways;
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 use core::net::SocketAddr;
-
-/// Resolve a host name to socket addresses. DNS is an effect too. Needs
-/// the `alloc` feature; [`ResolveInto`] does not.
-#[cfg(feature = "alloc")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Resolve<'a> {
-    /// The host name or address literal.
-    pub host: &'a str,
-    /// The port to put in each address.
-    pub port: u16,
-}
 
 /// Resolve a host name into a buffer of socket addresses, without
 /// allocating. Returns how many addresses the name has, which can be more
@@ -147,14 +138,6 @@ impl From<How> for std::net::Shutdown {
             How::Write => Self::Write,
             How::Both => Self::Both,
         }
-    }
-}
-
-#[cfg(feature = "alloc")]
-impl<'a> Resolve<'a> {
-    /// Describes resolving `host` with `port`.
-    pub fn new(host: &'a str, port: u16) -> Self {
-        Self { host, port }
     }
 }
 
@@ -282,8 +265,26 @@ mod timeouts {
 crate::root::in_kind!(crate::kinds::Net: [S] TcpConnect<S>, [L] TcpBind<L>, [U] UdpBind<U>, ['a] ResolveInto<'a>);
 
 #[cfg(feature = "alloc")]
-operations! {
-    #[query] Resolve<'_> => io::Result<Vec<SocketAddr>>;
+three_ways! {
+    /// Every address `host` resolves to, with `port`. Needs `alloc`;
+    /// [`ResolveInto`] is the primitive, filling a buffer instead. Asks
+    /// twice if the name has more than 8 addresses.
+    pub fn resolve, resolve_async, resolve_send
+    [C] (c: &C, host: &str, port: u16) -> io::Result<Vec<SocketAddr>>
+    where
+        sync { C: for<'a> crate::Inspect<ResolveInto<'a>> }
+        async { C: for<'a> crate::future::AsyncInspect<ResolveInto<'a>> }
+        send { C: for<'a> crate::future::SendInspect<ResolveInto<'a>> + Sync }
+    {
+        let unspecified = SocketAddr::from(([0, 0, 0, 0], 0));
+        let mut first = [unspecified; 8];
+        let n = ask!(c, ResolveInto::new(host, port, &mut first))?;
+        if n <= first.len() {
+            return Ok(first[..n].to_vec());
+        }
+        let mut all = alloc::vec![unspecified; n];
+        let n = ask!(c, ResolveInto::new(host, port, &mut all))?;
+        all.truncate(n);
+        Ok(all)
+    }
 }
-#[cfg(feature = "alloc")]
-crate::root::in_kind!(crate::kinds::Net: ['a] Resolve<'a>);

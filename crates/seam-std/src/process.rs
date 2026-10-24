@@ -4,10 +4,10 @@ use std::convert::Infallible;
 use std::io::{Read as _, Write as _};
 use std::process::{ChildStderr, ChildStdin, ChildStdout, Stdio};
 
-use seam_core::ops::io::{Flush, Read, ReadExact, ReadToEnd, Write, WriteAll};
+use seam_core::ops::io::{Flush, Read, Write};
 use seam_core::ops::process::{
-    ChildId, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, ReadErrToEnd, RunCommand,
-    SpawnChild, Wait,
+    ChildId, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, RunCommand, SpawnChild,
+    Wait,
 };
 use seam_core::{Inspect, Perform, Provide, Token};
 
@@ -137,12 +137,6 @@ impl Perform<Write<'_>> for Child {
     }
 }
 
-impl Perform<WriteAll<'_>> for Child {
-    fn perform(&mut self, op: WriteAll<'_>) -> seam_core::io::Result<()> {
-        crate::sio(self.stdin()?.write_all(op.0))
-    }
-}
-
 impl Perform<Flush> for Child {
     fn perform(&mut self, _: Flush) -> seam_core::io::Result<()> {
         crate::sio(self.stdin()?.flush())
@@ -155,27 +149,9 @@ impl Perform<Read<'_>> for Child {
     }
 }
 
-impl Perform<ReadExact<'_>> for Child {
-    fn perform(&mut self, op: ReadExact<'_>) -> seam_core::io::Result<()> {
-        crate::sio(self.stdout()?.read_exact(op.0))
-    }
-}
-
-impl Perform<ReadToEnd<'_>> for Child {
-    fn perform(&mut self, op: ReadToEnd<'_>) -> seam_core::io::Result<usize> {
-        crate::sio(self.stdout()?.read_to_end(op.0))
-    }
-}
-
 impl Perform<ReadErr<'_>> for Child {
     fn perform(&mut self, op: ReadErr<'_>) -> seam_core::io::Result<usize> {
         crate::sio(self.stderr()?.read(op.0))
-    }
-}
-
-impl Perform<ReadErrToEnd<'_>> for Child {
-    fn perform(&mut self, op: ReadErrToEnd<'_>) -> seam_core::io::Result<usize> {
-        crate::sio(self.stderr()?.read_to_end(op.0))
     }
 }
 

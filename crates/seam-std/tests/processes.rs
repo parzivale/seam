@@ -2,11 +2,13 @@
 #![cfg(all(feature = "full", unix))]
 
 use seam_core::io;
+use seam_core::ops::io::{read_to_end, write_all};
+use seam_core::ops::process::read_err_to_end;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use seam_core::ops::io::{Read, ReadToEnd, WriteAll};
-use seam_core::ops::process::{ChildId, CloseStdin, Kill, Pipe, ReadErrToEnd, SpawnChild, Wait};
+use seam_core::ops::io::Read;
+use seam_core::ops::process::{ChildId, CloseStdin, Kill, Pipe, SpawnChild, Wait};
 use seam_core::ops::time::Timeout;
 use seam_core::{Acquire, Inspect, Perform};
 use seam_std::Std;
@@ -27,10 +29,10 @@ fn sh(script: &str) -> Command {
 #[test]
 fn write_close_read_wait() -> io::Result<()> {
     let out = Std::new().acquire(SpawnChild::<Child>::new(Command::new("cat")), |_, child| {
-        child.perform(WriteAll(b"hello child"))?;
+        write_all(child, b"hello child")?;
         child.perform(CloseStdin);
         let mut out = Vec::new();
-        child.perform(ReadToEnd(&mut out))?;
+        read_to_end(child, &mut out)?;
         assert!(child.perform(Wait)?.success());
         io::Result::Ok(out)
     })?;
@@ -46,7 +48,7 @@ fn stderr_and_exit_codes() -> io::Result<()> {
         let n = child.perform(Read(&mut out))?;
         assert_eq!(&out[..n], b"out\n");
         let mut err = Vec::new();
-        child.perform(ReadErrToEnd(&mut err))?;
+        read_err_to_end(child, &mut err)?;
         assert_eq!(err, b"err\n");
         let status = child.perform(Wait)?;
         assert_eq!(status.code, Some(3));
@@ -59,7 +61,7 @@ fn stderr_and_exit_codes() -> io::Result<()> {
 fn a_stream_not_piped_says_so() -> io::Result<()> {
     let spawn = SpawnChild::<Child>::new(Command::new("true")).stdout(Pipe::Null);
     Std::new().acquire(spawn, |_, child| {
-        let err = child.perform(ReadToEnd(&mut Vec::new())).unwrap_err();
+        let err = read_to_end(child, &mut Vec::new()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
         Ok(())
     })

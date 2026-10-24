@@ -24,10 +24,10 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::vec::Vec;
 
-use seam_core::ops::io::{Flush, Read, ReadExact, ReadToEnd, Write, WriteAll};
+use seam_core::ops::io::{Flush, Read, Write};
 use seam_core::ops::process::{
-    ChildId, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, ReadErrToEnd, RunCommand,
-    SpawnChild, Wait,
+    ChildId, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, RunCommand, SpawnChild,
+    Wait,
 };
 use seam_core::{Inspect, Perform, Provide, Token};
 
@@ -128,7 +128,7 @@ impl Sim {
     /// ```
     /// # #[cfg(feature = "process")] {
     /// use std::process::Command;
-    /// use seam_core::ops::io::{ReadToEnd, WriteAll};
+    /// use seam_core::ops::io::{read_to_end, write_all};
     /// use seam_core::ops::process::{CloseStdin, Output, SpawnChild};
     /// use seam_core::{Acquire, Perform};
     /// use seam_test::Sim;
@@ -139,10 +139,10 @@ impl Sim {
     ///     Ok(Output { code: Some(0), stdout: input.to_ascii_uppercase(), ..Output::default() })
     /// });
     /// let shouted = sim.acquire(SpawnChild::<Child>::new(Command::new("tr")), |_, child| {
-    ///     child.perform(WriteAll(b"quiet"))?;
+    ///     write_all(child, b"quiet")?;
     ///     child.perform(CloseStdin);
     ///     let mut out = Vec::new();
-    ///     child.perform(ReadToEnd(&mut out))?;
+    ///     read_to_end(child, &mut out)?;
     ///     std::io::Result::Ok(out)
     /// }).unwrap();
     /// assert_eq!(shouted, b"QUIET");
@@ -357,13 +357,6 @@ impl Child {
         Ok(n)
     }
 
-    fn read_to_end(&mut self, stream: usize, buf: &mut Vec<u8>) -> io::Result<usize> {
-        let out = self.output(stream)?;
-        let n = out.len();
-        buf.extend(out.drain(..));
-        Ok(n)
-    }
-
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if self.pipes[STDIN] != Pipe::Piped || !self.stdin_open {
             return Err(if self.ran.is_some() && self.pipes[STDIN] == Pipe::Piped {
@@ -408,10 +401,7 @@ impl Sim {
     #[allow(unused_variables)]
     fn deliver(&mut self, (out, err): (Vec<u8>, Vec<u8>)) {
         #[cfg(feature = "io-std")]
-        {
-            let _ = self.perform(seam_core::ops::stdio::Print(&out));
-            let _ = self.perform(seam_core::ops::stdio::EPrint(&err));
-        }
+        self.print_inherited(&out, &err);
     }
 }
 
@@ -453,12 +443,6 @@ impl Perform<Write<'_>> for Child {
     }
 }
 
-impl Perform<WriteAll<'_>> for Child {
-    fn perform(&mut self, op: WriteAll<'_>) -> io::Result<()> {
-        self.write(op.0).map(drop)
-    }
-}
-
 impl Perform<Flush> for Child {
     fn perform(&mut self, _: Flush) -> io::Result<()> {
         Ok(())
@@ -472,35 +456,9 @@ impl Perform<Read<'_>> for Child {
     }
 }
 
-/// The child's output is all there once it has run, so a short read means
-/// it ended.
-impl Perform<ReadExact<'_>> for Child {
-    fn perform(&mut self, op: ReadExact<'_>) -> io::Result<()> {
-        if self.read(STDOUT, op.0)? < op.0.len() {
-            return Err(error(
-                ErrorKind::UnexpectedEof,
-                "the child's output ended before the buffer was full",
-            ));
-        }
-        Ok(())
-    }
-}
-
-impl Perform<ReadToEnd<'_>> for Child {
-    fn perform(&mut self, op: ReadToEnd<'_>) -> io::Result<usize> {
-        self.read_to_end(STDOUT, op.0)
-    }
-}
-
 impl Perform<ReadErr<'_>> for Child {
     fn perform(&mut self, op: ReadErr<'_>) -> io::Result<usize> {
         self.read(STDERR, op.0)
-    }
-}
-
-impl Perform<ReadErrToEnd<'_>> for Child {
-    fn perform(&mut self, op: ReadErrToEnd<'_>) -> io::Result<usize> {
-        self.read_to_end(STDERR, op.0)
     }
 }
 
@@ -570,10 +528,7 @@ mod timeouts {
     untimed! {
         Wait => io::Result<ExitStatus>;
         Read<'_> => io::Result<usize>;
-        ReadExact<'_> => io::Result<()>;
-        ReadToEnd<'_> => io::Result<usize>;
         ReadErr<'_> => io::Result<usize>;
-        ReadErrToEnd<'_> => io::Result<usize>;
     }
 }
 

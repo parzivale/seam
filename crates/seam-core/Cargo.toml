@@ -14,7 +14,9 @@ categories.workspace = true
 default = []
 # Operation types whose outcomes need std (io::Error, Path, ...).
 std = ["alloc"]
-# `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type.
+# The helpers that return owned data (`read_to_end`, `read_file`,
+# `resolve`, ...), and `Spawn::boxed` and `SpawnWith::boxed`, for tasks of
+# unnameable type.
 alloc = []
 
 # Capability groups. Groups whose operation types need std (`Path`,
@@ -24,7 +26,8 @@ fs = ["std", "io"]
 net = ["io"]
 process = ["std", "io"]
 env = ["std"]
-io-std = []
+# Standard input, output and error, as handles for the `io` operations.
+io-std = ["io"]
 signal = []
 # `time` and `random` are usable without std. With `std`, `time` also
 # gains `WallClock`.
@@ -32,11 +35,12 @@ time = []
 random = []
 # Spawning and joining tasks. No std needed.
 rt = []
-# Channels and shared cells. No std needed.
-sync = []
+# Channels and shared cells. No std needed. `time` for `try_send` and
+# `try_recv`, which are a timeout of zero.
+sync = ["time"]
 
-# Handle-level read/write/flush operations. Pulled in by `fs`, `net` and
-# `process`. No std needed; `ReadToEnd` needs `alloc`.
+# Handle-level read, write, flush and seek. Pulled in by `fs`, `net`,
+# `process` and `io-std`. No std needed; `read_to_end` needs `alloc`.
 io = []
 
 full = ["fs", "net", "process", "env", "io-std", "signal", "time", "random", "rt", "sync"]

@@ -1,7 +1,7 @@
 //! A number guessing game.
 //!
-//! The game is a core: it needs randomness, a line of input at a time, and
-//! somewhere to print, and its bounds say exactly that. `main` runs it
+//! The game is a core: it needs randomness, standard input to read lines
+//! from, and standard output to print to, and its bounds say exactly that. `main` runs it
 //! against the real world; the tests run it against a seeded simulation,
 //! where the secret number is reproducible and stdin is scripted.
 //!
@@ -10,45 +10,60 @@
 //! ```
 
 use seam::io;
+use seam::ops::io::{BufReader, Line, Read, Write};
+use seam::ops::random::{FillRandom, random_u64};
+use seam::ops::stdio::{OpenStdin, OpenStdout, print};
 use std::cmp::Ordering;
 
-use seam::ops::random::RandomU64;
-use seam::ops::stdio::{Print, ReadLine};
 use seam::prelude::*;
 
 /// Plays one game. Returns the number of guesses, or `None` if the player
-/// ran out of input.
-fn play<C>(c: &mut C) -> io::Result<Option<u32>>
+/// ran out of input. `I` and `O` are the backend's standard input and
+/// output; both are inferred from the backend.
+fn play<C, I, O>(c: &mut C) -> io::Result<Option<u32>>
 where
-    C: Perform<RandomU64> + Perform<ReadLine> + for<'a> Perform<Print<'a>>,
+    C: for<'r> Perform<FillRandom<'r>> + Provide<OpenStdin<I>> + Provide<OpenStdout<O>>,
+    I: for<'a> Perform<Read<'a>>,
+    O: for<'a> Perform<Write<'a>>,
 {
-    let secret = 1 + c.perform(RandomU64) % 100;
+    let secret = 1 + random_u64(c) % 100;
     say(c, "I'm thinking of a number from 1 to 100.\n")?;
-    let mut guesses = 0;
-    loop {
-        say(c, "Your guess: ")?;
-        let Some(line) = c.perform(ReadLine)? else {
-            say(c, &format!("\nGiving up? It was {secret}.\n"))?;
-            return Ok(None);
-        };
-        let Ok(guess) = line.trim().parse::<u64>() else {
-            say(c, "That's not a number.\n")?;
-            continue;
-        };
-        guesses += 1;
-        match guess.cmp(&secret) {
-            Ordering::Less => say(c, "Too low.\n")?,
-            Ordering::Greater => say(c, "Too high.\n")?,
-            Ordering::Equal => {
-                say(c, &format!("Got it in {guesses}!\n"))?;
-                return Ok(Some(guesses));
+    // The game holds standard input for as long as it runs, and reads it a
+    // line at a time through one reader.
+    c.acquire(OpenStdin::new(), |c, stdin| {
+        let mut reader = BufReader::<256>::new();
+        let mut line = [0; 64];
+        let mut guesses = 0;
+        loop {
+            say(c, "Your guess: ")?;
+            let Some(Line { len, .. }) = reader.read_line(stdin, &mut line)? else {
+                say(c, &format!("\nGiving up? It was {secret}.\n"))?;
+                return Ok(None);
+            };
+            let text = core::str::from_utf8(&line[..len]).unwrap_or_default();
+            let Ok(guess) = text.trim().parse::<u64>() else {
+                say(c, "That's not a number.\n")?;
+                continue;
+            };
+            guesses += 1;
+            match guess.cmp(&secret) {
+                Ordering::Less => say(c, "Too low.\n")?,
+                Ordering::Greater => say(c, "Too high.\n")?,
+                Ordering::Equal => {
+                    say(c, &format!("Got it in {guesses}!\n"))?;
+                    return Ok(Some(guesses));
+                }
             }
         }
-    }
+    })
 }
 
-fn say<C: for<'a> Perform<Print<'a>>>(c: &mut C, text: &str) -> io::Result<()> {
-    c.perform(Print(text.as_bytes()))
+fn say<C, O>(c: &mut C, text: &str) -> io::Result<()>
+where
+    C: Provide<OpenStdout<O>>,
+    O: for<'a> Perform<Write<'a>>,
+{
+    print(c, text.as_bytes())
 }
 
 /// The edge: the one place that picks the real world.
@@ -64,7 +79,7 @@ mod tests {
 
     /// The secret a game with this seed will pick.
     fn secret(seed: u64) -> u64 {
-        1 + Sim::with_seed(seed).perform(RandomU64) % 100
+        1 + random_u64(&mut Sim::with_seed(seed)) % 100
     }
 
     #[test]

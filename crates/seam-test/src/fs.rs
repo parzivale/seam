@@ -1,24 +1,24 @@
-//! The in-memory filesystem, and the [`File`] and [`AtomicFile`] handles.
+//! The in-memory filesystem, and the [`File`], [`AtomicFile`] and [`Dir`]
+//! handles.
 //!
 //! Relative paths are resolved against the simulated current directory.
 //! `..` steps out of a directory only if it exists, as on a real system.
-//! There are no symlinks or permissions. Files are inodes, so an open handle keeps working after its
-//! path is renamed or removed, as on Unix.
+//! There are no symlinks or permissions. Files are inodes, so an open
+//! handle keeps working after its path is renamed or removed, as on Unix.
 
 use seam_core::io::{self, ErrorKind};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
-use std::string::String;
 use std::time::SystemTime;
 use std::vec::Vec;
 
+use core::marker::PhantomData;
 use seam_core::ops::fs::{
-    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, NextEntry, Open, ReadDir,
-    ReadFile, ReadToString, RemoveDir, RemoveFile, Rename, SweepAtomic, WriteFile,
+    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Mode, NextEntry, Open,
+    ReadDir, Readable, RemoveDir, RemoveFile, Rename, SetLen, Stat, SyncAll, SyncData, Writable,
 };
-use seam_core::ops::fs::{SetLen, Stat, SyncAll, SyncData};
-use seam_core::ops::io::{Flush, Read, ReadExact, ReadToEnd, Seek, SeekFrom, Write, WriteAll};
+use seam_core::ops::io::{Flush, Read, Seek, SeekFrom, Write};
 use seam_core::{Inspect, Perform, Provide, Token};
 
 use crate::world::{Shared, World};
@@ -267,22 +267,6 @@ impl Sim {
     }
 }
 
-impl Inspect<ReadFile<'_>> for Sim {
-    fn inspect(&self, op: ReadFile<'_>) -> io::Result<Vec<u8>> {
-        self.fs_op(op.path, |w, key| {
-            Ok(w.fs.inodes[w.fs.file(&key)?].bytes.clone())
-        })
-    }
-}
-
-impl Inspect<ReadToString<'_>> for Sim {
-    fn inspect(&self, op: ReadToString<'_>) -> io::Result<String> {
-        let bytes = self.inspect(ReadFile { path: op.path })?;
-        String::from_utf8(bytes)
-            .map_err(|_| error(ErrorKind::InvalidData, "stream did not contain valid UTF-8"))
-    }
-}
-
 impl Inspect<Metadata<'_>> for Sim {
     fn inspect(&self, op: Metadata<'_>) -> io::Result<FileInfo> {
         self.fs_op(op.path, |w, key| w.fs.info(&key))
@@ -319,20 +303,11 @@ impl Perform<NextEntry> for Dir {
     }
 }
 
-impl Perform<WriteFile<'_>> for Sim {
-    fn perform(&mut self, op: WriteFile<'_>) -> io::Result<()> {
-        self.fs_op(op.path, |w, key| {
-            let now = w.wall;
-            w.fs.write(&key, op.contents.to_vec(), now).map(drop)
-        })
-    }
-}
-
 impl Perform<CreateDir<'_>> for Sim {
     fn perform(&mut self, op: CreateDir<'_>) -> io::Result<()> {
         self.fs_op(op.path, |w, key| {
             let now = w.wall;
-            w.fs.create_dir(&key, op.recursive, now)
+            w.fs.create_dir(&key, false, now)
         })
     }
 }
@@ -421,32 +396,6 @@ impl Perform<Rename<'_>> for Sim {
     }
 }
 
-impl Perform<SweepAtomic<'_>> for Sim {
-    fn perform(&mut self, op: SweepAtomic<'_>) -> io::Result<u64> {
-        self.fs_op(op.dir, |w, dir| {
-            w.fs.require_dir(&dir)?;
-            let now = w.wall;
-            let doomed: Vec<Key> = w
-                .fs
-                .children(&dir)
-                .filter(|k| k.len() == dir.len() + 1 && SweepAtomic::is_temp_name(&k[dir.len()]))
-                .filter(|k| match w.fs.nodes[*k] {
-                    Node::File(inode) => {
-                        let modified = w.fs.inodes[inode].modified;
-                        now.duration_since(modified).unwrap_or_default() >= op.older_than
-                    }
-                    Node::Dir { .. } => false,
-                })
-                .cloned()
-                .collect();
-            for k in &doomed {
-                w.fs.nodes.remove(k);
-            }
-            Ok(doomed.len() as u64)
-        })
-    }
-}
-
 impl Perform<CopyFile<'_>> for Sim {
     fn perform(&mut self, op: CopyFile<'_>) -> io::Result<u64> {
         self.fs_op(op.from, |w, from| {
@@ -461,18 +410,17 @@ impl Perform<CopyFile<'_>> for Sim {
 }
 
 /// Writes land immediately, so closing has nothing left to do.
-impl Provide<Open<'_, File>> for Sim {
-    fn close(&mut self, _: File) -> io::Result<()> {
+impl<M: Mode> Provide<Open<'_, M, File<M>>> for Sim {
+    fn close(&mut self, _: File<M>) -> io::Result<()> {
         Ok(())
     }
 
-    fn provide(&mut self, op: Open<'_, File>, _: Token) -> io::Result<File> {
+    fn provide(&mut self, op: Open<'_, M, File<M>>, _: Token) -> io::Result<File<M>> {
         let o = op.options;
-        let writable = o.write || o.append;
-        if !(o.read || writable) || ((o.truncate || o.create || o.create_new) && !writable) {
+        if (o.truncate || o.create || o.create_new) && !M::WRITE {
             return Err(error(ErrorKind::InvalidInput, "invalid open options"));
         }
-        if o.truncate && o.append {
+        if o.truncate && M::APPEND {
             return Err(error(
                 ErrorKind::InvalidInput,
                 "cannot truncate in append mode",
@@ -494,20 +442,54 @@ impl Provide<Open<'_, File>> for Sim {
                 None => Err(w.fs.missing(&key)),
             }
         })?;
-        Ok(File {
+        let raw = RawFile {
             world: self.world.clone(),
             inode,
             pos: 0,
-            read: o.read,
-            write: writable,
-            append: o.append,
-        })
+            read: M::READ,
+            write: M::WRITE,
+            append: M::APPEND,
+        };
+        Ok(File(raw, PhantomData))
     }
 }
 
-/// An open in-memory file. Read and write it with the `io` operations.
+/// An open in-memory file in mode `M`, acquired with [`Open`]. It performs
+/// `Read` if `M` is readable, and `Write`, `Flush`, `SetLen`, `SyncAll` and
+/// `SyncData` if `M` is writable; `Seek` and `Stat` in any mode.
 #[derive(Debug)]
-pub struct File {
+pub struct File<M>(RawFile, PhantomData<fn() -> M>);
+
+macro_rules! file_ops {
+    ($([$($g:tt)*] $op:ty => $out:ty;)*) => {$(
+        impl<$($g)*> Perform<$op> for File<M> {
+            fn perform(&mut self, op: $op) -> $out {
+                self.0.perform(op)
+            }
+        }
+    )*};
+}
+
+file_ops! {
+    [M: Readable] Read<'_> => io::Result<usize>;
+    [M: Writable] Write<'_> => io::Result<usize>;
+    [M: Writable] Flush => io::Result<()>;
+    [M: Writable] SetLen => io::Result<()>;
+    [M: Writable] SyncAll => io::Result<()>;
+    [M: Writable] SyncData => io::Result<()>;
+    [M] Seek => io::Result<u64>;
+}
+
+impl<M> Inspect<Stat> for File<M> {
+    fn inspect(&self, op: Stat) -> io::Result<FileInfo> {
+        self.0.inspect(op)
+    }
+}
+
+/// An open file, whatever its mode: what `File` and `AtomicFile` hand
+/// their operations to.
+#[derive(Debug)]
+pub(crate) struct RawFile {
     world: Shared,
     inode: usize,
     pos: usize,
@@ -516,7 +498,7 @@ pub struct File {
     append: bool,
 }
 
-impl File {
+impl RawFile {
     fn readable(&self) -> io::Result<()> {
         if self.read {
             Ok(())
@@ -546,7 +528,7 @@ impl File {
     }
 }
 
-impl Perform<Read<'_>> for File {
+impl Perform<Read<'_>> for RawFile {
     fn perform(&mut self, op: Read<'_>) -> io::Result<usize> {
         self.readable()?;
         let world = self.world.lock();
@@ -561,53 +543,20 @@ impl Perform<Read<'_>> for File {
     }
 }
 
-impl Perform<ReadExact<'_>> for File {
-    fn perform(&mut self, op: ReadExact<'_>) -> io::Result<()> {
-        let n = self.perform(Read(&mut *op.0))?;
-        if n < op.0.len() {
-            return Err(crate::error(
-                io::ErrorKind::UnexpectedEof,
-                "the file ended before the buffer was full",
-            ));
-        }
-        Ok(())
-    }
-}
-
-impl Perform<ReadToEnd<'_>> for File {
-    fn perform(&mut self, op: ReadToEnd<'_>) -> io::Result<usize> {
-        self.readable()?;
-        let world = self.world.lock();
-        let rest = world.fs.inodes[self.inode]
-            .bytes
-            .get(self.pos..)
-            .unwrap_or_default();
-        op.0.extend_from_slice(rest);
-        self.pos += rest.len();
-        Ok(rest.len())
-    }
-}
-
-impl Perform<Write<'_>> for File {
+impl Perform<Write<'_>> for RawFile {
     fn perform(&mut self, op: Write<'_>) -> io::Result<usize> {
         self.write_bytes(op.0)
     }
 }
 
-impl Perform<WriteAll<'_>> for File {
-    fn perform(&mut self, op: WriteAll<'_>) -> io::Result<()> {
-        self.write_bytes(op.0).map(drop)
-    }
-}
-
 /// Writes land immediately, so there is nothing to flush.
-impl Perform<Flush> for File {
+impl Perform<Flush> for RawFile {
     fn perform(&mut self, _: Flush) -> io::Result<()> {
         Ok(())
     }
 }
 
-impl Perform<Seek> for File {
+impl Perform<Seek> for RawFile {
     fn perform(&mut self, op: Seek) -> io::Result<u64> {
         let len = self.world.lock().fs.inodes[self.inode].bytes.len() as u64;
         let pos = match op.0 {
@@ -629,7 +578,7 @@ impl Perform<Seek> for File {
 
 /// Fails with `InvalidInput` unless the file is open for writing, as on
 /// Linux.
-impl Perform<SetLen> for File {
+impl Perform<SetLen> for RawFile {
     fn perform(&mut self, op: SetLen) -> io::Result<()> {
         if !self.write {
             return Err(error(ErrorKind::InvalidInput, "not open for writing"));
@@ -647,21 +596,21 @@ impl Perform<SetLen> for File {
 
 /// Nothing in the simulation is lost in a crash, so there is nothing to
 /// sync.
-impl Perform<SyncAll> for File {
+impl Perform<SyncAll> for RawFile {
     fn perform(&mut self, _: SyncAll) -> io::Result<()> {
         Ok(())
     }
 }
 
 /// As for `SyncAll`.
-impl Perform<SyncData> for File {
+impl Perform<SyncData> for RawFile {
     fn perform(&mut self, _: SyncData) -> io::Result<()> {
         Ok(())
     }
 }
 
 /// The file's metadata, even once its path is renamed or removed.
-impl Inspect<Stat> for File {
+impl Inspect<Stat> for RawFile {
     fn inspect(&self, _: Stat) -> io::Result<FileInfo> {
         let world = self.world.lock();
         let inode = &world.fs.inodes[self.inode];
@@ -683,7 +632,7 @@ impl Inspect<Stat> for File {
 /// temporary file is removed.
 #[derive(Debug)]
 pub struct AtomicFile {
-    file: File,
+    file: RawFile,
     temp: Key,
     target: Key,
     committed: bool,
@@ -713,7 +662,7 @@ impl Provide<CreateAtomic<'_, AtomicFile>> for Sim {
             let inode = w.fs.write(&temp, Vec::new(), now)?;
             Ok((temp, target, inode))
         })?;
-        let file = File {
+        let file = RawFile {
             world: self.world.clone(),
             inode,
             pos: 0,
@@ -775,7 +724,6 @@ macro_rules! delegate_io {
 
 delegate_io! {
     Write<'_> => io::Result<usize>,
-    WriteAll<'_> => io::Result<()>,
     Flush => io::Result<()>,
     Seek => io::Result<u64>,
     SetLen => io::Result<()>,
@@ -791,5 +739,5 @@ impl Inspect<Stat> for AtomicFile {
 
 // Every capability type opts in to seam's lifts.
 impl seam_core::Capability for AtomicFile {}
-impl seam_core::Capability for File {}
+impl<M> seam_core::Capability for File<M> {}
 impl seam_core::Capability for Dir {}

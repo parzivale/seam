@@ -84,11 +84,11 @@ mod time {
 
 #[cfg(feature = "random")]
 mod random {
-    use seam_core::ops::random::{FillRandom, RandomU64};
+    use seam_core::ops::random::FillRandom;
 
     use super::*;
 
-    delegate! { perform [] RandomU64; ['a] FillRandom<'a>; }
+    delegate! { perform ['a] FillRandom<'a>; }
 }
 
 #[cfg(feature = "env")]
@@ -104,19 +104,22 @@ mod env {
 #[cfg(feature = "fs")]
 mod fs {
     use seam_core::ops::fs::{
-        CopyFile, CreateAtomic, CreateDir, Metadata, Open, ReadDir, ReadFile, ReadToString,
-        RemoveDir, RemoveFile, Rename, SweepAtomic, WriteFile,
+        CopyFile, CreateAtomic, CreateDir, Metadata, Mode, Open, ReadDir, RemoveDir, RemoveFile,
+        Rename,
     };
 
     use super::*;
     use crate::fs::{AtomicFile, Dir, File};
 
-    delegate! { inspect ['a] ReadFile<'a>; ['a] ReadToString<'a>; ['a] Metadata<'a>; }
+    delegate! { inspect ['a] Metadata<'a>; }
     delegate! {
-        perform ['a] WriteFile<'a>; ['a] CreateDir<'a>; ['a] RemoveFile<'a>; ['a] RemoveDir<'a>;
-        ['a] Rename<'a>; ['a] CopyFile<'a>; ['a] SweepAtomic<'a>;
+        perform ['a] CreateDir<'a>; ['a] RemoveFile<'a>; ['a] RemoveDir<'a>; ['a] Rename<'a>;
+        ['a] CopyFile<'a>;
     }
-    delegate! { provide ['a] Open<'a, File>; ['a] CreateAtomic<'a, AtomicFile>; ['a] ReadDir<'a, Dir>; }
+    delegate! {
+        provide ['a, M: Mode] Open<'a, M, File<M>>; ['a] CreateAtomic<'a, AtomicFile>;
+        ['a] ReadDir<'a, Dir>;
+    }
 }
 
 #[cfg(feature = "process")]
@@ -133,12 +136,13 @@ mod process {
 
 #[cfg(feature = "io-std")]
 mod stdio {
-    use seam_core::ops::stdio::{EPrint, Print, ReadLine, ReadLineInto};
+    use seam_core::ops::stdio::{OpenStderr, OpenStdin, OpenStdout};
 
     use super::*;
+    use crate::stdio::{Stderr, Stdin, Stdout};
 
     // Standard input is a finite script, so reading it never waits.
-    delegate! { perform ['a] Print<'a>; ['a] EPrint<'a>; [] ReadLine; ['a] ReadLineInto<'a>; }
+    delegate! { provide [] OpenStdin<Stdin>; [] OpenStdout<Stdout>; [] OpenStderr<Stderr>; }
 }
 
 #[cfg(feature = "signal")]
@@ -173,9 +177,9 @@ mod task {
 
 #[cfg(feature = "net")]
 mod net {
-    use seam_core::ops::net::{Resolve, ResolveInto};
+    use seam_core::ops::net::ResolveInto;
 
     use super::*;
 
-    delegate! { inspect ['a] Resolve<'a>; ['a] ResolveInto<'a>; }
+    delegate! { inspect ['a] ResolveInto<'a>; }
 }

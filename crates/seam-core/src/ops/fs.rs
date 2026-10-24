@@ -1,29 +1,37 @@
 //! The filesystem.
 //!
-//! Whole-file operations ([`ReadFile`], [`WriteFile`], ...) are performed on
-//! the backend. [`Open`] and [`CreateAtomic`] are acquisitions: a core
-//! acquires the file for the length of a scope (see
-//! [`acquire`](crate::acquire)), and performs the operations in
-//! [`io`](super::io) on it there, along with the file operations here:
-//! [`Stat`], [`SetLen`], [`SyncAll`] and [`SyncData`]. Operations borrow their paths and
-//! contents, so describing one allocates nothing. [`ReadDir`] is an
-//! acquisition too, listing a directory one entry at a time.
+//! Files are opened as handles: [`Open`] and [`CreateAtomic`] are
+//! acquisitions, lending a file to a scope (see [`acquire`](crate::acquire)),
+//! where the [`io`](super::io) operations read and write it, along with the
+//! file operations here: [`Stat`], [`SetLen`], [`SyncAll`] and [`SyncData`].
+//! [`ReadDir`] lends a directory listing, stepped through with
+//! [`NextEntry`]. Operations borrow their paths, so describing one
+//! allocates nothing.
 //!
-//! Reading operations are [`Query`](crate::Query)s, so a core that only
-//! reads can ask for `Inspect`:
+//! An [`Open`] names its mode as a type: [`ReadOnly`], [`WriteOnly`],
+//! [`Append`] or [`ReadWrite`]. A backend's file handle implements `Read`
+//! only for readable modes and `Write` only for writable ones, so a core
+//! bounded on `Open<'a, ReadOnly, F>` cannot write, and its bounds say so.
+//!
+//! Whole-file work is built on those, as plain functions: [`read_file`],
+//! [`read_to_string`], [`write_file`], [`create_dir_all`] and
+//! [`sweep_atomic`], each in three forms (sync, `_async`, `_send`).
 //!
 //! ```
 //! use seam_core::io;
-//! use seam_core::Inspect;
-//! use seam_core::ops::fs::{Metadata, ReadToString};
+//! use seam_core::prelude::*;
+//! use seam_core::ops::fs::{self, Metadata, Open, ReadOnly};
+//! use seam_core::ops::io::Read;
 //!
-//! /// Reads a config file, if there is one.
-//! fn load_config<C>(c: &C, path: &str) -> io::Result<Option<String>>
+//! /// Reads a config file, if there is one. It can look up and read files,
+//! /// and nothing else.
+//! fn load_config<C, F>(c: &mut C, path: &str) -> io::Result<Option<String>>
 //! where
-//!     C: for<'a> Inspect<Metadata<'a>> + for<'a> Inspect<ReadToString<'a>>,
+//!     C: for<'a> Inspect<Metadata<'a>> + for<'a> Provide<Open<'a, ReadOnly, F>>,
+//!     F: for<'a> Perform<Read<'a>>,
 //! {
 //!     match c.inspect(Metadata::new(path)) {
-//!         Ok(info) if info.is_file() => c.inspect(ReadToString::new(path)).map(Some),
+//!         Ok(info) if info.is_file() => fs::read_to_string(c, path).map(Some),
 //!         Ok(_) => Err(io::Error::new(io::ErrorKind::InvalidInput, "config is not a file")),
 //!         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
 //!         Err(e) => Err(e),
@@ -31,34 +39,14 @@
 //! }
 //! ```
 
+#[allow(unused_imports)]
+use super::io::{Read, Write};
 use crate::io;
+use crate::three_ways::three_ways;
 use core::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::string::String;
 use std::vec::Vec;
-
-/// Read a whole file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReadFile<'a> {
-    /// The file to read.
-    pub path: &'a Path,
-}
-
-/// Read a whole file as UTF-8.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReadToString<'a> {
-    /// The file to read.
-    pub path: &'a Path,
-}
-
-/// Replace a file's contents, creating it if needed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WriteFile<'a> {
-    /// The file to write.
-    pub path: &'a Path,
-    /// The new contents.
-    pub contents: &'a [u8],
-}
 
 /// Look up a path's metadata, following symlinks. Produces a [`FileInfo`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,7 +92,7 @@ pub struct ReadDir<'a, D> {
 pub struct NextEntry;
 
 /// Truncate or extend an open file to `len` bytes. Extending fills with
-/// zeros. The position is unchanged. The file must be open for writing.
+/// zeros. The position is unchanged. Performed on a writable file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SetLen(pub u64);
 
@@ -122,16 +110,16 @@ pub struct SyncData;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Stat;
 
-/// Create a directory.
+/// Create one directory. Fails with `io::ErrorKind::AlreadyExists` if the
+/// path exists, and `io::ErrorKind::NotFound` if its parent does not;
+/// [`create_dir_all`] creates the parents too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CreateDir<'a> {
     /// The directory to create.
     pub path: &'a Path,
-    /// Also create missing parents, and succeed if it already exists.
-    pub recursive: bool,
 }
 
-/// Remove a file.
+/// Remove a file, or a symlink (not what it points to).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemoveFile<'a> {
     /// The file to remove.
@@ -139,11 +127,17 @@ pub struct RemoveFile<'a> {
 }
 
 /// Remove a directory.
+///
+/// Removing everything inside is a primitive too, rather than a walk built
+/// on [`RemoveFile`]: a walk that follows a symlink to a directory deletes
+/// what the link points to, and doing it safely while other processes
+/// change the tree takes platform calls a core does not have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemoveDir<'a> {
     /// The directory to remove.
     pub path: &'a Path,
-    /// Also remove everything inside it. Otherwise it must be empty.
+    /// Also remove everything inside it, without following symlinks.
+    /// Otherwise it must be empty.
     pub recursive: bool,
 }
 
@@ -156,7 +150,12 @@ pub struct Rename<'a> {
     pub to: &'a Path,
 }
 
-/// Copy a file's contents. Returns the number of bytes copied.
+/// Copy a file's contents and permissions. Returns the number of bytes
+/// copied.
+///
+/// A primitive rather than a loop of reads and writes, because platforms
+/// copy faster than that (reflinks, `copy_file_range`) and copy
+/// permissions with the contents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CopyFile<'a> {
     /// The file to copy.
@@ -165,19 +164,87 @@ pub struct CopyFile<'a> {
     pub to: &'a Path,
 }
 
-/// Open a file, producing a handle of type `F`.
+/// The mode an [`Open`] opens a file in, as a type: [`ReadOnly`],
+/// [`WriteOnly`], [`Append`] or [`ReadWrite`]. Sealed: backends match on
+/// these four.
+pub trait Mode: sealed::Sealed + Send + Sync + 'static {
+    /// Whether the file is opened for reading.
+    const READ: bool;
+    /// Whether the file is opened for writing.
+    const WRITE: bool;
+    /// Whether every write goes to the end.
+    const APPEND: bool;
+}
+
+/// A mode that can read: a file opened in it performs [`Read`].
+pub trait Readable: Mode {}
+
+/// A mode that can write: a file opened in it performs [`Write`],
+/// [`SetLen`] and the syncs.
+pub trait Writable: Mode {}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+macro_rules! modes {
+    ($($(#[$m:meta])* $ty:ident: $read:literal $write:literal $append:literal [$($cap:ident)*];)*) => {$(
+        $(#[$m])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum $ty {}
+
+        impl sealed::Sealed for $ty {}
+
+        impl Mode for $ty {
+            const READ: bool = $read;
+            const WRITE: bool = $write;
+            const APPEND: bool = $append;
+        }
+
+        $(impl $cap for $ty {})*
+    )*};
+}
+
+modes! {
+    /// Read only.
+    ReadOnly: true false false [Readable];
+    /// Write only.
+    WriteOnly: false true false [Writable];
+    /// Write only, every write at the end.
+    Append: false true true [Writable];
+    /// Read and write.
+    ReadWrite: true true false [Readable Writable];
+}
+
+/// Open a file in mode `M`, producing a handle of type `F`: the backend's
+/// file type for that mode, for example `seam_std::fs::File<M>`.
 ///
-/// `F` is the backend's file type, for example `seam_std::fs::File`.
-pub struct Open<'a, F> {
+/// When the scope succeeds, a file opened for writing is flushed and
+/// synced, and an error doing so is the scope's error.
+pub struct Open<'a, M, F> {
     /// The file to open.
     pub path: &'a Path,
-    /// How to open it.
+    /// Whether to create or truncate it.
     pub options: OpenOptions,
+    mode: PhantomData<fn() -> M>,
     handle: PhantomData<fn() -> F>,
 }
 
+/// How [`Open`] treats a file that does or does not exist. What `std`
+/// calls read, write and append are the mode, a type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OpenOptions {
+    /// Create the file if it is missing.
+    pub create: bool,
+    /// Create the file, failing with `io::ErrorKind::AlreadyExists` if it
+    /// exists. Takes precedence over `create`.
+    pub create_new: bool,
+    /// Empty the file when it is opened. Only for writable modes.
+    pub truncate: bool,
+}
+
 /// Create a file that atomically replaces `path` when it is closed,
-/// producing a handle of type `F`.
+/// producing a writable handle of type `F`.
 ///
 /// Writes go to a temporary file beside `path`. When the scope succeeds, the
 /// provider syncs it and renames it over `path` in one step, so readers see
@@ -185,24 +252,27 @@ pub struct Open<'a, F> {
 /// panics or is cancelled, the temporary file is deleted and `path` is left
 /// untouched.
 ///
+/// A primitive, because that cleanup must run when the scope panics or is
+/// cancelled, in `Drop`, where a core cannot perform effects.
+///
 /// Temporary files are named `.<name>.seam-<suffix>.tmp`. If the process is
-/// killed outright, one can be left behind; [`SweepAtomic`] removes them.
+/// killed outright, one can be left behind; [`sweep_atomic`] removes them.
 ///
 /// ```
 /// use seam_core::io;
 /// use seam_core::prelude::*;
 /// use seam_core::ops::fs::CreateAtomic;
-/// use seam_core::ops::io::WriteAll;
+/// use seam_core::ops::io::{Write, write_all};
 ///
 /// /// Saves settings. A crash or error halfway leaves the old file intact.
 /// fn save<C, F>(c: &mut C, settings: &[(&str, &str)]) -> io::Result<()>
 /// where
 ///     C: for<'a> Provide<CreateAtomic<'a, F>>,
-///     F: for<'a> Perform<WriteAll<'a>>,
+///     F: for<'a> Perform<Write<'a>>,
 /// {
 ///     c.acquire(CreateAtomic::new("settings.conf"), |_c, file| {
 ///         for (key, value) in settings {
-///             file.perform(WriteAll(format!("{key} = {value}\n").as_bytes()))?;
+///             write_all(file, format!("{key} = {value}\n").as_bytes())?;
 ///         }
 ///         Ok(())
 ///     })
@@ -224,49 +294,10 @@ impl<'a, F> CreateAtomic<'a, F> {
     }
 }
 
-/// Delete temporary files left in `dir` by [`CreateAtomic`] writes that
-/// never finished, because the process was killed before it could clean up.
-/// Returns how many were removed.
-///
-/// Only files whose last modification is at least `older_than` ago are
-/// removed, so that writes still in progress, in this process or another,
-/// are left alone. Pick an age longer than any write takes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SweepAtomic<'a> {
-    /// The directory to sweep. Subdirectories are not visited.
-    pub dir: &'a Path,
-    /// How old a temporary file must be to count as abandoned.
-    pub older_than: core::time::Duration,
-}
-
-impl<'a> SweepAtomic<'a> {
-    /// Describes sweeping `dir` of temporary files at least `older_than` old.
-    pub fn new(dir: &'a (impl AsRef<Path> + ?Sized), older_than: core::time::Duration) -> Self {
-        Self {
-            dir: dir.as_ref(),
-            older_than,
-        }
-    }
-}
-
-impl SweepAtomic<'_> {
-    /// Whether `name` is a temporary file name from [`CreateAtomic`].
-    pub fn is_temp_name(name: &std::ffi::OsStr) -> bool {
-        name.to_str()
-            .is_some_and(|n| n.starts_with('.') && n.ends_with(".tmp") && n.contains(".seam-"))
-    }
-}
-
-/// How to open a file. Mirrors `std::fs::OpenOptions`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(missing_docs)]
-pub struct OpenOptions {
-    pub read: bool,
-    pub write: bool,
-    pub append: bool,
-    pub truncate: bool,
-    pub create: bool,
-    pub create_new: bool,
+/// Whether `name` is a temporary file name from [`CreateAtomic`].
+pub fn is_temp_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .is_some_and(|n| n.starts_with('.') && n.ends_with(".tmp") && n.contains(".seam-"))
 }
 
 /// What [`Metadata`] reports about a path.
@@ -320,38 +351,7 @@ macro_rules! path_ops {
         }
     )*};
 }
-path_ops!(ReadFile, ReadToString, Metadata, RemoveFile);
-
-impl<'a> WriteFile<'a> {
-    /// Describes writing `contents` to `path`.
-    pub fn new(
-        path: &'a (impl AsRef<Path> + ?Sized),
-        contents: &'a (impl AsRef<[u8]> + ?Sized),
-    ) -> Self {
-        Self {
-            path: path.as_ref(),
-            contents: contents.as_ref(),
-        }
-    }
-}
-
-impl<'a> CreateDir<'a> {
-    /// Describes creating `path`. Fails if a parent is missing.
-    pub fn new(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
-        Self {
-            path: path.as_ref(),
-            recursive: false,
-        }
-    }
-
-    /// Describes creating `path` and any missing parents.
-    pub fn all(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
-        Self {
-            path: path.as_ref(),
-            recursive: true,
-        }
-    }
-}
+path_ops!(Metadata, CreateDir, RemoveFile);
 
 impl<'a> RemoveDir<'a> {
     /// Describes removing the empty directory `path`.
@@ -401,33 +401,31 @@ impl<'a, D> ReadDir<'a, D> {
     }
 }
 
-impl<'a, F> Open<'a, F> {
-    /// Describes opening `path` with `options`.
+impl<'a, M: Mode, F> Open<'a, M, F> {
+    /// Describes opening `path` in mode `M` with `options`.
     pub fn new(path: &'a (impl AsRef<Path> + ?Sized), options: OpenOptions) -> Self {
         Self {
             path: path.as_ref(),
             options,
+            mode: PhantomData,
             handle: PhantomData,
         }
     }
+}
 
-    /// Describes opening `path` for reading.
+impl<'a, F> Open<'a, ReadOnly, F> {
+    /// Describes opening the existing file `path` to read it.
     pub fn read(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
-        Self::new(
-            path,
-            OpenOptions {
-                read: true,
-                ..OpenOptions::default()
-            },
-        )
+        Self::new(path, OpenOptions::default())
     }
+}
 
-    /// Describes creating or truncating `path` for writing.
+impl<'a, F> Open<'a, WriteOnly, F> {
+    /// Describes creating `path`, or emptying it if it exists, to write it.
     pub fn create(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
         Self::new(
             path,
             OpenOptions {
-                write: true,
                 create: true,
                 truncate: true,
                 ..OpenOptions::default()
@@ -435,12 +433,24 @@ impl<'a, F> Open<'a, F> {
         )
     }
 
-    /// Describes opening `path` for appending, creating it if needed.
+    /// Describes creating `path` to write it, failing if it exists.
+    pub fn create_new(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
+        Self::new(
+            path,
+            OpenOptions {
+                create_new: true,
+                ..OpenOptions::default()
+            },
+        )
+    }
+}
+
+impl<'a, F> Open<'a, Append, F> {
+    /// Describes opening `path` to add to its end, creating it if needed.
     pub fn append(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
         Self::new(
             path,
             OpenOptions {
-                append: true,
                 create: true,
                 ..OpenOptions::default()
             },
@@ -448,57 +458,241 @@ impl<'a, F> Open<'a, F> {
     }
 }
 
-/// `Clone`, `Copy` and `Debug` for the acquisitions, whatever their handle
-/// type.
+/// `Clone`, `Copy`, `Debug` and `Acquisition` for the acquisitions,
+/// whatever their handle type.
 macro_rules! handle_ops {
-    ($($ty:ident { $($field:ident),* }),*) => {$(
-        impl<F> Clone for $ty<'_, F> {
+    ($([$($g:ident),*] $ty:ident { $($field:ident),* }),*) => {$(
+        impl<$($g),*> Clone for $ty<'_, $($g),*> {
             fn clone(&self) -> Self {
                 *self
             }
         }
 
-        impl<F> Copy for $ty<'_, F> {}
+        impl<$($g),*> Copy for $ty<'_, $($g),*> {}
 
-        impl<F> core::fmt::Debug for $ty<'_, F> {
+        impl<$($g),*> core::fmt::Debug for $ty<'_, $($g),*> {
             fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 f.debug_struct(stringify!($ty))$(.field(stringify!($field), &self.$field))*.finish()
             }
         }
-
-        impl<F> crate::Acquisition for $ty<'_, F> {
-            type Resource = F;
-            type Error = io::Error;
-        }
     )*};
 }
-handle_ops!(
-    Open { path, options },
-    CreateAtomic { path },
-    ReadDir { path }
-);
+handle_ops!([M, F] Open { path, options }, [F] CreateAtomic { path }, [D] ReadDir { path });
+
+impl<M, F> crate::Acquisition for Open<'_, M, F> {
+    type Resource = F;
+    type Error = io::Error;
+}
+
+impl<F> crate::Acquisition for CreateAtomic<'_, F> {
+    type Resource = F;
+    type Error = io::Error;
+}
+
+impl<D> crate::Acquisition for ReadDir<'_, D> {
+    type Resource = D;
+    type Error = io::Error;
+}
 
 operations! {
-    #[query] ReadFile<'_> => io::Result<Vec<u8>>;
-    #[query] ReadToString<'_> => io::Result<String>;
     #[query] Metadata<'_> => io::Result<FileInfo>;
     NextEntry => io::Result<Option<PathBuf>>;
     SetLen => io::Result<()>;
     SyncAll => io::Result<()>;
     SyncData => io::Result<()>;
     #[query] Stat => io::Result<FileInfo>;
-    WriteFile<'_> => io::Result<()>;
     CreateDir<'_> => io::Result<()>;
     RemoveFile<'_> => io::Result<()>;
     RemoveDir<'_> => io::Result<()>;
     Rename<'_> => io::Result<()>;
     CopyFile<'_> => io::Result<u64>;
-    SweepAtomic<'_> => io::Result<u64>;
 }
 
 crate::root::in_kind!(crate::kinds::Fs:
-    ['a] ReadFile<'a>, ['a] ReadToString<'a>, ['a] WriteFile<'a>, ['a] Metadata<'a>,
-    ['a] CreateDir<'a>, ['a] RemoveFile<'a>, ['a] RemoveDir<'a>, ['a] Rename<'a>,
-    ['a] CopyFile<'a>, ['a] SweepAtomic<'a>,
-    ['a, F] Open<'a, F>, ['a, F] CreateAtomic<'a, F>, ['a, D] ReadDir<'a, D>,
+    ['a] Metadata<'a>, ['a] CreateDir<'a>, ['a] RemoveFile<'a>, ['a] RemoveDir<'a>,
+    ['a] Rename<'a>, ['a] CopyFile<'a>,
+    ['a, M, F] Open<'a, M, F>, ['a, F] CreateAtomic<'a, F>, ['a, D] ReadDir<'a, D>,
 );
+
+fn not_utf8() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "the file is not valid UTF-8")
+}
+
+three_ways! {
+    /// Reads the whole file at `path`.
+    pub fn read_file, read_file_async, read_file_send
+    [C, F] (c: &mut C, path: &(impl AsRef<Path> + ?Sized)) -> io::Result<Vec<u8>>
+    where
+        sync {
+            C: for<'a> crate::Provide<Open<'a, ReadOnly, F>>,
+            F: for<'a> crate::Perform<Read<'a>>,
+        }
+        async {
+            C: for<'a> crate::AsyncProvide<Open<'a, ReadOnly, F>>,
+            F: for<'a> crate::future::AsyncPerform<Read<'a>>,
+        }
+        send {
+            C: for<'a> crate::AsyncProvide<Open<'a, ReadOnly, F>> + Send,
+            F: for<'a> crate::future::SendPerform<Read<'a>> + Send,
+        }
+    {
+        acquire!(c, Open::read(path), |_, file| {
+            let mut bytes = Vec::new();
+            call!(super::io::read_to_end, super::io::read_to_end_async, super::io::read_to_end_send; (file, &mut bytes))?;
+            io::Result::Ok(bytes)
+        })
+    }
+
+    /// Reads the whole file at `path` as UTF-8. Fails with
+    /// `io::ErrorKind::InvalidData` if it is not.
+    pub fn read_to_string, read_to_string_async, read_to_string_send
+    [C, F] (c: &mut C, path: &(impl AsRef<Path> + ?Sized)) -> io::Result<String>
+    where
+        sync {
+            C: for<'a> crate::Provide<Open<'a, ReadOnly, F>>,
+            F: for<'a> crate::Perform<Read<'a>>,
+        }
+        async {
+            C: for<'a> crate::AsyncProvide<Open<'a, ReadOnly, F>>,
+            F: for<'a> crate::future::AsyncPerform<Read<'a>>,
+        }
+        send {
+            C: for<'a> crate::AsyncProvide<Open<'a, ReadOnly, F>> + Send,
+            F: for<'a> crate::future::SendPerform<Read<'a>> + Send,
+        }
+    {
+        let bytes = call!(read_file, read_file_async, read_file_send; (c, path))?;
+        String::from_utf8(bytes).map_err(|_| not_utf8())
+    }
+
+    /// Replaces the contents of `path` with `contents`, creating it if
+    /// needed. The file is synced when it is closed, as every file opened
+    /// for writing is.
+    pub fn write_file, write_file_async, write_file_send
+    [C, F] (
+        c: &mut C,
+        path: &(impl AsRef<Path> + ?Sized),
+        contents: &(impl AsRef<[u8]> + ?Sized),
+    ) -> io::Result<()>
+    where
+        sync {
+            C: for<'a> crate::Provide<Open<'a, WriteOnly, F>>,
+            F: for<'a> crate::Perform<Write<'a>>,
+        }
+        async {
+            C: for<'a> crate::AsyncProvide<Open<'a, WriteOnly, F>>,
+            F: for<'a> crate::future::AsyncPerform<Write<'a>>,
+        }
+        send {
+            C: for<'a> crate::AsyncProvide<Open<'a, WriteOnly, F>> + Send,
+            F: for<'a> crate::future::SendPerform<Write<'a>> + Send,
+        }
+    {
+        let contents = contents.as_ref();
+        acquire!(c, Open::create(path), |_, file| {
+            call!(super::io::write_all, super::io::write_all_async, super::io::write_all_send; (file, contents))
+        })
+    }
+
+    /// Creates `path` and any missing parents. Succeeds if `path` is
+    /// already a directory.
+    pub fn create_dir_all, create_dir_all_async, create_dir_all_send
+    [C] (c: &mut C, path: &(impl AsRef<Path> + ?Sized)) -> io::Result<()>
+    where
+        sync { C: for<'a> crate::Perform<CreateDir<'a>> + for<'a> crate::Inspect<Metadata<'a>> }
+        async {
+            C: for<'a> crate::future::AsyncPerform<CreateDir<'a>>
+                + for<'a> crate::future::AsyncInspect<Metadata<'a>>,
+        }
+        send {
+            C: for<'a> crate::future::SendPerform<CreateDir<'a>>
+                + for<'a> crate::future::SendInspect<Metadata<'a>>
+                + Send,
+        }
+    {
+        let path = path.as_ref();
+        // Outermost first: each directory is created after its parent.
+        let ancestors: Vec<&Path> = path.ancestors().filter(|p| !p.as_os_str().is_empty()).collect();
+        for dir in ancestors.into_iter().rev() {
+            match run!(c, CreateDir::new(dir)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    if !ask!(c, Metadata::new(dir))?.is_dir() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::NotADirectory,
+                            "a path component is not a directory",
+                        ));
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "time")]
+three_ways! {
+    /// Deletes temporary files left in `dir` by [`CreateAtomic`] writes that
+    /// never finished, because the process was killed before it could clean
+    /// up. Returns how many were removed.
+    ///
+    /// Only files whose last modification is at least `older_than` ago, by
+    /// the wall clock, are removed, so that writes still in progress, in this
+    /// process or another, are left alone. Pick an age longer than any write
+    /// takes. Subdirectories are not visited.
+    pub fn sweep_atomic, sweep_atomic_async, sweep_atomic_send
+    [C, D] (c: &mut C, dir: &(impl AsRef<Path> + ?Sized), older_than: core::time::Duration) -> io::Result<u64>
+    where
+        sync {
+            C: for<'a> crate::Provide<ReadDir<'a, D>>
+                + for<'a> crate::Inspect<Metadata<'a>>
+                + for<'a> crate::Perform<RemoveFile<'a>>
+                + crate::Inspect<crate::ops::time::WallClock>,
+            D: crate::Perform<NextEntry>,
+        }
+        async {
+            C: for<'a> crate::AsyncProvide<ReadDir<'a, D>>
+                + for<'a> crate::future::AsyncInspect<Metadata<'a>>
+                + for<'a> crate::future::AsyncPerform<RemoveFile<'a>>
+                + crate::future::AsyncInspect<crate::ops::time::WallClock>,
+            D: crate::future::AsyncPerform<NextEntry>,
+        }
+        send {
+            C: for<'a> crate::AsyncProvide<ReadDir<'a, D>>
+                + for<'a> crate::future::SendInspect<Metadata<'a>>
+                + for<'a> crate::future::SendPerform<RemoveFile<'a>>
+                + crate::future::SendInspect<crate::ops::time::WallClock>
+                + Send,
+            D: crate::future::SendPerform<NextEntry> + Send,
+        }
+    {
+        let now = ask!(c, crate::ops::time::WallClock);
+        acquire!(c, ReadDir::new(dir.as_ref()), |c, entries| {
+            let mut removed = 0;
+            while let Some(path) = run!(entries, NextEntry)? {
+                if !path.file_name().is_some_and(is_temp_name) {
+                    continue;
+                }
+                let info = match ask!(c, Metadata::new(&path)) {
+                    Ok(info) => info,
+                    // Finished or cleaned up by its writer in the meantime.
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e),
+                };
+                let age = info
+                    .modified
+                    .and_then(|m| now.duration_since(m).ok())
+                    .unwrap_or_default();
+                if info.is_file() && age >= older_than {
+                    match run!(c, RemoveFile::new(&path)) {
+                        Ok(()) => removed += 1,
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+            io::Result::Ok(removed)
+        })
+    }
+}

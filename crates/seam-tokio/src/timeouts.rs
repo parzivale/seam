@@ -1,7 +1,7 @@
 //! Timeouts, through `tokio::time::timeout`. Each operation below is
-//! cancel-safe in Tokio, so one that times out had no effect, except
-//! where `TimesOut` says otherwise (`ReadToEnd` keeps what it read, and
-//! `WriteAll` may have written part of its buffer).
+//! cancel-safe in Tokio, so one that times out had no effect. The inner
+//! future is polled before the deadline is checked, so a timeout of zero
+//! (`try_send`, `try_recv`) is a non-blocking attempt.
 //!
 //! Tokio's clock drives the deadline, so paused time (`test-util`)
 //! applies.
@@ -49,7 +49,7 @@ mod sync {
 mod net {
     use std::io;
 
-    use seam_core::ops::io::{Read, ReadExact, ReadToEnd, Write, WriteAll};
+    use seam_core::ops::io::{Read, Write};
     use seam_core::ops::net::{Accept, RecvFrom, TcpConnect};
     use seam_core::{AsyncProvide, Token};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -66,36 +66,8 @@ mod net {
         timeout(op.after, s.0.read(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
     });
 
-    // What arrived before the deadline stays in the buffer.
-    async_op!(perform ['a] TcpStream, Timeout<ReadExact<'a>>, |s, op| {
-        timeout(op.after, s.0.read_exact(op.op.0)).await.unwrap_or_else(|_| Err(timed_out())).map(drop)
-    });
-
-    // Reads chunk by chunk, so that what arrived before the deadline stays
-    // in the buffer.
-    async_op!(perform ['a] TcpStream, Timeout<ReadToEnd<'a>>, |s, op| {
-        let deadline = tokio::time::Instant::now() + op.after;
-        let out = op.op.0;
-        let mut chunk = [0; 8192];
-        let mut total = 0;
-        loop {
-            let n = tokio::time::timeout_at(deadline, s.0.read(&mut chunk))
-                .await
-                .unwrap_or_else(|_| Err(timed_out()))?;
-            if n == 0 {
-                break seam_core::io::Result::Ok(total);
-            }
-            out.extend_from_slice(&chunk[..n]);
-            total += n;
-        }
-    });
-
     async_op!(perform ['a] TcpStream, Timeout<Write<'a>>, |s, op| {
         timeout(op.after, s.0.write(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
-    });
-
-    async_op!(perform ['a] TcpStream, Timeout<WriteAll<'a>>, |s, op| {
-        timeout(op.after, s.0.write_all(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
     });
 
     async_op!(perform ['a] UdpSocket, Timeout<RecvFrom<'a>>, |s, op| {
@@ -231,8 +203,8 @@ mod signal {
 mod process {
     use std::io;
 
-    use seam_core::ops::io::{Read, ReadExact, ReadToEnd};
-    use seam_core::ops::process::{ReadErr, ReadErrToEnd, Wait};
+    use seam_core::ops::io::Read;
+    use seam_core::ops::process::{ReadErr, Wait};
     use tokio::io::AsyncReadExt;
 
     use super::*;
@@ -254,47 +226,5 @@ mod process {
     async_op!(perform ['a] Child, Timeout<ReadErr<'a>>, |s, op| {
         let err = s.stderr_mut()?;
         timeout(op.after, err.read(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
-    });
-
-    // What arrived before the deadline stays in the buffer.
-    async_op!(perform ['a] Child, Timeout<ReadExact<'a>>, |s, op| {
-        let out = s.stdout_mut()?;
-        timeout(op.after, out.read_exact(op.op.0)).await.unwrap_or_else(|_| Err(timed_out())).map(drop)
-    });
-
-    // Chunk by chunk, so what arrived before the deadline stays.
-    async_op!(perform ['a] Child, Timeout<ReadToEnd<'a>>, |s, op| {
-        let deadline = tokio::time::Instant::now() + op.after;
-        let out = op.op.0;
-        let pipe = s.stdout_mut()?;
-        let mut chunk = [0; 8192];
-        let mut total = 0;
-        loop {
-            let n = tokio::time::timeout_at(deadline, pipe.read(&mut chunk))
-                .await
-                .unwrap_or_else(|_| Err(timed_out()))?;
-            if n == 0 {
-                break seam_core::io::Result::Ok(total);
-            }
-            out.extend_from_slice(&chunk[..n]);
-            total += n;
-        }
-    });
-    async_op!(perform ['a] Child, Timeout<ReadErrToEnd<'a>>, |s, op| {
-        let deadline = tokio::time::Instant::now() + op.after;
-        let out = op.op.0;
-        let pipe = s.stderr_mut()?;
-        let mut chunk = [0; 8192];
-        let mut total = 0;
-        loop {
-            let n = tokio::time::timeout_at(deadline, pipe.read(&mut chunk))
-                .await
-                .unwrap_or_else(|_| Err(timed_out()))?;
-            if n == 0 {
-                break seam_core::io::Result::Ok(total);
-            }
-            out.extend_from_slice(&chunk[..n]);
-            total += n;
-        }
     });
 }

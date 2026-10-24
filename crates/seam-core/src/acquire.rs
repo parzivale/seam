@@ -9,17 +9,17 @@
 //! # #[cfg(feature = "fs")] {
 //! use seam_core::io;
 //! use seam_core::prelude::*;
-//! use seam_core::ops::fs::Open;
-//! use seam_core::ops::io::ReadToEnd;
+//! use seam_core::ops::fs::{Open, ReadOnly};
+//! use seam_core::ops::io::{Read, read_to_end};
 //!
 //! fn read_all<C, F>(c: &mut C, path: &str) -> io::Result<Vec<u8>>
 //! where
-//!     C: for<'a> Provide<Open<'a, F>>,
-//!     F: for<'a> Perform<ReadToEnd<'a>>,
+//!     C: for<'a> Provide<Open<'a, ReadOnly, F>>,
+//!     F: for<'a> Perform<Read<'a>>,
 //! {
 //!     c.acquire(Open::read(path), |_c, file| {
 //!         let mut bytes = Vec::new();
-//!         file.perform(ReadToEnd(&mut bytes))?;
+//!         read_to_end(file, &mut bytes)?;
 //!         Ok(bytes)
 //!     })
 //! }

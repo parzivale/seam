@@ -7,11 +7,17 @@
 //!
 //! # Talking to a child
 //!
-//! A child acts like a stream: writing (`Write`, `WriteAll`) goes to its
-//! standard input, and reading (`Read`, `ReadToEnd`) comes from its
-//! standard output. [`ReadErr`] and [`ReadErrToEnd`] read its standard
-//! error, [`CloseStdin`] sends end of input, [`Wait`] waits for it to exit,
-//! and [`Kill`] stops it.
+//! A child acts like a stream: `Write` goes to its standard input and
+//! `Read` comes from its standard output, so the [`io`](super::io) helpers
+//! work on it ([`write_all`](super::io::write_all),
+//! [`read_to_end`](super::io::read_to_end), ...). [`ReadErr`] reads its
+//! standard error ([`read_err_to_end`] all of it), [`CloseStdin`] sends end
+//! of input, [`Wait`] waits for it to exit, and [`Kill`] stops it.
+//!
+//! [`RunCommand`] is a primitive, not a scope built from these: collecting
+//! both outputs means reading the two pipes at once, or the child can fill
+//! one while the core waits on the other, and a core cannot read two at
+//! once.
 //!
 //! When the scope succeeds, the child's pipes are closed and the scope
 //! waits for it to exit, so no child outlives its scope. When the scope
@@ -21,21 +27,21 @@
 //! use seam_core::io;
 //! use std::process::Command;
 //! use seam_core::{Acquire, Perform, Provide};
-//! use seam_core::ops::io::{ReadToEnd, WriteAll};
+//! use seam_core::ops::io::{Read, Write, read_to_end, write_all};
 //! use seam_core::ops::process::{CloseStdin, SpawnChild, Wait};
 //!
 //! /// Feeds `input` through a filter program and returns what it printed.
 //! fn filter<C, P>(c: &mut C, program: &str, input: &[u8]) -> io::Result<Vec<u8>>
 //! where
 //!     C: Provide<SpawnChild<P>>,
-//!     P: for<'a> Perform<WriteAll<'a>> + for<'a> Perform<ReadToEnd<'a>>
+//!     P: for<'a> Perform<Write<'a>> + for<'a> Perform<Read<'a>>
 //!         + Perform<CloseStdin> + Perform<Wait>,
 //! {
 //!     c.acquire(SpawnChild::new(Command::new(program)), |_, child| {
-//!         child.perform(WriteAll(input))?;
+//!         write_all(child, input)?;
 //!         child.perform(CloseStdin);
 //!         let mut out = Vec::new();
-//!         child.perform(ReadToEnd(&mut out))?;
+//!         read_to_end(child, &mut out)?;
 //!         let status = child.perform(Wait)?;
 //!         if !status.success() {
 //!             return Err(io::Error::other("the filter failed"));
@@ -63,6 +69,7 @@
 //! ```
 
 use crate::io;
+use crate::three_ways::three_ways;
 use core::convert::Infallible;
 use core::marker::PhantomData;
 use std::process::Command;
@@ -200,11 +207,6 @@ pub struct CloseStdin;
 #[derive(Debug)]
 pub struct ReadErr<'a>(pub &'a mut [u8]);
 
-/// Read a child's standard error until it closes it, appending to the
-/// buffer. Performed on the child.
-#[derive(Debug)]
-pub struct ReadErrToEnd<'a>(pub &'a mut Vec<u8>);
-
 operations! {
     RunCommand => io::Result<Output>;
     Exit => Infallible;
@@ -213,7 +215,6 @@ operations! {
     #[query] ChildId => Option<u32>;
     CloseStdin => ();
     ReadErr<'_> => io::Result<usize>;
-    ReadErrToEnd<'_> => io::Result<usize>;
 }
 
 impl<C> crate::Acquisition for SpawnChild<C> {
@@ -243,12 +244,27 @@ mod timeouts {
             Err(io_timed_out())
         }
     }
+}
 
-    /// What arrived before the deadline is left in the buffer.
-    impl TimesOut for ReadErrToEnd<'_> {
-        type Expired = io::Result<usize>;
-        fn timed_out(self) -> Self::Expired {
-            Err(io_timed_out())
+three_ways! {
+    /// Reads a child's standard error until it closes it, appending to
+    /// `out`. Returns how many bytes were read.
+    pub fn read_err_to_end, read_err_to_end_async, read_err_to_end_send
+    [H] (child: &mut H, out: &mut Vec<u8>) -> io::Result<usize>
+    where
+        sync { H: for<'a> crate::Perform<ReadErr<'a>> }
+        async { H: for<'a> crate::future::AsyncPerform<ReadErr<'a>> }
+        send { H: for<'a> crate::future::SendPerform<ReadErr<'a>> + Send }
+    {
+        let start = out.len();
+        let mut chunk = [0; 4096];
+        loop {
+            match run!(child, ReadErr(&mut chunk)) {
+                Ok(0) => return Ok(out.len() - start),
+                Ok(n) => out.extend_from_slice(&chunk[..n]),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
         }
     }
 }

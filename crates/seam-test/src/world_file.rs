@@ -629,8 +629,7 @@ impl Sim {
 
     #[cfg(feature = "fs")]
     fn load_fs(&mut self, node: &Node, parent: Option<&Path>) -> Result<()> {
-        use seam_core::Perform;
-        use seam_core::ops::fs::{CreateDir, WriteFile};
+        use seam_core::ops::fs::{create_dir_all, write_file};
 
         let path = match node.name.as_str() {
             "dir" | "file" => path_in(node, parent)?,
@@ -642,17 +641,16 @@ impl Sim {
         if node.name == "dir" {
             node.props_only(&[])?;
             node.arity(1, Some(1), "a path, then a block of its contents")?;
-            self.perform(CreateDir::all(&path)).map_err(failed)?;
+            create_dir_all(self, &path).map_err(failed)?;
             for child in &node.children {
                 self.load_fs(child, Some(&path))?;
             }
         } else {
             let bytes = contents(node, 1, "a path and its contents, or a path and `hex=`")?;
             if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-                self.perform(CreateDir::all(dir)).map_err(failed)?;
+                create_dir_all(self, dir).map_err(failed)?;
             }
-            self.perform(WriteFile::new(&path, &bytes))
-                .map_err(failed)?;
+            write_file(self, &path, &bytes).map_err(failed)?;
         }
         Ok(())
     }
@@ -771,7 +769,7 @@ impl Sim {
                             }
                         };
                         let want = contents(child, 0, "the expected output, or `hex=`")?;
-                        if got != want.as_slice() {
+                        if got != want {
                             fail(
                                 failures,
                                 child.pos,
@@ -779,7 +777,7 @@ impl Sim {
                                     "{}: expected {}, found {}",
                                     child.name,
                                     show(&want),
-                                    show(got)
+                                    show(&got)
                                 ),
                             );
                         }

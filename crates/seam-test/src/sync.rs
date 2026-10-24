@@ -12,10 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::Waker;
 use std::vec::Vec;
 
-use seam_core::ops::sync::{
-    Channel, Load, RecvError, RecvMsg, SendError, SendMsg, Share, Store, TryRecvMsg, TrySendMsg,
-    Update,
-};
+use seam_core::ops::sync::{Channel, Load, RecvError, RecvMsg, SendError, SendMsg, Share, Update};
 use seam_core::{Inspect, Perform};
 
 use crate::Sim;
@@ -177,21 +174,9 @@ impl<T> Perform<SendMsg<T>> for Sender<T> {
     }
 }
 
-impl<T> Perform<TrySendMsg<T>> for Sender<T> {
-    fn perform(&mut self, op: TrySendMsg<T>) -> Result<(), SendError<T>> {
-        lock(&self.0).try_send(op.0)
-    }
-}
-
 /// Fails with `Empty` instead of waiting.
 impl<T> Perform<RecvMsg<T>> for Receiver<T> {
     fn perform(&mut self, _: RecvMsg<T>) -> Result<T, RecvError> {
-        lock(&self.0).try_recv()
-    }
-}
-
-impl<T> Perform<TryRecvMsg<T>> for Receiver<T> {
-    fn perform(&mut self, _: TryRecvMsg<T>) -> Result<T, RecvError> {
         lock(&self.0).try_recv()
     }
 }
@@ -222,12 +207,6 @@ impl<T> Perform<Share<T, Shared<T>>> for Sim {
 impl<T: Clone> Inspect<Load<T>> for Shared<T> {
     fn inspect(&self, _: Load<T>) -> T {
         lock(&self.0).clone()
-    }
-}
-
-impl<T> Perform<Store<T>> for Shared<T> {
-    fn perform(&mut self, op: Store<T>) {
-        *lock(&self.0) = op.0;
     }
 }
 

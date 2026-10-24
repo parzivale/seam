@@ -2,12 +2,12 @@
 #![cfg(feature = "full")]
 
 use seam_core::io;
+use seam_core::ops::io::{read_to_end, read_to_end_send, write_all, write_all_send};
+use seam_core::ops::process::read_err_to_end;
 use std::process::Command;
 
-use seam_core::ops::io::{Read, ReadToEnd, WriteAll};
-use seam_core::ops::process::{
-    ChildId, CloseStdin, Kill, Output, Pipe, ReadErrToEnd, SpawnChild, Wait,
-};
+use seam_core::ops::io::Read;
+use seam_core::ops::process::{ChildId, CloseStdin, Kill, Output, Pipe, SpawnChild, Wait};
 use seam_core::{Acquire, Inspect, Perform};
 use seam_test::Sim;
 use seam_test::process::Child;
@@ -30,13 +30,13 @@ fn a_child_runs_on_its_input() -> io::Result<()> {
     let mut sim = shouting();
     let spawn = SpawnChild::<Child>::new(Command::new("tr")).stderr(Pipe::Piped);
     let (out, err, status) = sim.acquire(spawn, |_, child| {
-        child.perform(WriteAll(b"hello "))?;
-        child.perform(WriteAll(b"there"))?;
+        write_all(child, b"hello ")?;
+        write_all(child, b"there")?;
         child.perform(CloseStdin);
         let mut out = Vec::new();
-        child.perform(ReadToEnd(&mut out))?;
+        read_to_end(child, &mut out)?;
         let mut err = Vec::new();
-        child.perform(ReadErrToEnd(&mut err))?;
+        read_err_to_end(child, &mut err)?;
         let status = child.perform(Wait)?;
         io::Result::Ok((out, err, status))
     })?;
@@ -55,14 +55,14 @@ fn a_child_runs_on_its_input() -> io::Result<()> {
 fn reading_runs_it_and_later_input_is_refused() -> io::Result<()> {
     let mut sim = shouting();
     sim.acquire(SpawnChild::<Child>::new(Command::new("tr")), |_, child| {
-        child.perform(WriteAll(b"abc"))?;
+        write_all(child, b"abc")?;
         let mut buf = [0; 2];
         let n = child.perform(Read(&mut buf))?; // runs it, on "abc"
         assert_eq!(&buf[..n], b"AB");
         let n = child.perform(Read(&mut buf))?;
         assert_eq!(&buf[..n], b"C");
         assert_eq!(child.perform(Read(&mut buf))?, 0, "end of output");
-        let err = child.perform(WriteAll(b"more")).unwrap_err();
+        let err = write_all(child, b"more").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
         Ok(())
     })
@@ -73,7 +73,7 @@ fn inherited_output_goes_to_the_sims_streams() -> io::Result<()> {
     let mut sim = shouting();
     // Piped input: it runs when the scope closes, and its output is printed then.
     let spawn = SpawnChild::<Child>::new(Command::new("tr")).stdout(Pipe::Inherit);
-    sim.acquire(spawn, |_, child| child.perform(WriteAll(b"loud")))?;
+    sim.acquire(spawn, |_, child| write_all(child, b"loud"))?;
     // No input: it runs at once.
     let spawn = SpawnChild::<Child>::new(Command::new("tr"))
         .stdin(Pipe::Null)
@@ -105,13 +105,13 @@ fn unscripted_programs_do_not_start() {
 fn a_killed_child_never_runs() -> io::Result<()> {
     let mut sim = shouting();
     sim.acquire(SpawnChild::<Child>::new(Command::new("tr")), |_, child| {
-        child.perform(WriteAll(b"x"))?;
+        write_all(child, b"x")?;
         assert!(child.inspect(ChildId).is_some());
         child.perform(Kill)?;
         assert_eq!(child.perform(Wait)?.code, None, "as if killed by a signal");
         assert_eq!(child.inspect(ChildId), None, "reaped");
         let mut out = Vec::new();
-        child.perform(ReadToEnd(&mut out))?;
+        read_to_end(child, &mut out)?;
         assert!(out.is_empty());
         Ok(())
     })
@@ -121,9 +121,9 @@ fn a_killed_child_never_runs() -> io::Result<()> {
 fn world_files_script_children_and_check_their_input() -> io::Result<()> {
     let mut sim = Sim::from_world(r#"process { command wc stdout="1\n" }"#).unwrap();
     sim.acquire(SpawnChild::<Child>::new(Command::new("wc")), |_, child| {
-        child.perform(WriteAll(b"one line\n"))?;
+        write_all(child, b"one line\n")?;
         let mut out = Vec::new();
-        child.perform(ReadToEnd(&mut out))?;
+        read_to_end(child, &mut out)?;
         assert_eq!(out, b"1\n");
         io::Result::Ok(())
     })?;
@@ -143,7 +143,7 @@ fn world_files_script_children_and_check_their_input() -> io::Result<()> {
 #[test]
 fn children_on_the_runtime_and_threads() {
     use seam_core::AsyncAcquire;
-    use seam_core::future::SendPerform;
+
     use seam_test::rt::Runtime;
     use seam_test::threads::Threads;
 
@@ -152,9 +152,9 @@ fn children_on_the_runtime_and_threads() {
         sim.acquire_async(
             SpawnChild::<Child>::new(Command::new("tr")),
             async |_, child| {
-                child.perform_send(WriteAll(b"async")).await?;
+                write_all_send(child, b"async").await?;
                 let mut out = Vec::new();
-                child.perform_send(ReadToEnd(&mut out)).await?;
+                read_to_end_send(child, &mut out).await?;
                 io::Result::Ok(out)
             },
         )
@@ -165,9 +165,9 @@ fn children_on_the_runtime_and_threads() {
     let threads = Threads::new(shouting());
     let out = threads.run(|mut sim| {
         sim.acquire(SpawnChild::<Child>::new(Command::new("tr")), |_, child| {
-            child.perform(WriteAll(b"threaded"))?;
+            write_all(child, b"threaded")?;
             let mut out = Vec::new();
-            child.perform(ReadToEnd(&mut out))?;
+            read_to_end(child, &mut out)?;
             io::Result::Ok(out)
         })
     });
@@ -180,7 +180,7 @@ fn children_on_the_runtime_and_threads() {
 fn an_abandoned_child_records_its_input() {
     let mut sim = shouting();
     let result = sim.acquire(SpawnChild::<Child>::new(Command::new("tr")), |_, child| {
-        child.perform(WriteAll(b"half"))?;
+        write_all(child, b"half")?;
         Err::<(), _>(io::Error::other("give up"))
     });
     assert!(result.is_err());

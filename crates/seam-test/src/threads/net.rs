@@ -11,7 +11,7 @@ use core::net::SocketAddr;
 use seam_core::io;
 use std::sync::Arc;
 
-use seam_core::ops::io::{Flush, Read, ReadExact, ReadToEnd, Write, WriteAll};
+use seam_core::ops::io::{Flush, Read, Write};
 use seam_core::ops::net::{
     Accept, LocalAddr, PeerAddr, RecvFrom, SendTo, Shutdown, TcpBind, TcpConnect, UdpBind,
 };
@@ -188,42 +188,6 @@ impl Perform<Read<'_>> for TcpStream {
     }
 }
 
-/// Waits until the buffer is full or the peer closes its end, as a real
-/// stream does.
-impl Perform<ReadExact<'_>> for TcpStream {
-    fn perform(&mut self, op: ReadExact<'_>) -> io::Result<()> {
-        let mut buf = op.0;
-        while !buf.is_empty() {
-            self.readable();
-            match self.0.perform(Read(&mut *buf))? {
-                0 => {
-                    return Err(crate::error(
-                        io::ErrorKind::UnexpectedEof,
-                        "the stream ended before the buffer was full",
-                    ));
-                }
-                n => buf = &mut buf[n..],
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Reads until the peer closes its end, as a real stream does.
-impl Perform<ReadToEnd<'_>> for TcpStream {
-    fn perform(&mut self, op: ReadToEnd<'_>) -> io::Result<usize> {
-        let mut total = 0;
-        loop {
-            self.readable();
-            let n = self.0.perform(ReadToEnd(&mut *op.0))?;
-            total += n;
-            if n == 0 {
-                return Ok(total);
-            }
-        }
-    }
-}
-
 macro_rules! switch_then {
     ($($ty:ty: $op:ty => $out:ty;)*) => {$(
         impl Perform<$op> for $ty {
@@ -237,7 +201,6 @@ macro_rules! switch_then {
 
 switch_then! {
     TcpStream: Write<'_> => io::Result<usize>;
-    TcpStream: WriteAll<'_> => io::Result<()>;
     TcpStream: Flush => io::Result<()>;
     TcpStream: Shutdown => io::Result<()>;
     UdpSocket: SendTo<'_> => io::Result<usize>;
@@ -316,57 +279,9 @@ mod timeouts {
         }
     }
 
-    /// What arrived before the deadline stays in the buffer.
-    impl Perform<Timeout<ReadExact<'_>>> for TcpStream {
-        fn perform(&mut self, op: Timeout<ReadExact<'_>>) -> io::Result<()> {
-            let deadline = self.1.deadline_after(op.after);
-            let mut buf = op.op.0;
-            while !buf.is_empty() {
-                if !self.readable_by(deadline) {
-                    return Err(timed_out());
-                }
-                match self.0.perform(Read(&mut *buf))? {
-                    0 => {
-                        return Err(crate::error(
-                            io::ErrorKind::UnexpectedEof,
-                            "the stream ended before the buffer was full",
-                        ));
-                    }
-                    n => buf = &mut buf[n..],
-                }
-            }
-            Ok(())
-        }
-    }
-
-    /// What arrived before the deadline stays in the buffer.
-    impl Perform<Timeout<ReadToEnd<'_>>> for TcpStream {
-        fn perform(&mut self, op: Timeout<ReadToEnd<'_>>) -> io::Result<usize> {
-            let deadline = self.1.deadline_after(op.after);
-            let out = op.op.0;
-            let mut total = 0;
-            loop {
-                if !self.readable_by(deadline) {
-                    return Err(timed_out());
-                }
-                let n = self.0.perform(ReadToEnd(&mut *out))?;
-                total += n;
-                if n == 0 {
-                    return Ok(total);
-                }
-            }
-        }
-    }
-
     // Writing never waits in the simulation.
     impl Perform<Timeout<Write<'_>>> for TcpStream {
         fn perform(&mut self, op: Timeout<Write<'_>>) -> io::Result<usize> {
-            self.perform(op.op)
-        }
-    }
-
-    impl Perform<Timeout<WriteAll<'_>>> for TcpStream {
-        fn perform(&mut self, op: Timeout<WriteAll<'_>>) -> io::Result<()> {
             self.perform(op.op)
         }
     }

@@ -2,19 +2,22 @@
 #![cfg(feature = "full")]
 
 use seam_core::io;
+use seam_core::ops::fs::write_file;
+use seam_core::ops::io::read_to_end;
+use seam_core::ops::net::resolve;
+use seam_core::ops::random::random_u64;
+use seam_core::ops::stdio::{OpenStdin, print};
 use std::net::IpAddr;
 use std::process::Command;
 use std::time::{Duration, UNIX_EPOCH};
 
 use seam_core::ops::env::{Args, CurrentDir, TempDir, Var};
-use seam_core::ops::fs::{NextEntry, ReadDir, WriteFile};
-use seam_core::ops::net::Resolve;
+use seam_core::ops::fs::{NextEntry, ReadDir};
 use seam_core::ops::process::RunCommand;
-use seam_core::ops::random::RandomU64;
 use seam_core::ops::signal::CtrlC;
-use seam_core::ops::stdio::{Print, ReadLine};
+
 use seam_core::ops::time::{Now, Sleep, WallClock};
-use seam_core::{Inspect, Perform};
+use seam_core::{Acquire, Inspect, Perform};
 use seam_test::Sim;
 
 /// Lists `dir` through `ReadDir`, one entry at a time.
@@ -80,7 +83,7 @@ signal { ctrl-c 2 }
 fn loads_every_directive() {
     let mut sim = Sim::from_world(WORLD).unwrap();
 
-    assert_eq!(sim.perform(RandomU64), Sim::with_seed(7).perform(RandomU64));
+    assert_eq!(random_u64(&mut sim), random_u64(&mut Sim::with_seed(7)));
     assert_eq!(
         sim.inspect(seam_core::ops::task::AvailableParallelism)
             .get(),
@@ -117,7 +120,7 @@ fn loads_every_directive() {
     );
 
     let ip: IpAddr = "93.184.216.34".parse().unwrap();
-    let resolved = sim.inspect(Resolve::new("example.com", 80)).unwrap();
+    let resolved = resolve(&sim, "example.com", 80).unwrap();
     assert_eq!(resolved[0].ip(), ip);
 
     let out = sim.perform(RunCommand(Command::new("git"))).unwrap();
@@ -141,8 +144,12 @@ fn loads_every_directive() {
         "only `make test` is scripted"
     );
 
-    assert_eq!(sim.perform(ReadLine).unwrap().as_deref(), Some("y\n"));
-    assert_eq!(sim.perform(ReadLine).unwrap().as_deref(), Some("n\n"));
+    let mut stdin = Vec::new();
+    sim.acquire(OpenStdin::<seam_test::stdio::Stdin>::new(), |_, h| {
+        read_to_end(h, &mut stdin)
+    })
+    .unwrap();
+    assert_eq!(stdin, b"y\nn\n");
     assert!(sim.perform(CtrlC).is_ok());
     assert!(sim.perform(CtrlC).is_ok());
     assert!(sim.perform(CtrlC).is_err(), "exactly two were raised");
@@ -226,9 +233,8 @@ fn errors_say_where_and_what() {
 #[test]
 fn expectations_pass_when_the_world_matches() {
     let mut sim = Sim::from_world(r#"fs { dir "/out" }"#).unwrap();
-    sim.perform(WriteFile::new("/out/report.txt", "total 6\n"))
-        .unwrap();
-    sim.perform(Print(b"done\n")).unwrap();
+    write_file(&mut sim, "/out/report.txt", "total 6\n").unwrap();
+    print(&mut sim, b"done\n").unwrap();
     sim.perform(Sleep(Duration::from_secs(3)));
     sim.on_command("git", |_| Ok(Default::default()));
     let mut status = Command::new("git");
@@ -254,9 +260,8 @@ fn expectations_pass_when_the_world_matches() {
 #[test]
 fn every_failure_is_reported_with_its_line() {
     let mut sim = Sim::new();
-    sim.perform(WriteFile::new("/tmp/out", "total 5\n"))
-        .unwrap();
-    sim.perform(Print(b"oops\n")).unwrap();
+    write_file(&mut sim, "/tmp/out", "total 5\n").unwrap();
+    print(&mut sim, b"oops\n").unwrap();
     sim.on_command("git", |_| Ok(Default::default()));
     sim.perform(RunCommand(Command::new("git"))).unwrap();
     sim.perform(RunCommand(Command::new("git"))).unwrap();

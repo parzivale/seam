@@ -2,6 +2,9 @@
 #![cfg(feature = "full")]
 
 use seam_core::io;
+use seam_core::ops::fs::{read_to_string_send, write_file_send};
+use seam_core::ops::io::{read_to_end_send, write_all_send};
+use seam_core::ops::stdio::print_send;
 use std::future::{Future, poll_fn};
 use std::net::SocketAddr;
 use std::pin::pin;
@@ -9,11 +12,10 @@ use std::task::Poll;
 use std::time::Duration;
 
 use seam_core::future::{SendInspect, SendPerform};
-use seam_core::ops::fs::{CreateAtomic, NextEntry, ReadDir, ReadToString, WriteFile};
-use seam_core::ops::io::{Read, ReadToEnd, WriteAll};
+use seam_core::ops::fs::{CreateAtomic, NextEntry, ReadDir};
+use seam_core::ops::io::Read;
 use seam_core::ops::net::{Accept, RecvFrom, SendTo, Shutdown, TcpBind, TcpConnect, UdpBind};
 use seam_core::ops::signal::CtrlC;
-use seam_core::ops::stdio::Print;
 use seam_core::ops::task::{
     Detach, Join, JoinError, JoinNext, Spawn, SpawnInto, SpawnSet, YieldNow,
 };
@@ -44,7 +46,7 @@ fn addr(port: u16) -> SocketAddr {
 }
 
 async fn say(sim: &mut AsyncSim, text: &str) {
-    sim.perform_send(Print(text.as_bytes())).await.unwrap();
+    print_send(sim, text.as_bytes()).await.unwrap();
 }
 
 fn stdout(rt: &Runtime) -> String {
@@ -156,14 +158,12 @@ fn seeds_find_and_replay_a_race() {
                     for _ in 0..2 {
                         let mut sim = sim.clone();
                         let increment = async move {
-                            let n: u32 = sim
-                                .inspect_send(ReadToString::new("/counter"))
+                            let n: u32 = read_to_string_send(&mut sim, "/counter")
                                 .await?
                                 .parse()
                                 .unwrap();
                             sim.perform_send(YieldNow).await; // the window
-                            sim.perform_send(WriteFile::new("/counter", &(n + 1).to_string()))
-                                .await
+                            write_file_send(&mut sim, "/counter", &(n + 1).to_string()).await
                         };
                         let _ = set.perform_send(SpawnInto::new(increment)).await;
                     }
@@ -205,13 +205,13 @@ fn reads_and_accepts_wait_for_the_other_side() {
                 let client = async move {
                     sim2.perform_send(Sleep(Duration::from_secs(5))).await;
                     sim2.acquire_async(TcpConnect::<TcpStream>::new(addr(80)), async |sim, c| {
-                        c.perform_send(WriteAll(b"ping")).await?;
+                        write_all_send(c, b"ping").await?;
                         sim.perform_send(Sleep(Duration::from_secs(5))).await;
-                        c.perform_send(WriteAll(b" pong")).await?;
+                        write_all_send(c, b" pong").await?;
                         c.perform_send(Shutdown(seam_core::ops::net::How::Write))
                             .await?;
                         let mut reply = Vec::new();
-                        c.perform_send(ReadToEnd(&mut reply)).await?;
+                        read_to_end_send(c, &mut reply).await?;
                         io::Result::Ok(reply)
                     })
                     .await
@@ -222,8 +222,8 @@ fn reads_and_accepts_wait_for_the_other_side() {
                         listener
                             .acquire_async(Accept::<TcpStream>::new(), async |_, s| {
                                 let mut got = Vec::new();
-                                s.perform_send(ReadToEnd(&mut got)).await?; // waits for the client to finish
-                                s.perform_send(WriteAll(&got)).await
+                                read_to_end_send(s, &mut got).await?; // waits for the client to finish
+                                write_all_send(s, &got).await
                             })
                             .await?;
                         client
@@ -368,9 +368,9 @@ fn a_timeout_cancels_an_atomic_write_cleanly() {
         let slow_write = sim.acquire_async(
             CreateAtomic::<AtomicFile>::new("/etc/app.conf"),
             async |sim, f| {
-                f.perform_send(WriteAll(b"half")).await?;
+                write_all_send(f, b"half").await?;
                 sim.perform_send(Sleep(Duration::from_secs(10))).await;
-                f.perform_send(WriteAll(b" and the rest")).await
+                write_all_send(f, b" and the rest").await
             },
         );
         let timeout = async move {
@@ -397,8 +397,8 @@ fn the_world_carries_over() {
     sim.add_file("/in", "hello");
     let rt = Runtime::new(sim);
     rt.block_on(|mut sim| async move {
-        let text = sim.inspect_send(ReadToString::new("/in")).await.unwrap();
-        sim.perform_send(WriteFile::new("/out", &text.to_uppercase()))
+        let text = read_to_string_send(&mut sim, "/in").await.unwrap();
+        write_file_send(&mut sim, "/out", &text.to_uppercase())
             .await
             .unwrap();
     });
@@ -416,7 +416,7 @@ fn files_through_the_runtime() {
     sim.add_file("/d/a", "1");
     let rt = Runtime::new(sim);
     let listed = rt.block_on(|mut sim| async move {
-        seam_core::Perform::perform(&mut sim, WriteFile::new("/d/b", "2")).unwrap();
+        seam_core::ops::fs::write_file(&mut sim, "/d/b", "2").unwrap();
         list(&mut sim, "/d").unwrap()
     });
     assert_eq!(

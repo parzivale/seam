@@ -138,10 +138,10 @@ pub struct SpawnWith<A, B, H> {
 /// that its future is known to be `Send`, without boxing:
 ///
 /// ```
-/// # #[cfg(feature = "io")] {
+/// # #[cfg(all(feature = "io", feature = "alloc"))] {
 /// use seam_core::io;
 /// use seam_core::prelude::*;
-/// use seam_core::ops::io::{ReadToEnd, WriteAll};
+/// use seam_core::ops::io::{Read, Write, read_to_end_send, write_all_send};
 /// use seam_core::ops::task::TaskBody;
 ///
 /// /// Replies to whatever the peer sent with its length.
@@ -149,15 +149,15 @@ pub struct SpawnWith<A, B, H> {
 ///
 /// impl<S> TaskBody<S> for CountBytes
 /// where
-///     S: for<'a> SendPerform<ReadToEnd<'a>> + for<'a> SendPerform<WriteAll<'a>> + Send,
+///     S: for<'a> SendPerform<Read<'a>> + for<'a> SendPerform<Write<'a>> + Send,
 /// {
 ///     type Output = usize;
 ///     type Error = io::Error;
 ///
 ///     async fn run(self, stream: &mut S) -> io::Result<usize> {
 ///         let mut bytes = Vec::new();
-///         let n = stream.perform_send(ReadToEnd(&mut bytes)).await?;
-///         stream.perform_send(WriteAll(n.to_string().as_bytes())).await?;
+///         let n = read_to_end_send(stream, &mut bytes).await?;
+///         write_all_send(stream, n.to_string().as_bytes()).await?;
 ///         Ok(n)
 ///     }
 /// }

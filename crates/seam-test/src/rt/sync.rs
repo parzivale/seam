@@ -17,9 +17,7 @@ use core::future::poll_fn;
 use core::task::Poll;
 
 use seam_core::Perform;
-use seam_core::ops::sync::{
-    Channel, RecvError, RecvMsg, SendError, SendMsg, Share, TryRecvMsg, TrySendMsg,
-};
+use seam_core::ops::sync::{Channel, RecvError, RecvMsg, SendError, SendMsg, Share};
 
 use std::sync::Arc;
 
@@ -85,12 +83,6 @@ async_op!([T: Send] Sender<T>, SendMsg<T>, |s, op| {
     .await
 });
 
-impl<T> Perform<TrySendMsg<T>> for Sender<T> {
-    fn perform(&mut self, op: TrySendMsg<T>) -> Result<(), SendError<T>> {
-        self.0.perform(op)
-    }
-}
-
 async_op!([T: Send] Receiver<T>, RecvMsg<T>, |s, _op| {
     poll_fn(|cx| match s.0.poll_recv(cx.waker()) {
         Err(RecvError::Empty) => Poll::Pending,
@@ -98,12 +90,6 @@ async_op!([T: Send] Receiver<T>, RecvMsg<T>, |s, _op| {
     })
     .await
 });
-
-impl<T> Perform<TryRecvMsg<T>> for Receiver<T> {
-    fn perform(&mut self, op: TryRecvMsg<T>) -> Result<T, RecvError> {
-        self.0.perform(op)
-    }
-}
 
 // Every capability type opts in to seam's lifts.
 impl<T> seam_core::Capability for Receiver<T> {}

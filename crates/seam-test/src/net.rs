@@ -14,10 +14,10 @@ use std::string::String;
 use std::task::Waker;
 use std::vec::Vec;
 
-use seam_core::ops::io::{Flush, Read, ReadExact, ReadToEnd, Write, WriteAll};
+use seam_core::ops::io::{Flush, Read, Write};
 use seam_core::ops::net::{
-    Accept, LocalAddr, PeerAddr, RecvFrom, Resolve, ResolveInto, SendTo, Shutdown, TcpBind,
-    TcpConnect, UdpBind,
+    Accept, LocalAddr, PeerAddr, RecvFrom, ResolveInto, SendTo, Shutdown, TcpBind, TcpConnect,
+    UdpBind,
 };
 use seam_core::{Inspect, Perform, Provide, Token};
 
@@ -221,14 +221,6 @@ impl Sim {
     }
 }
 
-impl Inspect<Resolve<'_>> for Sim {
-    fn inspect(&self, op: Resolve<'_>) -> io::Result<Vec<SocketAddr>> {
-        let mut addrs = Vec::new();
-        self.resolve(op.host, op.port, |a| addrs.push(a))?;
-        Ok(addrs)
-    }
-}
-
 impl Inspect<ResolveInto<'_>> for Sim {
     fn inspect(&self, op: ResolveInto<'_>) -> io::Result<usize> {
         let mut n = 0;
@@ -391,55 +383,9 @@ impl Perform<Read<'_>> for TcpStream {
     }
 }
 
-/// Takes nothing until the whole buffer has arrived: until then it fails
-/// with `WouldBlock`, as nothing in the simulation waits. If the peer has
-/// closed first, it takes what is left and fails with `UnexpectedEof`.
-impl Perform<ReadExact<'_>> for TcpStream {
-    fn perform(&mut self, op: ReadExact<'_>) -> io::Result<()> {
-        let mut world = self.world.lock();
-        let pipe = &mut world.net.pipes[self.rx];
-        let ended = pipe.writer_closed || pipe.reader_closed;
-        if pipe.bytes.len() < op.0.len() && !ended {
-            return Err(error(
-                ErrorKind::WouldBlock,
-                "not all the data yet, and nothing in the simulation waits",
-            ));
-        }
-        let n = pipe.bytes.len().min(op.0.len());
-        for (dst, src) in op.0.iter_mut().zip(pipe.bytes.drain(..n)) {
-            *dst = src;
-        }
-        if n < op.0.len() {
-            return Err(error(
-                ErrorKind::UnexpectedEof,
-                "the stream ended before the buffer was full",
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// Reads what has arrived. Unlike a real stream it does not wait for the
-/// peer to close; it fails with `WouldBlock` only if nothing has arrived.
-impl Perform<ReadToEnd<'_>> for TcpStream {
-    fn perform(&mut self, op: ReadToEnd<'_>) -> io::Result<usize> {
-        self.read_with(|bytes| {
-            let n = bytes.len();
-            op.0.extend(bytes.drain(..));
-            n
-        })
-    }
-}
-
 impl Perform<Write<'_>> for TcpStream {
     fn perform(&mut self, op: Write<'_>) -> io::Result<usize> {
         self.write_bytes(op.0)
-    }
-}
-
-impl Perform<WriteAll<'_>> for TcpStream {
-    fn perform(&mut self, op: WriteAll<'_>) -> io::Result<()> {
-        self.write_bytes(op.0).map(drop)
     }
 }
 

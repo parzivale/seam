@@ -26,7 +26,8 @@ env = ["std", "seam-core/env"]
 process = ["std", "seam-core/process"]
 io-std = ["std", "seam-core/io-std"]
 signal = ["std", "seam-core/signal"]
-sync = ["std", "seam-core/sync"]
+# `time` too: `try_send` and `try_recv` are a timeout of zero.
+sync = ["std", "time", "seam-core/sync"]
 # A deterministic async runtime over the simulation, with tasks.
 rt = ["std", "seam-core/rt"]
 full = ["time", "random", "fs", "net", "env", "process", "io-std", "signal", "sync", "rt"]

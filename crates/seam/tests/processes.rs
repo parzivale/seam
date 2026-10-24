@@ -8,9 +8,9 @@
 ))]
 
 use seam::io;
+use seam::ops::io::{Read, Write, read_to_end, read_to_end_send, write_all, write_all_send};
 use std::process::Command;
 
-use seam::ops::io::{ReadToEnd, WriteAll};
 use seam::ops::process::{CloseStdin, Output, SpawnChild, Wait};
 use seam::prelude::*;
 
@@ -24,16 +24,13 @@ fn upper() -> Command {
 fn filter<C, P>(c: &mut C, cmd: Command, input: &[u8]) -> io::Result<Vec<u8>>
 where
     C: Provide<SpawnChild<P>>,
-    P: for<'a> Perform<WriteAll<'a>>
-        + for<'a> Perform<ReadToEnd<'a>>
-        + Perform<CloseStdin>
-        + Perform<Wait>,
+    P: for<'a> Perform<Write<'a>> + for<'a> Perform<Read<'a>> + Perform<CloseStdin> + Perform<Wait>,
 {
     c.acquire(SpawnChild::new(cmd), |_, child| {
-        child.perform(WriteAll(input))?;
+        write_all(child, input)?;
         child.perform(CloseStdin);
         let mut out = Vec::new();
-        child.perform(ReadToEnd(&mut out))?;
+        read_to_end(child, &mut out)?;
         let status = child.perform(Wait)?;
         if !status.success() {
             return Err(io::Error::other("the filter failed"));
@@ -46,17 +43,17 @@ where
 async fn filter_async<C, P>(c: &mut C, cmd: Command, input: &[u8]) -> io::Result<Vec<u8>>
 where
     C: AsyncProvide<SpawnChild<P>> + Send,
-    P: for<'a> SendPerform<WriteAll<'a>>
-        + for<'a> SendPerform<ReadToEnd<'a>>
+    P: for<'a> SendPerform<Write<'a>>
+        + for<'a> SendPerform<Read<'a>>
         + Perform<CloseStdin>
         + SendPerform<Wait>
         + Send,
 {
     c.acquire_async(SpawnChild::new(cmd), async |_, child| {
-        child.perform_send(WriteAll(input)).await?;
+        write_all_send(child, input).await?;
         child.perform(CloseStdin);
         let mut out = Vec::new();
-        child.perform_send(ReadToEnd(&mut out)).await?;
+        read_to_end_send(child, &mut out).await?;
         let status = child.perform_send(Wait).await?;
         if !status.success() {
             return Err(io::Error::other("the filter failed"));

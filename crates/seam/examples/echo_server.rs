@@ -16,12 +16,14 @@
 //! Tokio.
 
 use seam::io;
+use seam::ops::io::{Write, write_all_send};
+use seam::ops::stdio::{OpenStdout, print_send};
+use std::marker::PhantomData;
 use std::net::SocketAddr;
 
 use seam::ops::env::Args;
-use seam::ops::io::{Read, WriteAll};
+use seam::ops::io::Read;
 use seam::ops::net::{Accept, LocalAddr, PeerAddr, TcpBind};
-use seam::ops::stdio::Print;
 use seam::ops::task::{Detach, SpawnWith, TaskBody};
 use seam::prelude::*;
 
@@ -29,7 +31,7 @@ use seam::prelude::*;
 /// number of bytes echoed.
 async fn echo<S>(stream: &mut S) -> io::Result<u64>
 where
-    S: for<'a> SendPerform<Read<'a>> + for<'a> SendPerform<WriteAll<'a>> + Send,
+    S: for<'a> SendPerform<Read<'a>> + for<'a> SendPerform<Write<'a>> + Send,
 {
     let mut buf = [0; 1024];
     let mut total = 0;
@@ -38,7 +40,7 @@ where
         if n == 0 {
             return Ok(total);
         }
-        stream.perform_send(WriteAll(&buf[..n])).await?;
+        write_all_send(stream, &buf[..n]).await?;
         total += n as u64;
     }
 }
@@ -46,10 +48,11 @@ where
 /// One connection: echo it, then log how it went. Runs inside the
 /// connection's scope, so the stream is shut down cleanly if this returns
 /// `Ok`, and just closed if it returns `Err` or the task is aborted.
-async fn connection<C, S>(log: &mut C, stream: &mut S) -> io::Result<()>
+async fn connection<C, O, S>(log: &mut C, stream: &mut S) -> io::Result<()>
 where
-    C: for<'a> SendPerform<Print<'a>> + Send,
-    S: for<'a> SendPerform<Read<'a>> + for<'a> SendPerform<WriteAll<'a>> + Inspect<PeerAddr> + Send,
+    C: AsyncProvide<OpenStdout<O>> + Send,
+    O: for<'a> SendPerform<Write<'a>> + Send,
+    S: for<'a> SendPerform<Read<'a>> + for<'a> SendPerform<Write<'a>> + Inspect<PeerAddr> + Send,
 {
     let peer = stream.inspect(PeerAddr)?;
     let result = echo(stream).await;
@@ -57,19 +60,21 @@ where
         Ok(n) => format!("{peer}: echoed {n} bytes\n"),
         Err(e) => format!("{peer}: {e}\n"),
     };
-    log.perform_send(Print(line.as_bytes())).await?;
+    print_send(log, line.as_bytes()).await?;
     result.map(drop)
 }
 
 /// The task that handles one connection: owns a clone of the capability,
 /// for logging, and borrows the stream the listener accepted for it. A named
-/// type, so that `serve`'s bounds can name it, and nothing is boxed.
-struct Echo<C>(C);
+/// type, so that `serve`'s bounds can name it, and nothing is boxed. `O` is
+/// the backend's standard output type, which the task logs to.
+struct Echo<C, O>(C, PhantomData<fn() -> O>);
 
-impl<C, S> TaskBody<S> for Echo<C>
+impl<C, O, S> TaskBody<S> for Echo<C, O>
 where
-    C: for<'a> SendPerform<Print<'a>> + Send + 'static,
-    S: for<'a> SendPerform<Read<'a>> + for<'a> SendPerform<WriteAll<'a>> + Inspect<PeerAddr> + Send,
+    C: AsyncProvide<OpenStdout<O>> + Send + 'static,
+    O: for<'a> SendPerform<Write<'a>> + Send + 'static,
+    S: for<'a> SendPerform<Read<'a>> + for<'a> SendPerform<Write<'a>> + Inspect<PeerAddr> + Send,
 {
     type Output = ();
     type Error = io::Error;
@@ -84,18 +89,18 @@ where
 /// The listener exists only inside its scope, and a connection only inside
 /// the task it is accepted into: `SpawnWith` has the listener accept the
 /// connection and hand it to a new task running `Echo`, which owns it.
-async fn serve<C, L, S, H>(c: &mut C, addr: SocketAddr) -> io::Result<()>
+async fn serve<C, O, L, S, H>(c: &mut C, addr: SocketAddr) -> io::Result<()>
 where
-    C: AsyncProvide<TcpBind<L>> + for<'a> SendPerform<Print<'a>> + Clone + Send + 'static,
-    L: AsyncProvide<SpawnWith<Accept<S>, Echo<C>, H>> + Inspect<LocalAddr> + Send,
+    C: AsyncProvide<TcpBind<L>> + AsyncProvide<OpenStdout<O>> + Clone + Send + 'static,
+    O: for<'a> SendPerform<Write<'a>> + Send + 'static,
+    L: AsyncProvide<SpawnWith<Accept<S>, Echo<C, O>, H>> + Inspect<LocalAddr> + Send,
     H: SendPerform<Detach> + Send,
 {
     c.acquire_async(TcpBind::new(addr), async |c, listener| {
         let local = listener.inspect(LocalAddr)?;
-        c.perform_send(Print(format!("listening on {local}\n").as_bytes()))
-            .await?;
+        print_send(c, format!("listening on {local}\n").as_bytes()).await?;
         loop {
-            let task = SpawnWith::new(Accept::new(), Echo(c.clone()));
+            let task = SpawnWith::new(Accept::new(), Echo(c.clone(), PhantomData));
             // The handle's scope would wait for the task; detach it so the
             // server can accept the next connection meanwhile.
             listener
@@ -132,15 +137,18 @@ fn main() -> io::Result<()> {
             tokio: seam::tokio::Tokio::new() => [seam::kinds::Net, seam::kinds::Stdio],
         };
         let addr = listen_addr(&root)?;
-        serve::<_, TcpListener, TcpStream, JoinHandle<io::Result<()>>>(&mut root, addr).await
+        serve::<_, seam::tokio::stdio::Stdout, TcpListener, TcpStream, JoinHandle<io::Result<()>>>(
+            &mut root, addr,
+        )
+        .await
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use seam::ops::io::{read_to_end, read_to_end_send, write_all};
     use seam::ops::net::How;
 
-    use seam::ops::io::ReadToEnd;
     use seam::ops::net::{Shutdown, TcpConnect};
     use seam::test::Sim;
     use seam::test::net::{TcpListener, TcpStream};
@@ -155,8 +163,8 @@ mod tests {
         let addr = SocketAddr::from(([127, 0, 0, 1], 7));
         sim.acquire(TcpBind::<TcpListener>::new(addr), |sim, listener| {
             sim.acquire(TcpConnect::<TcpStream>::new(addr), |sim, client| {
-                client.perform(WriteAll(b"hello, "))?;
-                client.perform(WriteAll(b"seam"))?;
+                write_all(client, b"hello, ")?;
+                write_all(client, b"seam")?;
                 client.perform(Shutdown(How::Write))?;
 
                 listener.acquire(Accept::<TcpStream>::new(), |_, server| {
@@ -164,7 +172,7 @@ mod tests {
                 })?;
 
                 let mut reply = Vec::new();
-                client.perform(ReadToEnd(&mut reply))?;
+                read_to_end(client, &mut reply)?;
                 assert_eq!(reply, b"hello, seam");
                 // The scope closed the server's end cleanly: end of input,
                 // not an error.
@@ -193,10 +201,13 @@ mod tests {
             rt.block_on(|mut sim| async move {
                 let mut server = sim.clone();
                 let serving = Spawn::<_, JoinHandle<io::Result<()>>>::new(async move {
-                    serve::<AsyncSim, RtListener, RtStream, JoinHandle<io::Result<()>>>(
-                        &mut server,
-                        addr,
-                    )
+                    serve::<
+                        AsyncSim,
+                        seam::test::stdio::Stdout,
+                        RtListener,
+                        RtStream,
+                        JoinHandle<io::Result<()>>,
+                    >(&mut server, addr)
                     .await
                 });
                 sim.acquire_async(serving, async |sim, server| {
@@ -210,11 +221,11 @@ mod tests {
                             let client = async move {
                                 c.acquire_async(TcpConnect::<RtStream>::new(addr), async |_, s| {
                                     for part in [name, " says hi"] {
-                                        s.perform_send(WriteAll(part.as_bytes())).await?;
+                                        write_all_send(s, part.as_bytes()).await?;
                                     }
                                     s.perform_send(Shutdown(How::Write)).await?;
                                     let mut reply = Vec::new();
-                                    s.perform_send(ReadToEnd(&mut reply)).await?;
+                                    read_to_end_send(s, &mut reply).await?;
                                     io::Result::Ok((name.to_owned(), reply))
                                 })
                                 .await

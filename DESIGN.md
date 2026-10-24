@@ -37,21 +37,22 @@ tracks it. Control effects (errors, early return, async suspension) use
 ## Operation types
 
 `seam-core::ops` defines the operation types, one module per capability
-feature, so a core written against them runs on any backend:
+feature, so a core written against them runs on any backend. They are
+**primitives**: the smallest set of effects every backend provides (see
+**Primitives and helpers** below for what is built from them).
 
-- `io`: `Read`, `ReadExact`, `ReadToEnd`, `Write`, `WriteAll`, `Flush`, and
-  `Seek(SeekFrom)` with seam's own `SeekFrom` (on handles)
-- `fs`: `ReadFile`, `ReadToString`, `Metadata` (queries); `WriteFile`,
-  `CreateDir`, `RemoveFile`, `RemoveDir`, `Rename`, `CopyFile`,
-  `SweepAtomic`; acquisitions `Open<'a, F>`, `CreateAtomic<'a, F>` and
-  `ReadDir<'a, D>`, a directory listing that `NextEntry` steps through one
-  path at a time; on an open file, `Stat` (a query), `SetLen`, `SyncAll`
-  and `SyncData`
-- `net`: `ResolveInto` and `Resolve` (DNS is an effect), `SendTo`,
-  `RecvFrom`, `Shutdown(How)`; `LocalAddr` and `PeerAddr` queries;
-  acquisitions `TcpConnect<S>`, `TcpBind<L>`, `Accept<S>` (from a listener)
-  and `UdpBind<U>`
-- `time`: `Sleep`, `Now` (no_std); `WallClock` (std)
+- `io` (on handles): `Read`, `Write`, `Flush`, `Seek(SeekFrom)` with seam's
+  own `SeekFrom`
+- `fs`: `Metadata` (a query); `CreateDir`, `RemoveFile`, `RemoveDir`
+  (recursive or not), `Rename`, `CopyFile`; acquisitions `Open<'a, M, F>`,
+  `CreateAtomic<'a, F>` and `ReadDir<'a, D>`, a directory listing that
+  `NextEntry` steps through one path at a time; on an open file, `Stat` (a
+  query), `SetLen`, `SyncAll` and `SyncData`
+- `net`: `ResolveInto` (DNS is an effect), `SendTo`, `RecvFrom`,
+  `Shutdown(How)`; `LocalAddr` and `PeerAddr` queries; acquisitions
+  `TcpConnect<S>`, `TcpBind<L>`, `Accept<S>` (from a listener) and
+  `UdpBind<U>`
+- `time`: `Sleep`, `Now` (no_std); `WallClock` (std); `Timeout<O>`
 - `env`: `Var`, `Args`, `CurrentDir`, `TempDir` (queries); `SetVar` and
   `RemoveVar`, which check names and values instead of panicking as std
   does. Changing the environment while another thread reads it is
@@ -66,14 +67,15 @@ feature, so a core written against them runs on any backend:
   an acquisition lending a running child to a scope: written to and read
   like a stream (stdin and stdout), with `ReadErr`, `CloseStdin`, `Wait`,
   `Kill` and `ChildId`
-- `random`: `RandomU64`, `FillRandom` (no_std)
-- `stdio`: `Print`, `EPrint`, `ReadLineInto`, `ReadLine`
+- `random`: `FillRandom` (no_std)
+- `stdio`: acquisitions `OpenStdin<H>`, `OpenStdout<H>` and `OpenStderr<H>`,
+  lending handles that `Read`, or `Write` and `Flush`
 - `signal`: `CtrlC`
 - `sync` (feature `sync`, no_std, no alloc): `Channel<S, R>` creating owned
-  sender and receiver endpoints, with `SendMsg`/`TrySendMsg` and
-  `RecvMsg`/`TryRecvMsg`; `Share<T, C>` creating a cloneable cell, with
-  `Load`, `Store` and `Update` (an atomic read-modify-write that borrows its
-  closure, so bounds can name it). See **Shared state** below.
+  sender and receiver endpoints, with `SendMsg` and `RecvMsg`;
+  `Share<T, C>` creating a cloneable cell, with `Load` and `Update` (an
+  atomic read-modify-write that borrows its closure, so bounds can name
+  it). See **Shared state** below.
 - `task` (feature `rt`, no_std, no alloc): the acquisitions `Spawn<F, H>`,
   `SpawnSet<S>` and `SpawnWith<A, B, H>`; `Join<T>`, `Abort`, `IsFinished`
   and `Detach` on a handle; `SpawnInto<F>` (which hands the future back if a
@@ -101,31 +103,109 @@ features only add, so a no_std library and a std binary in one build see
 one type. The alternative, using `std::io::Error` when std is on and a
 custom type when it is off, would make a feature change a type, and two
 crates in a build would disagree. `net` has its own `How` (for `Shutdown`)
-for the same reason. The operations returning owned data (`ReadToEnd`,
-`Resolve`, `ReadLine`) need `alloc`. Each has a form that fills a buffer
-the caller passes instead: `ReadExact`; `ResolveInto`, which reports how
-many addresses there were, so a caller can tell its buffer was too small;
-and `ReadLineInto`, which hands back a line too long for its buffer a
-piece at a time (`Line::complete`). `fs`, `process` and `env` need std for
-`Path`, `Command` and `OsString`.
+for the same reason. Only the helpers returning owned data (`read_to_end`,
+`resolve`, ...) need `alloc`: the primitives fill buffers the caller
+passes, `ResolveInto` reporting how many addresses there were, so a caller
+can tell its buffer was too small, and `BufReader` handing back a record
+too long for its buffer a piece at a time (`Line::complete`). `fs`,
+`process` and `env` need std for `Path`, `Command` and `OsString`.
 
-Operations borrow their inputs: paths are `&Path`, `WriteFile`'s contents
-`&[u8]`, `Var`'s name `&OsStr`, `Resolve`'s host `&str`. Describing an
+Operations borrow their inputs: paths are `&Path`, buffers `&[u8]`, `Var`'s
+name `&OsStr`, `ResolveInto`'s host `&str`. Describing an
 operation then allocates nothing, and a caller that already holds a
 `PathBuf` lends it instead of cloning it. The cost is in bounds, which name
-the operation for every lifetime: `for<'a> Inspect<ReadFile<'a>>`, as the
-`io` operations' buffers already did. A provider that must keep an input
+the operation for every lifetime: `for<'a> Inspect<Metadata<'a>>`, as the
+`io` operations' buffers always did. A provider that must keep an input
 past the call copies it: an atomic file keeps its target path for the
 rename on close, and Tokio's blocking pool needs owned paths, which Tokio
 itself copies. Listing a directory is an acquisition rather than a query
 returning a `Vec`, so a core holds one entry at a time and can stop early.
 
-Acquisitions are generic over the backend's handle type (`Open<'a, F>`), since
+Acquisitions are generic over the backend's handle type (`Open<'a, M, F>`), since
 each backend has its own. Bounds name the handle as a type parameter and
 inference fills it in.
 
 `Push<T>` (outcome `Result<(), Rejected<T>>`) lets tests count or cap the
 items a core emits, to check that output scales with input size.
+
+## Primitives and helpers
+
+Everything that can be built from the primitives is, in seam-core, as plain
+functions beside the operations they use, not as operations:
+
+| Helper | Built from |
+|---|---|
+| `read_exact`, `write_all`, `copy`, `read_to_end` (alloc) | `Read`, `Write` |
+| `BufReader<N>`: `read_until`, `read_line`, `read` | `Read`, through a fixed buffer |
+| `read_file`, `read_to_string`, `write_file` | `Open` and the above |
+| `create_dir_all` | `CreateDir`, `Metadata` |
+| `sweep_atomic` | `ReadDir`, `Metadata`, `RemoveFile`, `WallClock` |
+| `resolve` (alloc) | `ResolveInto` |
+| `read_err_to_end` | `ReadErr` |
+| `random_u64` | `FillRandom` |
+| `print`, `eprint` | `OpenStdout`/`OpenStderr` and `write_all` |
+| `try_send`, `try_recv` | `SendMsg`/`RecvMsg` with a `Timeout` of zero |
+| `store` | `Update` |
+
+A backend then implements only the primitives, and each helper works on
+every backend, and on every handle that has the primitives it needs: lines
+come from stdin, a socket, a child or a file through the same `BufReader`.
+The reader keeps what it read past a record, in the core, where std's
+`BufReader` would keep it; a stream is read through one reader for as long
+as it is in use.
+
+**Three forms.** Rust cannot be generic over sync and async, nor over
+whether a future is `Send`, which is why the capability traits come in
+three forms. Helpers do too: `write_all` (`Perform`), `write_all_async`
+(`AsyncPerform`) and `write_all_send` (`SendPerform`, so that a generic
+core spawned on a multithreaded runtime can prove its future is `Send`).
+A crate-private macro, `three_ways!`, writes all three from one body, in
+which `run!`, `ask!`, `acquire!` and `call!` perform an effect, run a query,
+open a scope and call another helper in the form being generated.
+
+**What stays a primitive.** Four effects could be built from others but are
+not, each because the built version would be worse in a way that matters:
+
+- `CreateAtomic`: its promise is that a failed, panicking or cancelled
+  scope deletes the temporary file. That cleanup runs in `Drop`, and a core
+  cannot perform an effect in `Drop`.
+- Recursive `RemoveDir`: a walk over `RemoveFile` that follows a symlink
+  to a directory deletes outside the tree, and doing it safely while other
+  processes change the tree needs platform calls (std's `remove_dir_all`
+  has had a security fix for exactly that race, CVE-2022-21658).
+- `CopyFile`: platforms copy faster than a loop of reads and writes
+  (reflinks, `copy_file_range`), and copy permissions with the contents.
+- `RunCommand`: collecting both outputs means reading the two pipes at
+  once, or the child fills one while the core waits on the other; a core
+  has no way to read two at once.
+
+**Modes as types.** `Open<'a, M, F>` names its mode as a type, `ReadOnly`,
+`WriteOnly`, `Append` or `ReadWrite`, and a backend's `File<M>` implements
+`Read` only for readable modes and `Write`, `SetLen` and the syncs only for
+writable ones. A core bounded on `Open<'a, ReadOnly, F>` cannot write, and
+the compiler checks it, so bounds stay an audit even though reading a file
+is now "open, then read".
+
+**Costs.**
+
+- **Bounds are longer.** `read_file` needs
+  `for<'a> Provide<Open<'a, ReadOnly, F>>` and `F: for<'a> Perform<Read<'a>>`
+  where one `Inspect` bound used to do, and a core names a type parameter
+  per handle type (`F` for files, `O` for stdout). Inference fills them in.
+- **Reading a file needs `&mut`.** Opening is an acquisition, and
+  acquisitions take `&mut self`, so a query (`Inspect`, `&self`) cannot
+  read a file. A program's own read-only operation backed by a file is a
+  `Perform`, as `Get` is in the `custom_ops` example.
+- **Timeouts cover primitives only.** A helper made of several has no timed
+  form; a core that needs one times each primitive against a deadline it
+  keeps.
+- **No sync non-blocking receive on async-only channels.** `try_recv` is a
+  zero `Timeout`, which Tokio's and the simulated runtime's receivers
+  implement asynchronously, so sync code holding one (inside an `Update`,
+  say) cannot use it; async code uses `try_recv_send`.
+- **Writing a whole file syncs it.** `write_file` opens, writes and
+  closes, and closing a writable file syncs it, where `std::fs::write` does
+  not.
 
 ## Backends
 
@@ -167,12 +247,12 @@ group with no real effects other than allocation:
   until the scope ends. No symlinks or permissions.
 - **net**: in-memory TCP (pipe pairs, with shutdown and `BrokenPipe`) and UDP
   (truncation, drops to unbound addresses), plus a hosts table for
-  `Resolve` and `ResolveInto`. A plain-simulation `ReadExact` takes
-  nothing until the whole buffer has arrived.
+  `ResolveInto`.
 - **env**, **io-std**: configured variables, arguments and directories,
   with `SetVar` and `RemoveVar` changing the variables (no `unsafe`
   needed: nothing real changes); scripted stdin, captured stdout and
-  stderr.
+  stderr, in the shared world so that the stdio handles reach them. Input
+  is a finite script: once it is read, reads report the end of input.
 - **process**: commands are answered by scripted handlers and logged. A
   spawned child is a filter: its handler runs the first time its output is
   needed (a read, a wait, or the end of its scope), on the input written
@@ -203,7 +283,7 @@ behave identically in both modes. Those that would wait are native async:
   executor advances the clock to the earliest deadline and wakes the timers
   due then, so time passes only when everything is waiting.
 - **Seeded scheduling.** The next task is drawn from the ready set with a
-  SplitMix64 seeded per runtime, separate from the `Sim`'s `RandomU64`
+  SplitMix64 seeded per runtime, separate from the `Sim`'s `FillRandom`
   stream. Same seed, same interleaving; sweeping seeds explores others.
 - **Deadlocks.** No task ready and no timer set means nothing can ever
   happen: `try_block_on` returns `Deadlock`, `block_on` panics.
@@ -344,7 +424,7 @@ scope unless detached. Stopping a thread early is cooperative, through a
 not fit an open-then-close provider without `unsafe`.
 
 **Leftovers.** A process killed outright runs no `Drop`. Temporary files are
-named `.<name>.seam-<suffix>.tmp`, and `SweepAtomic { dir, older_than }`
+named `.<name>.seam-<suffix>.tmp`, and `sweep_atomic(c, dir, older_than)`
 removes ones old enough to be abandoned.
 
 **Cost.** A body's error type is generic, so a body whose only error path is
@@ -417,8 +497,8 @@ Expiry has no effect, which each backend gets differently:
   timed accept polls the listener, sleeping up to 10ms between tries.
 - **seam-tokio** wraps the call in `tokio::time::timeout`, choosing calls
   that are cancel-safe: a timed send reserves a slot first, so the value
-  stays in hand until there is room; `ReadToEnd` reads chunk by chunk, so
-  data read before the deadline stays in the buffer.
+  stays in hand until there is room. The inner future is polled before the
+  deadline is checked, so a timeout of zero is a non-blocking attempt.
 - **The runtime** races the operation against a timer. Every operation that
   waits there is already atomic under cancellation, so the race needs nothing
   per operation, except the send, which polls by hand to keep its value.
@@ -519,8 +599,7 @@ Not implemented yet:
   listing every variable.
 - **Polish.** An optional run-time message on `io::Error` behind `alloc`;
   `Sim::list_dir` for tests; buffer-filling forms of the std-only
-  operations that still return owned data (`ReadFile`, `Args`, `Var`,
-  `NextEntry`).
+  primitives that still return owned data (`Args`, `Var`, `NextEntry`).
 
 ## Open questions
 

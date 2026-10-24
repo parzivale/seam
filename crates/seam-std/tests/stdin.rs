@@ -5,38 +5,47 @@
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
-use seam_core::Perform;
-use seam_core::ops::stdio::{Line, ReadLine, ReadLineInto};
+use seam_core::Acquire;
+use seam_core::io;
+use seam_core::ops::io::{BufReader, Line};
+use seam_core::ops::stdio::OpenStdin;
+
 use seam_std::Std;
 
 const CHILD: &str = "SEAM_STDIN_CHILD";
 
 #[test]
-fn read_line_into_shares_the_stdin_buffer() {
+fn lines_from_real_stdin() {
     if std::env::var_os(CHILD).is_some() {
         let mut std = Std::new();
-        // Through the same buffer as `ReadLine`: nothing is lost between them.
-        let first = std.perform(ReadLine).unwrap();
-        println!("FIRST {first:?}");
+        // One reader across both scopes: it keeps what it read past a line.
+        let mut reader = BufReader::<512>::new();
         let mut buf = [0; 700];
-        while let Some(Line { len, complete }) = std.perform(ReadLineInto(&mut buf)).unwrap() {
-            let last = buf[len - 1];
-            let last = if last == b'\n' {
-                "nl".to_owned()
-            } else {
-                (last as char).to_string()
-            };
-            println!("LINE {len} {complete} {last}");
-        }
+        let first = std
+            .acquire(OpenStdin::new(), |_, stdin| {
+                reader.read_line(stdin, &mut buf)
+            })
+            .unwrap()
+            .unwrap();
+        println!("FIRST {}", first.len);
+        std.acquire(OpenStdin::new(), |_, stdin| {
+            while let Some(Line { len, complete }) = reader.read_line(stdin, &mut buf)? {
+                let last = buf[len - 1];
+                let last = if last == b'\n' {
+                    "nl".to_owned()
+                } else {
+                    (last as char).to_string()
+                };
+                println!("LINE {len} {complete} {last}");
+            }
+            io::Result::Ok(())
+        })
+        .unwrap();
         println!("END");
         return;
     }
     let mut child = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "read_line_into_shares_the_stdin_buffer",
-            "--nocapture",
-        ])
+        .args(["--exact", "lines_from_real_stdin", "--nocapture"])
         .env(CHILD, "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -57,7 +66,7 @@ fn read_line_into_shares_the_stdin_buffer() {
     assert_eq!(
         lines,
         [
-            "FIRST Some(\"ab\\n\")",
+            "FIRST 3",
             "LINE 700 false x",
             "LINE 601 true nl",
             "LINE 4 true l",

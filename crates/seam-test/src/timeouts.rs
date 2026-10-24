@@ -26,7 +26,7 @@ mod net {
     use seam_core::io;
     use std::net::SocketAddr;
 
-    use seam_core::ops::io::{Read, ReadExact, ReadToEnd, Write, WriteAll};
+    use seam_core::ops::io::{Read, Write};
     use seam_core::ops::net::{Accept, RecvFrom, TcpConnect};
 
     use super::*;
@@ -45,10 +45,7 @@ mod net {
 
     at_once! {
         TcpStream: Read<'_> => io::Result<usize>;
-        TcpStream: ReadExact<'_> => io::Result<()>;
-        TcpStream: ReadToEnd<'_> => io::Result<usize>;
         TcpStream: Write<'_> => io::Result<usize>;
-        TcpStream: WriteAll<'_> => io::Result<()>;
         UdpSocket: RecvFrom<'_> => io::Result<(usize, SocketAddr)>;
     }
 

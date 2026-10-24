@@ -3,7 +3,7 @@
 //! A program's edge builds a [`Root`] out of parts, each serving one or
 //! more *kinds* of operation, and hands it to the core. Every operation
 //! names its kind ([`InKind`]): `Sleep` and `Now` are [`kinds::Time`],
-//! `ReadFile` is [`kinds::Fs`], and so on. The root forwards each operation
+//! `Open` is [`kinds::Fs`], and so on. The root forwards each operation
 //! to the part that serves its kind, in whichever form (sync, async,
 //! `Send`) that part implements it. So one root can mix backends, sync and
 //! async parts, simulated parts and a program's own:
@@ -97,25 +97,25 @@ use crate::{Inspect, Operation, Perform, Query};
 /// The kinds of seam's own operations. A program's own kinds are plain
 /// marker types too.
 pub mod kinds {
-    /// `Var`, `Args`, `CurrentDir`, `TempDir`.
+    /// `Var`, `SetVar`, `RemoveVar`, `Args`, `CurrentDir`, `TempDir`.
     #[derive(Debug, Clone, Copy)]
     pub struct Env;
-    /// The filesystem operations: `ReadFile`, `WriteFile`, `Open`, ...
+    /// The filesystem operations: `Open`, `Metadata`, `ReadDir`, ...
     #[derive(Debug, Clone, Copy)]
     pub struct Fs;
-    /// `ResolveInto`, `Resolve`, `TcpConnect`, `TcpBind`, `UdpBind`.
+    /// `ResolveInto`, `TcpConnect`, `TcpBind`, `UdpBind`.
     #[derive(Debug, Clone, Copy)]
     pub struct Net;
-    /// `RunCommand`, `Exit`.
+    /// `RunCommand`, `SpawnChild`, `Exit`.
     #[derive(Debug, Clone, Copy)]
     pub struct Process;
-    /// `RandomU64`, `FillRandom`.
+    /// `FillRandom`.
     #[derive(Debug, Clone, Copy)]
     pub struct Random;
     /// `CtrlC`.
     #[derive(Debug, Clone, Copy)]
     pub struct Signal;
-    /// `Print`, `EPrint`, `ReadLineInto`, `ReadLine`.
+    /// `OpenStdin`, `OpenStdout`, `OpenStderr`.
     #[derive(Debug, Clone, Copy)]
     pub struct Stdio;
     /// `Now`, `WallClock`, `Sleep`.

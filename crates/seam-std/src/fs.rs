@@ -1,50 +1,28 @@
 //! Filesystem operations, and the [`File`], [`AtomicFile`] and [`Dir`]
 //! handles.
 
+use core::marker::PhantomData;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use std::time::SystemTime;
-
 use seam_core::ops::fs::{
-    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, NextEntry, Open, ReadDir,
-    ReadFile, ReadToString, RemoveDir, RemoveFile, Rename, SweepAtomic, WriteFile,
+    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Mode, NextEntry, Open,
+    ReadDir, Readable, RemoveDir, RemoveFile, Rename, SetLen, Stat, SyncAll, SyncData, Writable,
 };
 use seam_core::{Inspect, Perform, Provide, Token};
 
-use seam_core::ops::fs::{SetLen, Stat, SyncAll, SyncData};
-
 use crate::Std;
 
-/// Implements the file handle operations for a wrapper around a
-/// `std::fs::File`.
-macro_rules! file_ops {
-    ($ty:ty) => {
-        impl Perform<seam_core::ops::io::Seek> for $ty {
+/// Implements the operations every open file has: `Seek` and `Stat`.
+macro_rules! any_file_ops {
+    ([$($g:tt)*] $ty:ty) => {
+        impl<$($g)*> Perform<seam_core::ops::io::Seek> for $ty {
             fn perform(&mut self, op: seam_core::ops::io::Seek) -> seam_core::io::Result<u64> {
                 crate::sio(io::Seek::seek(&mut self.0, op.0.into()))
             }
         }
 
-        impl Perform<SetLen> for $ty {
-            fn perform(&mut self, op: SetLen) -> seam_core::io::Result<()> {
-                crate::sio(self.0.set_len(op.0))
-            }
-        }
-
-        impl Perform<SyncAll> for $ty {
-            fn perform(&mut self, _: SyncAll) -> seam_core::io::Result<()> {
-                crate::sio(self.0.sync_all())
-            }
-        }
-
-        impl Perform<SyncData> for $ty {
-            fn perform(&mut self, _: SyncData) -> seam_core::io::Result<()> {
-                crate::sio(self.0.sync_data())
-            }
-        }
-
-        impl Inspect<Stat> for $ty {
+        impl<$($g)*> Inspect<Stat> for $ty {
             fn inspect(&self, _: Stat) -> seam_core::io::Result<FileInfo> {
                 crate::sio(self.0.metadata().map(file_info))
             }
@@ -52,32 +30,55 @@ macro_rules! file_ops {
     };
 }
 
-/// An open file, acquired with [`Open`]. Read and write it with the `io`
-/// operations.
+/// Implements the operations a writable file has: `SetLen` and the syncs.
+macro_rules! writable_file_ops {
+    ([$($g:tt)*] $ty:ty) => {
+        impl<$($g)*> Perform<SetLen> for $ty {
+            fn perform(&mut self, op: SetLen) -> seam_core::io::Result<()> {
+                crate::sio(self.0.set_len(op.0))
+            }
+        }
+
+        impl<$($g)*> Perform<SyncAll> for $ty {
+            fn perform(&mut self, _: SyncAll) -> seam_core::io::Result<()> {
+                crate::sio(self.0.sync_all())
+            }
+        }
+
+        impl<$($g)*> Perform<SyncData> for $ty {
+            fn perform(&mut self, _: SyncData) -> seam_core::io::Result<()> {
+                crate::sio(self.0.sync_data())
+            }
+        }
+    };
+}
+
+/// An open file in mode `M`, acquired with [`Open`]. It performs `Read` if
+/// `M` is readable, and `Write`, `Flush`, `SetLen`, `SyncAll` and
+/// `SyncData` if `M` is writable; `Seek` and `Stat` in any mode.
 ///
 /// When its scope succeeds, a file opened for writing is flushed and synced
 /// to disk, and an error is returned from the scope. Otherwise it is closed
 /// without syncing.
 #[derive(Debug)]
-pub struct File(std::fs::File, Writable);
+pub struct File<M>(std::fs::File, PhantomData<fn() -> M>);
 
-crate::io_ops!(File);
-file_ops!(File);
+crate::read_ops!([M: Readable] File<M>);
+crate::write_ops!([M: Writable] File<M>);
+any_file_ops!([M] File<M>);
+writable_file_ops!([M: Writable] File<M>);
 
-impl File {
+impl<M: Mode> File<M> {
     fn commit(mut self) -> seam_core::io::Result<()> {
-        if !self.1.0 {
+        // Only writable files are synced; some platforms refuse to sync a
+        // read-only handle.
+        if !M::WRITE {
             return Ok(());
         }
         io::Write::flush(&mut self.0)?;
         crate::sio(self.0.sync_all())
     }
 }
-
-/// Whether a [`File`] was opened for writing. Only those are synced on
-/// close; some platforms refuse to sync a read-only handle.
-#[derive(Debug, Clone, Copy)]
-struct Writable(bool);
 
 /// A file that replaces its target when its scope succeeds, acquired with
 /// [`CreateAtomic`].
@@ -88,8 +89,9 @@ struct Writable(bool);
 #[derive(Debug)]
 pub struct AtomicFile(std::fs::File, Pending);
 
-crate::io_ops!(AtomicFile);
-file_ops!(AtomicFile);
+crate::write_ops!([] AtomicFile);
+any_file_ops!([] AtomicFile);
+writable_file_ops!([] AtomicFile);
 
 /// The temporary file of an [`AtomicFile`], deleted on drop unless it was
 /// renamed into place. Declared after the `File` in `AtomicFile`, so the
@@ -142,23 +144,23 @@ fn temp_path(target: &Path) -> PathBuf {
     target.with_file_name(format!(".{name}.seam-{salt:016x}.tmp"))
 }
 
-impl Provide<Open<'_, File>> for Std {
-    fn provide(&mut self, op: Open<'_, File>, _: Token) -> seam_core::io::Result<File> {
+impl<M: Mode> Provide<Open<'_, M, File<M>>> for Std {
+    fn provide(&mut self, op: Open<'_, M, File<M>>, _: Token) -> seam_core::io::Result<File<M>> {
         let o = op.options;
         crate::sio(
             std::fs::OpenOptions::new()
-                .read(o.read)
-                .write(o.write)
-                .append(o.append)
+                .read(M::READ)
+                .write(M::WRITE && !M::APPEND)
+                .append(M::APPEND)
                 .truncate(o.truncate)
                 .create(o.create)
                 .create_new(o.create_new)
                 .open(op.path)
-                .map(|f| File(f, Writable(o.write || o.append))),
+                .map(|f| File(f, PhantomData)),
         )
     }
 
-    fn close(&mut self, file: File) -> seam_core::io::Result<()> {
+    fn close(&mut self, file: File<M>) -> seam_core::io::Result<()> {
         file.commit()
     }
 }
@@ -189,18 +191,6 @@ impl Provide<CreateAtomic<'_, AtomicFile>> for Std {
     }
 }
 
-impl Inspect<ReadFile<'_>> for Std {
-    fn inspect(&self, op: ReadFile<'_>) -> seam_core::io::Result<Vec<u8>> {
-        crate::sio(std::fs::read(op.path))
-    }
-}
-
-impl Inspect<ReadToString<'_>> for Std {
-    fn inspect(&self, op: ReadToString<'_>) -> seam_core::io::Result<String> {
-        crate::sio(std::fs::read_to_string(op.path))
-    }
-}
-
 impl Inspect<Metadata<'_>> for Std {
     fn inspect(&self, op: Metadata<'_>) -> seam_core::io::Result<FileInfo> {
         crate::sio(std::fs::metadata(op.path).map(file_info))
@@ -228,19 +218,9 @@ impl Perform<NextEntry> for Dir {
     }
 }
 
-impl Perform<WriteFile<'_>> for Std {
-    fn perform(&mut self, op: WriteFile<'_>) -> seam_core::io::Result<()> {
-        crate::sio(std::fs::write(op.path, op.contents))
-    }
-}
-
 impl Perform<CreateDir<'_>> for Std {
     fn perform(&mut self, op: CreateDir<'_>) -> seam_core::io::Result<()> {
-        if op.recursive {
-            crate::sio(std::fs::create_dir_all(op.path))
-        } else {
-            crate::sio(std::fs::create_dir(op.path))
-        }
+        crate::sio(std::fs::create_dir(op.path))
     }
 }
 
@@ -272,30 +252,6 @@ impl Perform<CopyFile<'_>> for Std {
     }
 }
 
-impl Perform<SweepAtomic<'_>> for Std {
-    fn perform(&mut self, op: SweepAtomic<'_>) -> seam_core::io::Result<u64> {
-        let now = SystemTime::now();
-        let mut removed = 0;
-        for entry in std::fs::read_dir(op.dir)? {
-            let entry = entry?;
-            if !SweepAtomic::is_temp_name(&entry.file_name()) {
-                continue;
-            }
-            let modified = entry.metadata()?.modified()?;
-            let age = now.duration_since(modified).unwrap_or_default();
-            if age >= op.older_than {
-                match std::fs::remove_file(entry.path()) {
-                    Ok(()) => removed += 1,
-                    // Finished or cleaned up by its writer in the meantime.
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(seam_core::io::Error::from(e)),
-                }
-            }
-        }
-        Ok(removed)
-    }
-}
-
 fn file_info(m: std::fs::Metadata) -> FileInfo {
     let t = m.file_type();
     let kind = if t.is_file() {
@@ -318,4 +274,4 @@ fn file_info(m: std::fs::Metadata) -> FileInfo {
 // Every capability type opts in to seam's lifts.
 impl seam_core::Capability for AtomicFile {}
 impl seam_core::Capability for Dir {}
-impl seam_core::Capability for File {}
+impl<M> seam_core::Capability for File<M> {}

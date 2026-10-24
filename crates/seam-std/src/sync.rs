@@ -9,10 +9,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 #[cfg(feature = "time")]
 use std::time::{Duration, Instant};
 
-use seam_core::ops::sync::{
-    Channel, Load, RecvError, RecvMsg, SendError, SendMsg, Share, Store, TryRecvMsg, TrySendMsg,
-    Update,
-};
+use seam_core::ops::sync::{Channel, Load, RecvError, RecvMsg, SendError, SendMsg, Share, Update};
 #[cfg(feature = "time")]
 use seam_core::ops::time::Timeout;
 use seam_core::{Inspect, Perform};
@@ -202,21 +199,9 @@ impl<T> Perform<SendMsg<T>> for Sender<T> {
     }
 }
 
-impl<T> Perform<TrySendMsg<T>> for Sender<T> {
-    fn perform(&mut self, op: TrySendMsg<T>) -> Result<(), SendError<T>> {
-        self.0.try_send(op.0)
-    }
-}
-
 impl<T> Perform<RecvMsg<T>> for Receiver<T> {
     fn perform(&mut self, _: RecvMsg<T>) -> Result<T, RecvError> {
         self.0.recv(Wait::Forever)
-    }
-}
-
-impl<T> Perform<TryRecvMsg<T>> for Receiver<T> {
-    fn perform(&mut self, _: TryRecvMsg<T>) -> Result<T, RecvError> {
-        self.0.try_recv()
     }
 }
 
@@ -228,18 +213,26 @@ fn deadline(after: Duration) -> Wait {
         .map_or(Wait::Forever, Wait::Until)
 }
 
-/// Blocks while the channel is full, for at most the timeout.
+/// Blocks while the channel is full, for at most the timeout. A timeout of
+/// zero (`try_send`) does not block at all.
 #[cfg(feature = "time")]
 impl<T> Perform<Timeout<SendMsg<T>>> for Sender<T> {
     fn perform(&mut self, op: Timeout<SendMsg<T>>) -> Result<(), SendError<T>> {
+        if op.after.is_zero() {
+            return self.0.try_send(op.op.0);
+        }
         self.0.send(op.op.0, deadline(op.after))
     }
 }
 
-/// Blocks until a message arrives, for at most the timeout.
+/// Blocks until a message arrives, for at most the timeout. A timeout of
+/// zero (`try_recv`) does not block at all.
 #[cfg(feature = "time")]
 impl<T> Perform<Timeout<RecvMsg<T>>> for Receiver<T> {
     fn perform(&mut self, op: Timeout<RecvMsg<T>>) -> Result<T, RecvError> {
+        if op.after.is_zero() {
+            return self.0.try_recv();
+        }
         self.0.recv(deadline(op.after))
     }
 }
@@ -273,12 +266,6 @@ impl<T> Perform<Share<T, Shared<T>>> for Std {
 impl<T: Clone> Inspect<Load<T>> for Shared<T> {
     fn inspect(&self, _: Load<T>) -> T {
         self.lock().clone()
-    }
-}
-
-impl<T> Perform<Store<T>> for Shared<T> {
-    fn perform(&mut self, op: Store<T>) {
-        *self.lock() = op.0;
     }
 }
 

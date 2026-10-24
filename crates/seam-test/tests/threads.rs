@@ -30,7 +30,7 @@ where
     C: for<'a> seam_core::Provide<ReadDir<'a, D>>,
     D: seam_core::Perform<NextEntry>,
 {
-    seam_core::Acquire::acquire(c, ReadDir::new(dir.as_ref()), |_, entries| {
+    seam_core::Provide::acquire(c, ReadDir::new(dir.as_ref()), |_, entries| {
         let mut paths = Vec::new();
         while let Some(path) = seam_core::Perform::perform(entries, NextEntry)? {
             paths.push(path);
@@ -232,7 +232,7 @@ fn a_failed_scope_joins_its_thread() {
         });
         assert_eq!(result.unwrap_err().to_string(), "gave up");
         assert_eq!(
-            read_to_string(&mut sim, "/done").unwrap(),
+            read_to_string(&sim, "/done").unwrap(),
             "yes",
             "the thread finished before acquire returned"
         );
@@ -422,7 +422,7 @@ fn threads_share_the_world() {
         sim.acquire(write, |_, t| t.perform(Join::new()))
             .unwrap()
             .unwrap();
-        assert_eq!(read_to_string(&mut sim, "/note").unwrap(), "hi");
+        assert_eq!(read_to_string(&sim, "/note").unwrap(), "hi");
     });
     assert_eq!(
         threads.with_sim(|s| s.file("/note").unwrap().to_vec()),

@@ -7,7 +7,7 @@ use std::vec::Vec;
 
 use seam_core::ops::io::{Flush, Read, Write};
 use seam_core::ops::stdio::{OpenStderr, OpenStdin, OpenStdout};
-use seam_core::{Perform, Provide, Token};
+use seam_core::{Closing, Opening, Perform};
 
 use crate::Sim;
 use crate::world::Shared;
@@ -116,12 +116,14 @@ impl Perform<Flush> for Stderr {
 
 macro_rules! open {
     ($($op:ident => $handle:ident),*) => {$(
-        impl Provide<$op<$handle>> for Sim {
-            fn provide(&mut self, _: $op<$handle>, _: Token) -> io::Result<$handle> {
+        impl Perform<Opening<$op<$handle>>> for Sim {
+            fn perform(&mut self, Opening(_, _): Opening<$op<$handle>>) -> io::Result<$handle> {
                 Ok($handle(self.world.clone()))
             }
+        }
 
-            fn close(&mut self, _: $handle) -> io::Result<()> {
+        impl Perform<Closing<$op<$handle>>> for Sim {
+            fn perform(&mut self, Closing(_, _): Closing<$op<$handle>>) -> io::Result<()> {
                 Ok(())
             }
         }

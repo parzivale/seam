@@ -12,7 +12,8 @@ backend. All of these are breaking.
 | Removed | Use |
 |---|---|
 | `ReadExact`, `WriteAll`, `ReadToEnd` | `read_exact`, `write_all`, `read_to_end` (and `copy`) on any `Read`/`Write` handle |
-| `ReadFile`, `ReadToString`, `WriteFile` | `read_file`, `read_to_string`, `write_file`, through `Open` |
+| `ReadFile`, `ReadToString` | `read_file`, `read_to_string`, through `View` and `ReadAt`, from `&C` |
+| `WriteFile` | `write_file`, through `Open` |
 | `CreateDir { recursive: true }` | `create_dir_all`; `CreateDir` creates one directory |
 | `SweepAtomic` | `sweep_atomic` (also needs `WallClock`); `SweepAtomic::is_temp_name` is `is_temp_name` |
 | `Resolve` | `resolve` (alloc), built on `ResolveInto` |
@@ -22,6 +23,27 @@ backend. All of these are breaking.
 | `Store` | `store`, an `Update` |
 | `Print`, `EPrint` | `print`, `eprint`, or `write_all` on a stdout or stderr handle |
 | `ReadLine`, `ReadLineInto` | `BufReader::read_line` (or `read_until`) on any `Read` handle, such as stdin's |
+
+### Scopes are operations
+
+| Removed | Use |
+|---|---|
+| `impl Provide<A>`: `provide`, `close`, `abandon` | `impl Perform<Opening<A>>` and `impl Perform<Closing<A>>`; dropping the resource rolls back |
+| `impl AsyncProvide<A>` | `AsyncPerform` and `SendPerform` of `Opening<A>` and `Closing<A>` |
+| `Acquire`, `AsyncAcquire` | `acquire` and `acquire_async` are methods of `Provide` and `AsyncProvide` |
+| `AsyncProvide` bound in a `Send` core | `SendProvide`, scoped with `acquire_send` (on `SendScope`) |
+
+`Provide<A>` is now the name for `Perform<Opening<A>> + Perform<Closing<A>>`,
+so scopes work wherever operations do: the async forms and lifts, a `Root`
+(which no longer forwards scopes separately), and wrappers.
+
+- `Lend<A>`, `AsyncLend<A>`, `SendLend<A>`: a scope that changes nothing
+  outside itself, a query, from `&C`. Every lending capability also
+  provides.
+- `View<'a, F>`, lent: a regular file opened to read at offsets, with
+  `ReadAt`, a query. Backends' handle is `FileView`. A FIFO or a device is
+  refused (`InvalidInput`): open those with `Open`.
+- `ReadDir` is lent.
 
 ### New
 
@@ -48,8 +70,6 @@ backend. All of these are breaking.
   `Sim::stderr` return a copy (`Vec<u8>`) instead of a slice.
 - `write_file` syncs the file when it closes it, as every writable file is
   synced on close; `std::fs::write` did not.
-- Reading a file is an acquisition, which takes `&mut`, so a query
-  (`Inspect`) can no longer read a file.
 - Tokio's and the simulated runtime's receivers have no sync non-blocking
   receive: `try_recv` is a zero `Timeout`, which they implement
   asynchronously. Use `try_recv_send` from async code.

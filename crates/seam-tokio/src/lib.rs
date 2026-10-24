@@ -142,8 +142,8 @@ pub(crate) fn sio<T>(r: std::io::Result<T>) -> seam_core::io::Result<T> {
 /// side delegating to them.
 #[allow(unused_macros)]
 macro_rules! async_op {
-    (perform [$($gen:tt)*] $ty:ty, $op:ty, |$s:ident, $o:ident| $body:expr) => {
-        impl<$($gen)*> seam_core::future::AsyncPerform<$op> for $ty {
+    (perform [$($gen:tt)*] $ty:ty, $op:ty, |$s:ident, $o:pat_param| $body:expr $(, where $($w:tt)*)?) => {
+        impl<$($gen)*> seam_core::future::AsyncPerform<$op> for $ty $(where $($w)*)? {
             fn perform_async(
                 &mut self,
                 $o: $op,
@@ -153,7 +153,7 @@ macro_rules! async_op {
             }
         }
 
-        impl<$($gen)*> seam_core::future::SendPerform<$op> for $ty {
+        impl<$($gen)*> seam_core::future::SendPerform<$op> for $ty $(where $($w)*)? {
             fn perform_send(
                 &mut self,
                 $o: $op,
@@ -164,8 +164,8 @@ macro_rules! async_op {
             }
         }
     };
-    (inspect [$($gen:tt)*] $ty:ty, $op:ty, |$s:ident, $o:ident| $body:expr) => {
-        impl<$($gen)*> seam_core::future::AsyncInspect<$op> for $ty {
+    (inspect [$($gen:tt)*] $ty:ty, $op:ty, |$s:ident, $o:pat_param| $body:expr $(, where $($w:tt)*)?) => {
+        impl<$($gen)*> seam_core::future::AsyncInspect<$op> for $ty $(where $($w)*)? {
             fn inspect_async(
                 &self,
                 $o: $op,
@@ -175,7 +175,7 @@ macro_rules! async_op {
             }
         }
 
-        impl<$($gen)*> seam_core::future::SendInspect<$op> for $ty {
+        impl<$($gen)*> seam_core::future::SendInspect<$op> for $ty $(where $($w)*)? {
             fn inspect_send(
                 &self,
                 $o: $op,
@@ -188,7 +188,7 @@ macro_rules! async_op {
 
         async_op!(perform [$($gen)*] $ty, $op, |s, o| {
             seam_core::future::SendInspect::inspect_send(&*s, o).await
-        });
+        } $(, where $($w)*)?);
     };
 }
 

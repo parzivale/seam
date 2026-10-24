@@ -1,15 +1,16 @@
-//! Filesystem operations, and the [`File`], [`AtomicFile`] and [`Dir`]
-//! handles.
+//! Filesystem operations, and the [`File`], [`FileView`], [`AtomicFile`]
+//! and [`Dir`] handles.
 
 use core::marker::PhantomData;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use seam_core::ops::fs::{
-    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Mode, NextEntry, Open,
-    ReadDir, Readable, RemoveDir, RemoveFile, Rename, SetLen, Stat, SyncAll, SyncData, Writable,
+    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Mode, NextEntry, Open, ReadAt,
+    ReadDir, Readable, RemoveDir, RemoveFile, Rename, SetLen, Stat, SyncAll, SyncData, View,
+    Writable,
 };
-use seam_core::{AsyncProvide, Token};
+use seam_core::{Closing, Opening};
 use tokio::io::AsyncWriteExt;
 
 use crate::Tokio;
@@ -49,37 +50,30 @@ write_ops!([M: Writable] File<M>);
 any_file_ops!([M: Mode] File<M>);
 writable_file_ops!([M: Writable] File<M>);
 
-impl<M: Mode> AsyncProvide<Open<'_, M, File<M>>> for Tokio {
-    async fn provide_async(
-        &mut self,
-        op: Open<'_, M, File<M>>,
-        _: Token,
-    ) -> seam_core::io::Result<File<M>> {
-        let o = op.options;
-        crate::sio(
-            tokio::fs::OpenOptions::new()
-                .read(M::READ)
-                .write(M::WRITE && !M::APPEND)
-                .append(M::APPEND)
-                .truncate(o.truncate)
-                .create(o.create)
-                .create_new(o.create_new)
-                .open(op.path)
-                .await
-                .map(|f| File(f, PhantomData)),
-        )
+async_op!(perform [M: Mode] Tokio, Opening<Open<'_, M, File<M>>>, |_s, Opening(op, _)| {
+    let o = op.options;
+    crate::sio(
+        tokio::fs::OpenOptions::new()
+            .read(M::READ)
+            .write(M::WRITE && !M::APPEND)
+            .append(M::APPEND)
+            .truncate(o.truncate)
+            .create(o.create)
+            .create_new(o.create_new)
+            .open(op.path)
+            .await
+            .map(|f| File(f, PhantomData)),
+    )
+});
+async_op!(perform [M: Mode] Tokio, Closing<Open<'_, M, File<M>>>, |_s, Closing(mut file, _)| {
+    // Only writable files are synced; some platforms refuse to sync a
+    // read-only handle.
+    if !M::WRITE {
+        return Ok(());
     }
-
-    async fn close_async(&mut self, mut file: File<M>) -> seam_core::io::Result<()> {
-        // Only writable files are synced; some platforms refuse to sync a
-        // read-only handle.
-        if !M::WRITE {
-            return Ok(());
-        }
-        file.0.flush().await?;
-        crate::sio(file.0.sync_all().await)
-    }
-}
+    file.0.flush().await?;
+    crate::sio(file.0.sync_all().await)
+});
 
 /// A file that replaces its target when its scope succeeds, acquired with
 /// [`CreateAtomic`].
@@ -150,73 +144,117 @@ async fn blocking<T: Send + 'static>(
         .map_err(io::Error::other)?
 }
 
-impl AsyncProvide<CreateAtomic<'_, AtomicFile>> for Tokio {
-    async fn provide_async(
-        &mut self,
-        op: CreateAtomic<'_, AtomicFile>,
-        _: Token,
-    ) -> seam_core::io::Result<AtomicFile> {
-        // Created together with its guard, in one blocking task: see `Pending`.
-        // The target is kept for the rename on close.
-        let target = op.path.to_path_buf();
-        let (file, pending) = blocking(move || {
-            let temp = temp_path(&target);
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)?;
-            Ok((
-                file,
-                Pending {
-                    temp: Some(temp),
-                    target,
-                },
-            ))
-        })
-        .await?;
-        Ok(AtomicFile(tokio::fs::File::from_std(file), pending))
-    }
-
-    async fn close_async(&mut self, file: AtomicFile) -> seam_core::io::Result<()> {
-        let AtomicFile(mut file, mut pending) = file;
-        file.flush().await?;
-        file.sync_all().await?;
-        drop(file);
-        // Renamed in one blocking task that owns the guard: see `Pending`.
-        blocking(move || {
-            let temp = pending
-                .temp
-                .as_ref()
-                .expect("the temporary file exists until close");
-            std::fs::rename(temp, &pending.target)?;
-            pending.temp = None;
-            sync_parent(&pending.target);
-            Ok(())
-        })
-        .await
-    }
-}
+async_op!(perform [] Tokio, Opening<CreateAtomic<'_, AtomicFile>>, |_s, Opening(op, _)| {
+    // Created together with its guard, in one blocking task: see `Pending`.
+    // The target is kept for the rename on close.
+    let target = op.path.to_path_buf();
+    let (file, pending) = blocking(move || {
+        let temp = temp_path(&target);
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        Ok((
+            file,
+            Pending {
+                temp: Some(temp),
+                target,
+            },
+        ))
+    })
+    .await?;
+    seam_core::io::Result::Ok(AtomicFile(tokio::fs::File::from_std(file), pending))
+});
+async_op!(perform [] Tokio, Closing<CreateAtomic<'_, AtomicFile>>, |_s, Closing(file, _)| {
+    let AtomicFile(mut file, mut pending) = file;
+    file.flush().await?;
+    file.sync_all().await?;
+    drop(file);
+    // Renamed in one blocking task that owns the guard: see `Pending`.
+    blocking(move || {
+        let temp = pending
+            .temp
+            .as_ref()
+            .expect("the temporary file exists until close");
+        std::fs::rename(temp, &pending.target)?;
+        pending.temp = None;
+        sync_parent(&pending.target);
+        Ok(())
+    })
+    .await
+});
 
 async_op!(inspect ['a] Tokio, Metadata<'a>, |_s, op| tokio::fs::metadata(op.path).await.map(file_info));
+
+/// A regular file open to read at offsets, lent with [`View`]. It inspects
+/// [`ReadAt`] and [`Stat`].
+///
+/// Tokio has no positional read, so each `ReadAt` runs on the blocking
+/// pool, through a buffer of its own.
+#[derive(Debug)]
+pub struct FileView(std::sync::Arc<std::fs::File>);
+
+/// Opens `path` to read, failing unless it is a regular file. Opening a
+/// FIFO waits for a writer, so the path is checked before opening it, and
+/// the file again after, in case the path was replaced in between.
+fn open_view(path: &Path) -> io::Result<std::fs::File> {
+    let check = |m: std::fs::Metadata| match () {
+        _ if m.is_file() => Ok(()),
+        _ if m.is_dir() => Err(io::Error::new(
+            io::ErrorKind::IsADirectory,
+            "is a directory",
+        )),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        )),
+    };
+    check(std::fs::metadata(path)?)?;
+    let file = std::fs::File::open(path)?;
+    check(file.metadata()?)?;
+    Ok(file)
+}
+
+async_op!(inspect ['a] Tokio, Opening<View<'a, FileView>>, |_s, Opening(op, _)| {
+    let path = op.path.to_path_buf();
+    blocking(move || crate::sio(open_view(&path))).await.map(|f| FileView(f.into()))
+});
+async_op!(inspect ['a] Tokio, Closing<View<'a, FileView>>, |_s, Closing(_, _)| {
+    seam_core::io::Result::Ok(())
+});
+
+async_op!(inspect ['a] FileView, ReadAt<'a>, |s, op| {
+    let (file, len, offset) = (std::sync::Arc::clone(&s.0), op.buf.len(), op.offset);
+    let read = blocking(move || {
+        let mut buf = vec![0; len];
+        #[cfg(unix)]
+        let n = std::os::unix::fs::FileExt::read_at(&*file, &mut buf, offset);
+        #[cfg(windows)]
+        let n = std::os::windows::fs::FileExt::seek_read(&*file, &mut buf, offset);
+        #[cfg(not(any(unix, windows)))]
+        let n = Err(io::Error::new(io::ErrorKind::Unsupported, "no positional reads here"));
+        crate::sio(n.map(|n| (buf, n)))
+    });
+    let (buf, n) = read.await?;
+    op.buf[..n].copy_from_slice(&buf[..n]);
+    seam_core::io::Result::Ok(n)
+});
+async_op!(inspect [] FileView, Stat, |s, _op| {
+    let file = std::sync::Arc::clone(&s.0);
+    blocking(move || crate::sio(file.metadata().map(file_info))).await
+});
 
 /// A directory being listed, acquired with [`ReadDir`]. Perform
 /// [`NextEntry`] on it for each path.
 #[derive(Debug)]
 pub struct Dir(tokio::fs::ReadDir);
 
-impl AsyncProvide<ReadDir<'_, Dir>> for Tokio {
-    async fn provide_async(
-        &mut self,
-        op: ReadDir<'_, Dir>,
-        _: Token,
-    ) -> seam_core::io::Result<Dir> {
-        crate::sio(tokio::fs::read_dir(op.path).await.map(Dir))
-    }
-
-    async fn close_async(&mut self, _: Dir) -> seam_core::io::Result<()> {
-        Ok(())
-    }
-}
+async_op!(inspect [] Tokio, Opening<ReadDir<'_, Dir>>, |_s, Opening(op, _)| {
+    crate::sio(tokio::fs::read_dir(op.path).await.map(Dir))
+});
+async_op!(inspect [] Tokio, Closing<ReadDir<'_, Dir>>, |_s, Closing(_, _)| {
+    seam_core::io::Result::Ok(())
+});
 
 async_op!(perform [] Dir, NextEntry, |s, _op| {
     s.0.next_entry().await.map(|e| e.map(|e| e.path()))
@@ -257,3 +295,4 @@ fn file_info(m: std::fs::Metadata) -> FileInfo {
 impl seam_core::Capability for AtomicFile {}
 impl seam_core::Capability for Dir {}
 impl<M> seam_core::Capability for File<M> {}
+impl seam_core::Capability for FileView {}

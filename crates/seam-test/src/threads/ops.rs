@@ -5,7 +5,7 @@
 //! would block a real thread block the simulated one.
 
 #[allow(unused_imports)]
-use seam_core::{Inspect, Operation, Perform, Provide, Token};
+use seam_core::{Closing, Inspect, Opening, Operation, Perform};
 
 use super::ThreadSim;
 
@@ -29,26 +29,13 @@ macro_rules! delegate {
             }
         }
     )*};
-    (provide $([$($gen:tt)*] $op:ty;)*) => {$(
-        impl<$($gen)*> Provide<$op> for ThreadSim {
-            fn provide(
-                &mut self,
-                op: $op,
-                token: Token,
-            ) -> Result<<$op as seam_core::Acquisition>::Resource, <$op as seam_core::Acquisition>::Error> {
-                self.shared.switch();
-                Provide::provide(&mut *self.shared.sim(), op, token)
-            }
-
-            fn close(
-                &mut self,
-                resource: <$op as seam_core::Acquisition>::Resource,
-            ) -> Result<(), <$op as seam_core::Acquisition>::Error> {
-                self.shared.switch();
-                Provide::<$op>::close(&mut *self.shared.sim(), resource)
-            }
-        }
-    )*};
+    // A scope is its two operations.
+    (provide $([$($gen:tt)*] $op:ty;)*) => {
+        delegate! { perform $([$($gen)*] Opening<$op>; [$($gen)*] Closing<$op>;)* }
+    };
+    (lend $([$($gen:tt)*] $op:ty;)*) => {
+        delegate! { inspect $([$($gen)*] Opening<$op>; [$($gen)*] Closing<$op>;)* }
+    };
 }
 
 #[cfg(feature = "time")]
@@ -96,11 +83,11 @@ mod env {
 mod fs {
     use seam_core::ops::fs::{
         CopyFile, CreateAtomic, CreateDir, Metadata, Mode, Open, ReadDir, RemoveDir, RemoveFile,
-        Rename,
+        Rename, View,
     };
 
     use super::*;
-    use crate::fs::{AtomicFile, Dir, File};
+    use crate::fs::{AtomicFile, Dir, File, FileView};
 
     delegate! { inspect ['a] Metadata<'a>; }
     delegate! {
@@ -109,8 +96,8 @@ mod fs {
     }
     delegate! {
         provide ['a, M: Mode] Open<'a, M, File<M>>; ['a] CreateAtomic<'a, AtomicFile>;
-        ['a] ReadDir<'a, Dir>;
     }
+    delegate! { lend ['a] View<'a, FileView>; ['a] ReadDir<'a, Dir>; }
 }
 
 #[cfg(feature = "process")]

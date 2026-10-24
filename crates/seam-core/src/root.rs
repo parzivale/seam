@@ -90,7 +90,6 @@
 //! `Join` on a task) never go through the root, so they have no kind: the
 //! handle a part hands out implements them itself.
 
-use crate::acquire::{Acquisition, AsyncProvide, Provide, Token};
 use crate::future::{AsyncInspect, AsyncPerform, SendInspect, SendPerform};
 use crate::{Inspect, Operation, Perform, Query};
 
@@ -255,51 +254,6 @@ where
 {
     fn perform_send(&mut self, op: O) -> impl Future<Output = O::Outcome> + Send {
         <O::Kind as Pick<A>>::pick_mut(&mut self.0).perform_send(op)
-    }
-}
-
-impl<A, X> Provide<X> for Root<A>
-where
-    X: Acquisition + InKind,
-    X::Kind: Pick<A>,
-    PartOf<X, A>: Provide<X>,
-{
-    fn provide(&mut self, acquisition: X, token: Token) -> Result<X::Resource, X::Error> {
-        <X::Kind as Pick<A>>::pick_mut(&mut self.0).provide(acquisition, token)
-    }
-
-    fn close(&mut self, resource: X::Resource) -> Result<(), X::Error> {
-        Provide::<X>::close(<X::Kind as Pick<A>>::pick_mut(&mut self.0), resource)
-    }
-
-    fn abandon(resource: X::Resource) {
-        <PartOf<X, A> as Provide<X>>::abandon(resource);
-    }
-}
-
-impl<A, X> AsyncProvide<X> for Root<A>
-where
-    X: Acquisition + InKind,
-    X::Kind: Pick<A>,
-    PartOf<X, A>: AsyncProvide<X> + 'static,
-{
-    fn provide_async(
-        &mut self,
-        acquisition: X,
-        token: Token,
-    ) -> impl Future<Output = Result<X::Resource, X::Error>> + Send {
-        <X::Kind as Pick<A>>::pick_mut(&mut self.0).provide_async(acquisition, token)
-    }
-
-    fn close_async(
-        &mut self,
-        resource: X::Resource,
-    ) -> impl Future<Output = Result<(), X::Error>> + Send {
-        AsyncProvide::<X>::close_async(<X::Kind as Pick<A>>::pick_mut(&mut self.0), resource)
-    }
-
-    fn abandon_async(resource: X::Resource) {
-        <PartOf<X, A> as AsyncProvide<X>>::abandon_async(resource);
     }
 }
 

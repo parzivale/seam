@@ -6,8 +6,8 @@ use std::sync::Mutex;
 
 use seam_core::future::{AsyncPerform, SendPerform, block_on};
 use seam_core::{
-    Acquire, Acquisition, AsyncAcquire, AsyncProvide, Inspect, Operation, Perform, Provide, Push,
-    Query, Rejected, Token,
+    Acquisition, AsyncProvide, Closing, Inspect, Lend, Opening, Operation, Perform, Provide, Push,
+    Query, Rejected, SendProvide, SendScope,
 };
 
 struct Get;
@@ -166,26 +166,29 @@ impl Acquisition for Lease {
     type Error = Failure;
 }
 
-impl Provide<Lease> for Leases {
-    fn provide(&mut self, _: Lease, _: Token) -> Result<u32, Failure> {
+impl Perform<Opening<Lease>> for Leases {
+    fn perform(&mut self, _: Opening<Lease>) -> Result<u32, Failure> {
         if self.fail_open {
             return Err(Failure::Open);
         }
         self.log.push("opened");
         Ok(0)
     }
+}
 
-    fn close(&mut self, n: u32) -> Result<(), Failure> {
+impl Perform<Closing<Lease>> for Leases {
+    fn perform(&mut self, n: Closing<Lease>) -> Result<(), Failure> {
         if self.fail_close {
             return Err(Failure::Close);
         }
         self.log
-            .push(if n == 0 { "closed" } else { "closed changed" });
+            .push(if n.0 == 0 { "closed" } else { "closed changed" });
         Ok(())
     }
 }
 
-/// Async-only, so that abandoning can be observed without `&mut self`.
+/// Async-only, and its resources log being dropped, so that rolling back
+/// can be observed without `&mut self`.
 struct AsyncLeases<'a>(&'a Mutex<Vec<&'static str>>);
 
 struct Tracked<'a>(&'a Mutex<Vec<&'static str>>);
@@ -203,26 +206,57 @@ impl Acquisition for AsyncLease {
     type Error = Failure;
 }
 
-impl AsyncProvide<AsyncLease> for AsyncLeases<'static> {
-    async fn provide_async(
-        &mut self,
-        _: AsyncLease,
-        _: Token,
-    ) -> Result<Tracked<'static>, Failure> {
+impl AsyncPerform<Opening<AsyncLease>> for AsyncLeases<'static> {
+    async fn perform_async(&mut self, _: Opening<AsyncLease>) -> Result<Tracked<'static>, Failure> {
         Suspend::default().await;
         Ok(Tracked(self.0))
     }
+}
 
-    async fn close_async(&mut self, lease: Tracked<'static>) -> Result<(), Failure> {
+impl AsyncPerform<Closing<AsyncLease>> for AsyncLeases<'static> {
+    async fn perform_async(&mut self, lease: Closing<AsyncLease>) -> Result<(), Failure> {
         Suspend::default().await;
         self.0.lock().unwrap().push("closed");
         drop(lease);
         Ok(())
     }
+}
 
-    fn abandon_async(lease: Tracked<'static>) {
-        lease.0.lock().unwrap().push("abandoned");
+/// Lends counters: a scope that is a query.
+#[derive(Default)]
+struct Counters {
+    opened: std::sync::atomic::AtomicU32,
+}
+impl seam_core::Capability for Counters {}
+
+impl Inspect<Opening<Lease>> for Counters {
+    fn inspect(&self, _: Opening<Lease>) -> Result<u32, Failure> {
+        Ok(self
+            .opened
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed))
     }
+}
+
+impl Inspect<Closing<Lease>> for Counters {
+    fn inspect(&self, _: Closing<Lease>) -> Result<(), Failure> {
+        Ok(())
+    }
+}
+
+#[test]
+fn lend_needs_only_shared_access_and_lifts_to_provide() {
+    fn shared<C: Lend<Lease>>(c: &C) -> Result<u32, Failure> {
+        c.lend(Lease, |c, n| {
+            *n += 10; // local to the scope
+            c.lend(Lease, |_, inner| Ok(*n + *inner))
+        })
+    }
+    fn exclusive<C: Provide<Lease>>(c: &mut C) -> Result<u32, Failure> {
+        c.acquire(Lease, |_, n| Ok(*n))
+    }
+    let mut c = Counters::default();
+    assert_eq!(shared(&c), Ok(11));
+    assert_eq!(exclusive(&mut c), Ok(2));
 }
 
 #[test]
@@ -239,7 +273,7 @@ fn acquire_closes_on_ok() {
 }
 
 #[test]
-fn acquire_abandons_on_err_and_panic() {
+fn acquire_drops_on_err_and_panic() {
     let mut p = Leases::default();
     assert_eq!(
         p.acquire(Lease, |_, _| Err::<(), _>(Failure::Work)),
@@ -325,7 +359,7 @@ fn sync_providers_lift_to_async() {
 }
 
 #[test]
-fn async_acquire_closes_on_ok_and_abandons_on_err() {
+fn async_acquire_closes_on_ok_and_drops_on_err() {
     let l = leak_log();
     let mut p = AsyncLeases(l);
     block_on(p.acquire_async(AsyncLease, async |_, _| Ok::<_, Failure>(()))).unwrap();
@@ -335,7 +369,7 @@ fn async_acquire_closes_on_ok_and_abandons_on_err() {
     let mut p = AsyncLeases(l);
     let out = block_on(p.acquire_async(AsyncLease, async |_, _| Err::<(), _>(Failure::Work)));
     assert_eq!(out, Err(Failure::Work));
-    assert_eq!(log(l), ["abandoned", "dropped"]);
+    assert_eq!(log(l), ["dropped"]);
 }
 
 /// Drops the future after `polls` polls, then reports what happened.
@@ -359,8 +393,8 @@ fn cancel_after(polls: usize) -> Vec<&'static str> {
 }
 
 /// Cancelling at every point: while opening (nothing to roll back), inside
-/// the body (abandoned), while closing (the resource is dropped inside
-/// `close_async`), and after finishing (closed). Never a half state.
+/// the body (dropped), while closing (the resource is dropped inside the
+/// closing future), and after finishing (closed). Never a half state.
 #[test]
 fn async_acquire_is_cancellation_safe_at_every_await() {
     assert_eq!(
@@ -368,11 +402,7 @@ fn async_acquire_is_cancellation_safe_at_every_await() {
         Vec::<&str>::new(),
         "cancelled while opening"
     );
-    assert_eq!(
-        cancel_after(2),
-        ["abandoned", "dropped"],
-        "cancelled in the body"
-    );
+    assert_eq!(cancel_after(2), ["dropped"], "cancelled in the body");
     assert_eq!(
         cancel_after(3),
         ["dropped"],
@@ -393,6 +423,14 @@ fn async_acquire_is_send() {
     let fut = assert_send(p.acquire_async(AsyncLease, async |_, _| Ok::<_, Failure>(())));
     std::thread::scope(|s| s.spawn(move || block_on(fut)).join().unwrap()).unwrap();
     assert_eq!(log(l), ["closed", "dropped"]);
+
+    // Generic code proves it from the `Send` forms.
+    async fn generic<C: SendProvide<Lease> + Send>(c: &mut C) -> Result<(), Failure> {
+        c.acquire_send(Lease, async |_, _| Ok(())).await
+    }
+    let mut p = Leases::default();
+    block_on(assert_send(generic(&mut p))).unwrap();
+    assert_eq!(p.log, ["opened", "closed"]);
 }
 
 /// A sink that caps how many items the core may emit.
@@ -424,4 +462,12 @@ fn push_sink_caps_output() {
     assert_eq!(squares(3, &mut sink), Ok(()));
     assert_eq!(sink.items, [0, 1, 4]);
     assert_eq!(squares(1, &mut sink), Err(Rejected(0)));
+}
+
+/// Checked at compile time: a generic core bounded on `SendProvide` gets a
+/// `Send` `acquire_send` future.
+#[allow(dead_code)]
+fn generic_scopes_are_send<C: SendProvide<Lease> + Send>(c: &mut C) {
+    fn assert_send<F: Future + Send>(_: F) {}
+    assert_send(c.acquire_send(Lease, async |_, _| Ok::<_, Failure>(())));
 }

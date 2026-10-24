@@ -56,8 +56,8 @@
 //! use seam_core::io;
 //! use seam_core::prelude::*;
 //! use seam_core::ops::env::Var;
-//! use seam_core::ops::fs::{Open, ReadOnly, WriteOnly, read_to_string, write_file};
-//! use seam_core::ops::io::{Read, Write};
+//! use seam_core::ops::fs::{Open, ReadAt, View, WriteOnly, read_to_string, write_file};
+//! use seam_core::ops::io::Write;
 //! use seam_core::ops::stdio::{OpenStdout, print};
 //! use seam_test::Sim;
 //!
@@ -65,10 +65,10 @@
 //! fn greet<C, R, W, O>(c: &mut C) -> io::Result<()>
 //! where
 //!     C: for<'a> Inspect<Var<'a>>
-//!         + for<'a> Provide<Open<'a, ReadOnly, R>>
+//!         + for<'a> Lend<View<'a, R>>
 //!         + for<'a> Provide<Open<'a, WriteOnly, W>>
 //!         + Provide<OpenStdout<O>>,
-//!     R: for<'a> Perform<Read<'a>>,
+//!     R: for<'a> Inspect<ReadAt<'a>>,
 //!     W: for<'a> Perform<Write<'a>>,
 //!     O: for<'a> Perform<Write<'a>>,
 //! {

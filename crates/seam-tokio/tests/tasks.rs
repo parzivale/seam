@@ -16,7 +16,7 @@ use seam_core::ops::task::{
     TaskBody, YieldNow,
 };
 use seam_core::ops::time::Sleep;
-use seam_core::{AsyncAcquire, AsyncProvide, Inspect};
+use seam_core::{AsyncProvide, Inspect};
 use seam_tokio::Tokio;
 use seam_tokio::net::{TcpListener, TcpStream};
 use seam_tokio::task::{JoinHandle, TaskSet};

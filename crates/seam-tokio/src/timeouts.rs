@@ -51,12 +51,16 @@ mod net {
 
     use seam_core::ops::io::{Read, Write};
     use seam_core::ops::net::{Accept, RecvFrom, TcpConnect};
-    use seam_core::{AsyncProvide, Token};
+    #[cfg(feature = "rt")]
+    use seam_core::ops::task::SpawnWith;
+    use seam_core::{Closing, Opening};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
     use crate::Tokio;
     use crate::net::{TcpListener, TcpStream, UdpSocket};
+    #[cfg(feature = "rt")]
+    use crate::task::JoinHandle;
 
     fn timed_out() -> io::Error {
         io::ErrorKind::TimedOut.into()
@@ -74,24 +78,17 @@ mod net {
         timeout(op.after, s.0.recv_from(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
     });
 
-    impl AsyncProvide<Timeout<TcpConnect<TcpStream>>> for Tokio {
-        async fn provide_async(
-            &mut self,
-            op: Timeout<TcpConnect<TcpStream>>,
-            _: Token,
-        ) -> seam_core::io::Result<TcpStream> {
-            crate::sio(
-                timeout(op.after, tokio::net::TcpStream::connect(op.op.addr))
-                    .await
-                    .unwrap_or_else(|_| Err(timed_out()))
-                    .map(TcpStream),
-            )
-        }
-
-        async fn close_async(&mut self, stream: TcpStream) -> seam_core::io::Result<()> {
-            stream.commit().await
-        }
-    }
+    async_op!(perform [] Tokio, Opening<Timeout<TcpConnect<TcpStream>>>, |_s, Opening(op, _)| {
+        crate::sio(
+            timeout(op.after, tokio::net::TcpStream::connect(op.op.addr))
+                .await
+                .unwrap_or_else(|_| Err(timed_out()))
+                .map(TcpStream),
+        )
+    });
+    async_op!(perform [] Tokio, Closing<Timeout<TcpConnect<TcpStream>>>, |_s, Closing(stream, _)| {
+        stream.commit().await
+    });
 
     impl TcpListener {
         pub(crate) async fn accept_within(
@@ -105,59 +102,37 @@ mod net {
         }
     }
 
-    impl AsyncProvide<Timeout<Accept<TcpStream>>> for TcpListener {
-        async fn provide_async(
-            &mut self,
-            op: Timeout<Accept<TcpStream>>,
-            _: Token,
-        ) -> seam_core::io::Result<TcpStream> {
-            self.accept_within(op.after).await.map(TcpStream)
-        }
-
-        async fn close_async(&mut self, stream: TcpStream) -> seam_core::io::Result<()> {
+    async_op!(perform [] TcpListener, Opening<Timeout<Accept<TcpStream>>>, |s, Opening(op, _)| {
+        s.accept_within(op.after).await.map(TcpStream)
+    });
+    async_op!(
+        perform [] TcpListener, Closing<Timeout<Accept<TcpStream>>>,
+        |_s, Closing(stream, _)| {
             stream.commit().await
         }
-    }
+    );
 
-    /// Waits at most the timeout for a connection, then handles it in a new
-    /// task, as `SpawnWith` without a timeout does.
+    // Waits at most the timeout for a connection, then handles it in a new
+    // task, as `SpawnWith` without a timeout does.
     #[cfg(feature = "rt")]
-    impl<B>
-        AsyncProvide<
-            Timeout<
-                seam_core::ops::task::SpawnWith<
-                    Accept<TcpStream>,
-                    B,
-                    crate::task::JoinHandle<Result<B::Output, B::Error>>,
-                >,
-            >,
-        > for TcpListener
-    where
-        B: seam_core::ops::task::TaskBody<TcpStream>,
-        B::Error: From<seam_core::io::Error>,
-    {
-        async fn provide_async(
-            &mut self,
-            op: Timeout<
-                seam_core::ops::task::SpawnWith<
-                    Accept<TcpStream>,
-                    B,
-                    crate::task::JoinHandle<Result<B::Output, B::Error>>,
-                >,
-            >,
-            _: Token,
-        ) -> seam_core::io::Result<crate::task::JoinHandle<Result<B::Output, B::Error>>> {
-            let stream = self.accept_within(op.after).await?;
-            Ok(crate::net::spawn_connection(stream, op.op.body))
-        }
-
-        async fn close_async(
-            &mut self,
-            task: crate::task::JoinHandle<Result<B::Output, B::Error>>,
-        ) -> seam_core::io::Result<()> {
+    async_op!(
+        perform [B] TcpListener,
+        Opening<Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>>>,
+        |s, Opening(op, _)| {
+            let stream = s.accept_within(op.after).await?;
+            seam_core::io::Result::Ok(crate::net::spawn_connection(stream, op.op.body))
+        },
+        where B: seam_core::ops::task::TaskBody<TcpStream>, B::Error: From<seam_core::io::Error>
+    );
+    #[cfg(feature = "rt")]
+    async_op!(
+        perform [B] TcpListener,
+        Closing<Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>>>,
+        |_s, Closing(task, _)| {
             crate::sio(task.finish().await.map_err(io::Error::from))
-        }
-    }
+        },
+        where B: seam_core::ops::task::TaskBody<TcpStream>, B::Error: From<seam_core::io::Error>
+    );
 }
 
 #[cfg(feature = "rt")]

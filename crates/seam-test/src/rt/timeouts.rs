@@ -111,7 +111,7 @@ mod net {
     use seam_core::ops::io::{Read, Write};
     use seam_core::ops::net::{Accept, RecvFrom, TcpConnect};
     use seam_core::ops::task::{SpawnWith, TaskBody};
-    use seam_core::{AsyncProvide, Provide, Token};
+    use seam_core::{Closing, Opening};
 
     use super::*;
     use crate::rt::JoinHandle;
@@ -137,54 +137,42 @@ mod net {
     });
 
     /// Connecting never waits in the simulation, so the timeout is moot.
-    impl Provide<Timeout<TcpConnect<TcpStream>>> for AsyncSim {
-        fn provide(
+    impl Perform<Opening<Timeout<TcpConnect<TcpStream>>>> for AsyncSim {
+        fn perform(
             &mut self,
-            op: Timeout<TcpConnect<TcpStream>>,
-            token: Token,
+            Opening(op, token): Opening<Timeout<TcpConnect<TcpStream>>>,
         ) -> io::Result<TcpStream> {
-            self.provide(op.op, token)
+            self.perform(Opening(op.op, token))
         }
+    }
 
-        fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+    impl Perform<Closing<Timeout<TcpConnect<TcpStream>>>> for AsyncSim {
+        fn perform(
+            &mut self,
+            Closing(stream, _): Closing<Timeout<TcpConnect<TcpStream>>>,
+        ) -> io::Result<()> {
             stream.0.commit()
         }
     }
 
-    impl AsyncProvide<Timeout<Accept<TcpStream>>> for TcpListener {
-        async fn provide_async(
-            &mut self,
-            op: Timeout<Accept<TcpStream>>,
-            token: Token,
-        ) -> io::Result<TcpStream> {
-            let shared = Arc::clone(&self.1);
-            within(&shared, op.after, self.accept(token))
-                .await
-                .unwrap_or_else(|| Err(timed_out()))
-        }
+    async_op!([] TcpListener, Opening<Timeout<Accept<TcpStream>>>, |s, Opening(op, token)| {
+        let shared = Arc::clone(&s.1);
+        within(&shared, op.after, s.accept(token))
+            .await
+            .unwrap_or_else(|| Err(timed_out()))
+    });
+    async_op!([] TcpListener, Closing<Timeout<Accept<TcpStream>>>, |_s, Closing(stream, _)| {
+        stream.0.commit()
+    });
 
-        async fn close_async(&mut self, stream: TcpStream) -> io::Result<()> {
-            stream.0.commit()
-        }
-    }
-
-    /// Waits at most the timeout for a connection, then handles it in a new
-    /// task, as `SpawnWith` without a timeout does.
-    impl<B>
-        AsyncProvide<
-            Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>>,
-        > for TcpListener
-    where
-        B: TaskBody<TcpStream>,
-        B::Error: From<io::Error>,
-    {
-        async fn provide_async(
-            &mut self,
-            op: Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>>,
-            token: Token,
-        ) -> io::Result<JoinHandle<Result<B::Output, B::Error>>> {
-            let shared = Arc::clone(&self.1);
-            let mut stream = within(&shared, op.after, self.accept(token))
+    // Waits at most the timeout for a connection, then handles it in a new
+    // task, as `SpawnWith` without a timeout does.
+    async_op!(
+        [B] TcpListener,
+        Opening<Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>>>,
+        |s, Opening(op, token)| {
+            let shared = Arc::clone(&s.1);
+            let mut stream = within(&shared, op.after, s.accept(token))
                 .await
                 .unwrap_or_else(|| Err(timed_out()))?;
             let body = op.op.body;
@@ -193,15 +181,17 @@ mod net {
                 stream.0.commit()?;
                 Ok(value)
             }))
-        }
-
-        async fn close_async(
-            &mut self,
-            task: JoinHandle<Result<B::Output, B::Error>>,
-        ) -> io::Result<()> {
+        },
+        where B: TaskBody<TcpStream>, B::Error: From<io::Error>
+    );
+    async_op!(
+        [B] TcpListener,
+        Closing<Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>>>,
+        |_s, Closing(task, _)| {
             task.finish().await.map_err(io::Error::from)
-        }
-    }
+        },
+        where B: TaskBody<TcpStream>, B::Error: From<io::Error>
+    );
 
     use seam_core::Perform;
 }

@@ -9,7 +9,7 @@ use seam_core::ops::process::{
     ChildId, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, RunCommand, SpawnChild,
     Wait,
 };
-use seam_core::{Inspect, Perform, Provide, Token};
+use seam_core::{Closing, Inspect, Opening, Perform};
 
 use crate::Std;
 
@@ -110,8 +110,11 @@ impl Drop for Child {
     }
 }
 
-impl Provide<SpawnChild<Child>> for Std {
-    fn provide(&mut self, op: SpawnChild<Child>, _: Token) -> seam_core::io::Result<Child> {
+impl Perform<Opening<SpawnChild<Child>>> for Std {
+    fn perform(
+        &mut self,
+        Opening(op, _): Opening<SpawnChild<Child>>,
+    ) -> seam_core::io::Result<Child> {
         let mut cmd = op.command;
         cmd.stdin(stdio(op.stdin))
             .stdout(stdio(op.stdout))
@@ -125,8 +128,13 @@ impl Provide<SpawnChild<Child>> for Std {
             status: None,
         })
     }
+}
 
-    fn close(&mut self, child: Child) -> seam_core::io::Result<()> {
+impl Perform<Closing<SpawnChild<Child>>> for Std {
+    fn perform(
+        &mut self,
+        Closing(child, _): Closing<SpawnChild<Child>>,
+    ) -> seam_core::io::Result<()> {
         child.finish()
     }
 }

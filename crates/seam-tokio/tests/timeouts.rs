@@ -12,7 +12,7 @@ use seam_core::ops::net::{Accept, LocalAddr, TcpBind, TcpConnect};
 use seam_core::ops::sync::{Channel, RecvError, RecvMsg, SendError, SendMsg};
 use seam_core::ops::task::{Join, JoinError, JoinNext, Spawn, SpawnInto, SpawnSet};
 use seam_core::ops::time::{Sleep, Timeout};
-use seam_core::{AsyncAcquire, Inspect, Perform};
+use seam_core::{AsyncProvide, Inspect, Perform};
 use seam_tokio::Tokio;
 use seam_tokio::net::{TcpListener, TcpStream};
 use seam_tokio::sync::{Receiver, Sender};

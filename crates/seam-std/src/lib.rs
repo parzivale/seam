@@ -10,8 +10,8 @@
 //! use seam_core::io;
 //! use seam_core::prelude::*;
 //! use seam_core::ops::env::Args;
-//! use seam_core::ops::fs::{Open, ReadOnly, read_to_string};
-//! use seam_core::ops::io::{Read, Write};
+//! use seam_core::ops::fs::{ReadAt, View, read_to_string};
+//! use seam_core::ops::io::Write;
 //! use seam_core::ops::stdio::{OpenStdout, print};
 //! use seam_std::Std;
 //!
@@ -20,8 +20,8 @@
 //! /// arguments, read files and print.
 //! fn count_lines<C, F, O>(c: &mut C) -> io::Result<()>
 //! where
-//!     C: Inspect<Args> + for<'a> Provide<Open<'a, ReadOnly, F>> + Provide<OpenStdout<O>>,
-//!     F: for<'a> Perform<Read<'a>>,
+//!     C: Inspect<Args> + for<'a> Lend<View<'a, F>> + Provide<OpenStdout<O>>,
+//!     F: for<'a> Inspect<ReadAt<'a>>,
 //!     O: for<'a> Perform<Write<'a>>,
 //! {
 //!     let args = c.inspect(Args);
@@ -46,7 +46,7 @@
 //! and no way to get the std value back, so
 //! every effect on them also goes through [`Perform`](seam_core::Perform)
 //! or [`Inspect`](seam_core::Inspect). A core only ever borrows one inside
-//! an [`acquire`](seam_core::Acquire::acquire) scope. When the scope
+//! an [`acquire`](seam_core::Provide::acquire) scope. When the scope
 //! succeeds, a file is flushed and synced, a stream is shut down cleanly,
 //! and `fs::AtomicFile` is renamed into place, and errors are returned;
 //! otherwise they are just closed, and an atomic file's temporary file is

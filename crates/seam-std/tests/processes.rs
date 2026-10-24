@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use seam_core::ops::io::Read;
 use seam_core::ops::process::{ChildId, CloseStdin, Kill, Pipe, SpawnChild, Wait};
 use seam_core::ops::time::Timeout;
-use seam_core::{Acquire, Inspect, Perform};
+use seam_core::{Inspect, Perform, Provide};
 use seam_std::Std;
 use seam_std::process::Child;
 

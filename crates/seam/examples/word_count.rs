@@ -16,8 +16,8 @@
 //! output does not depend on how the threads interleave.
 
 use seam::io;
-use seam::ops::fs::{Open, ReadOnly, read_to_string};
-use seam::ops::io::{Read, Write};
+use seam::ops::fs::{ReadAt, View, read_to_string};
+use seam::ops::io::Write;
 use seam::ops::stdio::{OpenStdout, print};
 
 use seam::ops::env::Args;
@@ -33,16 +33,16 @@ type Counts = Vec<(String, usize)>;
 type Worker = Box<dyn FnOnce() -> io::Result<Counts> + Send>;
 
 /// Takes paths from `queue` until it is empty, counting each file's words.
-fn worker<C, R, Q>(mut c: C, mut queue: Q) -> io::Result<Counts>
+fn worker<C, R, Q>(c: C, mut queue: Q) -> io::Result<Counts>
 where
-    C: for<'a> Provide<Open<'a, ReadOnly, R>>,
-    R: for<'a> Perform<Read<'a>>,
+    C: for<'a> Lend<View<'a, R>>,
+    R: for<'a> Inspect<ReadAt<'a>>,
     Q: for<'a> Perform<Update<'a, Vec<String>, Option<String>>>,
 {
     let mut counts = Vec::new();
     // Popping is one `Update`, so no two workers take the same path.
     while let Some(path) = queue.perform(Update::new(&mut |q: &mut Vec<String>| q.pop())) {
-        let text = read_to_string(&mut c, &path)?;
+        let text = read_to_string(&c, &path)?;
         counts.push((path, text.split_whitespace().count()));
     }
     Ok(counts)
@@ -55,7 +55,7 @@ fn run<C, Q, S, R, O>(c: &mut C) -> io::Result<()>
 where
     C: Inspect<Args>
         + Inspect<AvailableParallelism>
-        + for<'a> Provide<Open<'a, ReadOnly, R>>
+        + for<'a> Lend<View<'a, R>>
         + Provide<OpenStdout<O>>
         + Perform<Share<Vec<String>, Q>>
         + Provide<SpawnSet<S>>
@@ -64,7 +64,7 @@ where
         + 'static,
     Q: for<'a> Perform<Update<'a, Vec<String>, Option<String>>> + Clone + Send + 'static,
     S: Perform<SpawnInto<Worker>> + Perform<JoinNext<io::Result<Counts>>>,
-    R: for<'a> Perform<Read<'a>>,
+    R: for<'a> Inspect<ReadAt<'a>>,
     O: for<'a> Perform<Write<'a>>,
 {
     let paths: Vec<String> = c

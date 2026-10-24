@@ -15,11 +15,12 @@ use std::vec::Vec;
 
 use core::marker::PhantomData;
 use seam_core::ops::fs::{
-    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Mode, NextEntry, Open,
-    ReadDir, Readable, RemoveDir, RemoveFile, Rename, SetLen, Stat, SyncAll, SyncData, Writable,
+    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Mode, NextEntry, Open, ReadAt,
+    ReadDir, Readable, RemoveDir, RemoveFile, Rename, SetLen, Stat, SyncAll, SyncData, View,
+    Writable,
 };
 use seam_core::ops::io::{Flush, Read, Seek, SeekFrom, Write};
-use seam_core::{Inspect, Perform, Provide, Token};
+use seam_core::{Closing, Inspect, Opening, Perform};
 
 use crate::world::{Shared, World};
 use crate::{Sim, error};
@@ -279,8 +280,8 @@ impl Inspect<Metadata<'_>> for Sim {
 #[derive(Debug)]
 pub struct Dir(std::vec::IntoIter<PathBuf>);
 
-impl Provide<ReadDir<'_, Dir>> for Sim {
-    fn provide(&mut self, op: ReadDir<'_, Dir>, _: Token) -> io::Result<Dir> {
+impl Inspect<Opening<ReadDir<'_, Dir>>> for Sim {
+    fn inspect(&self, Opening(op, _): Opening<ReadDir<'_, Dir>>) -> io::Result<Dir> {
         let paths: Vec<PathBuf> = self.fs_op(op.path, |w, key| {
             w.fs.require_dir(&key)?;
             Ok(w.fs
@@ -291,8 +292,10 @@ impl Provide<ReadDir<'_, Dir>> for Sim {
         })?;
         Ok(Dir(paths.into_iter()))
     }
+}
 
-    fn close(&mut self, _: Dir) -> io::Result<()> {
+impl Inspect<Closing<ReadDir<'_, Dir>>> for Sim {
+    fn inspect(&self, Closing(_, _): Closing<ReadDir<'_, Dir>>) -> io::Result<()> {
         Ok(())
     }
 }
@@ -409,13 +412,8 @@ impl Perform<CopyFile<'_>> for Sim {
     }
 }
 
-/// Writes land immediately, so closing has nothing left to do.
-impl<M: Mode> Provide<Open<'_, M, File<M>>> for Sim {
-    fn close(&mut self, _: File<M>) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn provide(&mut self, op: Open<'_, M, File<M>>, _: Token) -> io::Result<File<M>> {
+impl<M: Mode> Perform<Opening<Open<'_, M, File<M>>>> for Sim {
+    fn perform(&mut self, Opening(op, _): Opening<Open<'_, M, File<M>>>) -> io::Result<File<M>> {
         let o = op.options;
         if (o.truncate || o.create || o.create_new) && !M::WRITE {
             return Err(error(ErrorKind::InvalidInput, "invalid open options"));
@@ -454,6 +452,13 @@ impl<M: Mode> Provide<Open<'_, M, File<M>>> for Sim {
     }
 }
 
+/// Writes land immediately, so closing has nothing left to do.
+impl<M: Mode> Perform<Closing<Open<'_, M, File<M>>>> for Sim {
+    fn perform(&mut self, Closing(_, _): Closing<Open<'_, M, File<M>>>) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// An open in-memory file in mode `M`, acquired with [`Open`]. It performs
 /// `Read` if `M` is readable, and `Write`, `Flush`, `SetLen`, `SyncAll` and
 /// `SyncData` if `M` is writable; `Seek` and `Stat` in any mode.
@@ -481,6 +486,51 @@ file_ops! {
 }
 
 impl<M> Inspect<Stat> for File<M> {
+    fn inspect(&self, op: Stat) -> io::Result<FileInfo> {
+        self.0.inspect(op)
+    }
+}
+
+/// An in-memory regular file open to read at offsets, lent with [`View`].
+/// It inspects [`ReadAt`] and [`Stat`].
+#[derive(Debug)]
+pub struct FileView(RawFile);
+
+impl Inspect<Opening<View<'_, FileView>>> for Sim {
+    fn inspect(&self, Opening(op, _): Opening<View<'_, FileView>>) -> io::Result<FileView> {
+        let inode = self.fs_op(op.path, |w, key| w.fs.file(&key))?;
+        Ok(FileView(RawFile {
+            world: self.world.clone(),
+            inode,
+            pos: 0,
+            read: true,
+            write: false,
+            append: false,
+        }))
+    }
+}
+
+impl Inspect<Closing<View<'_, FileView>>> for Sim {
+    fn inspect(&self, _: Closing<View<'_, FileView>>) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Inspect<ReadAt<'_>> for FileView {
+    fn inspect(&self, op: ReadAt<'_>) -> io::Result<usize> {
+        let world = self.0.world.lock();
+        let bytes = &world.fs.inodes[self.0.inode].bytes;
+        let rest = usize::try_from(op.offset)
+            .ok()
+            .and_then(|at| bytes.get(at..))
+            .unwrap_or_default();
+        let n = rest.len().min(op.buf.len());
+        op.buf[..n].copy_from_slice(&rest[..n]);
+        Ok(n)
+    }
+}
+
+impl Inspect<Stat> for FileView {
     fn inspect(&self, op: Stat) -> io::Result<FileInfo> {
         self.0.inspect(op)
     }
@@ -638,12 +688,11 @@ pub struct AtomicFile {
     committed: bool,
 }
 
-impl Provide<CreateAtomic<'_, AtomicFile>> for Sim {
-    fn close(&mut self, file: AtomicFile) -> io::Result<()> {
-        file.commit()
-    }
-
-    fn provide(&mut self, op: CreateAtomic<'_, AtomicFile>, _: Token) -> io::Result<AtomicFile> {
+impl Perform<Opening<CreateAtomic<'_, AtomicFile>>> for Sim {
+    fn perform(
+        &mut self,
+        Opening(op, _): Opening<CreateAtomic<'_, AtomicFile>>,
+    ) -> io::Result<AtomicFile> {
         let (temp, target, inode) = self.fs_op(op.path, |w, target| {
             let Some(name) = target.last() else {
                 return Err(error(ErrorKind::IsADirectory, "is a directory"));
@@ -676,6 +725,15 @@ impl Provide<CreateAtomic<'_, AtomicFile>> for Sim {
             target,
             committed: false,
         })
+    }
+}
+
+impl Perform<Closing<CreateAtomic<'_, AtomicFile>>> for Sim {
+    fn perform(
+        &mut self,
+        Closing(file, _): Closing<CreateAtomic<'_, AtomicFile>>,
+    ) -> io::Result<()> {
+        file.commit()
     }
 }
 
@@ -740,4 +798,5 @@ impl Inspect<Stat> for AtomicFile {
 // Every capability type opts in to seam's lifts.
 impl seam_core::Capability for AtomicFile {}
 impl<M> seam_core::Capability for File<M> {}
+impl seam_core::Capability for FileView {}
 impl seam_core::Capability for Dir {}

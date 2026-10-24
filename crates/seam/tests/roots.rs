@@ -3,6 +3,7 @@
 #![cfg(all(feature = "std", feature = "tokio", feature = "test", feature = "full"))]
 
 use seam::io;
+use seam::ops::fs::{ReadAt, View};
 use seam::ops::fs::{read_to_string_send, write_file_send};
 use seam::ops::io::write_all;
 use seam::ops::random::random_u64;
@@ -12,8 +13,8 @@ use std::time::Duration;
 use seam::kinds;
 use seam::ops::env::Var;
 use seam::ops::fs::CreateAtomic;
-use seam::ops::fs::{Open, ReadOnly, WriteOnly};
-use seam::ops::io::{Read, Write};
+use seam::ops::fs::{Open, WriteOnly};
+use seam::ops::io::Write;
 use seam::ops::sync::{Channel, RecvMsg, SendMsg};
 use seam::ops::task::{Join, JoinError, Spawn};
 use seam::ops::time::{Now, Sleep};
@@ -82,12 +83,13 @@ where
 async fn save<C, W, R>(c: &mut C, path: &str) -> io::Result<String>
 where
     C: SendPerform<Sleep>
-        + for<'a> AsyncProvide<Open<'a, WriteOnly, W>>
-        + for<'a> AsyncProvide<Open<'a, ReadOnly, R>>
+        + for<'a> SendProvide<Open<'a, WriteOnly, W>>
+        + for<'a> SendLend<View<'a, R>>
         + Inspect<Now>
-        + Send,
+        + Send
+        + Sync,
     W: for<'a> SendPerform<Write<'a>> + Send,
-    R: for<'a> SendPerform<Read<'a>> + Send,
+    R: for<'a> SendInspect<ReadAt<'a>> + Sync,
 {
     let before = c.inspect(Now);
     c.perform_send(Sleep(Duration::from_millis(5))).await;

@@ -26,7 +26,7 @@
 //! ```
 //! use seam_core::io;
 //! use std::process::Command;
-//! use seam_core::{Acquire, Perform, Provide};
+//! use seam_core::{Perform, Provide};
 //! use seam_core::ops::io::{Read, Write, read_to_end, write_all};
 //! use seam_core::ops::process::{CloseStdin, SpawnChild, Wait};
 //!

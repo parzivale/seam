@@ -29,7 +29,7 @@ use seam_core::ops::process::{
     ChildId, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, RunCommand, SpawnChild,
     Wait,
 };
-use seam_core::{Inspect, Perform, Provide, Token};
+use seam_core::{Closing, Inspect, Opening, Perform};
 
 use crate::{Sim, error};
 
@@ -130,7 +130,7 @@ impl Sim {
     /// use std::process::Command;
     /// use seam_core::ops::io::{read_to_end, write_all};
     /// use seam_core::ops::process::{CloseStdin, Output, SpawnChild};
-    /// use seam_core::{Acquire, Perform};
+    /// use seam_core::{Provide, Perform};
     /// use seam_test::Sim;
     /// use seam_test::process::Child;
     ///
@@ -405,8 +405,8 @@ impl Sim {
     }
 }
 
-impl Provide<SpawnChild<Child>> for Sim {
-    fn provide(&mut self, op: SpawnChild<Child>, _: Token) -> io::Result<Child> {
+impl Perform<Opening<SpawnChild<Child>>> for Sim {
+    fn perform(&mut self, Opening(op, _): Opening<SpawnChild<Child>>) -> io::Result<Child> {
         let (entry, given) = self.record(&op.command)?;
         let mut child = Child {
             handlers: self.process.handlers.clone(),
@@ -427,9 +427,11 @@ impl Provide<SpawnChild<Child>> for Sim {
         }
         Ok(child)
     }
+}
 
-    /// Runs the child if it has not run, and prints what it inherited.
-    fn close(&mut self, mut child: Child) -> io::Result<()> {
+/// Runs the child if it has not run, and prints what it inherited.
+impl Perform<Closing<SpawnChild<Child>>> for Sim {
+    fn perform(&mut self, Closing(mut child, _): Closing<SpawnChild<Child>>) -> io::Result<()> {
         child.run();
         let inherited = child.take_inherited();
         self.deliver(inherited);

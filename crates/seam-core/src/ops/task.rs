@@ -7,7 +7,7 @@
 //! cannot be aborted, so on `seam-std` a scope that fails waits for its
 //! threads instead, and handles do not implement [`Abort`]. When the scope succeeds,
 //! closing the handle waits for the task; when it fails, panics or is
-//! cancelled, abandoning it aborts the task. So a task cannot outlive the
+//! cancelled, dropping it aborts the task. So a task cannot outlive the
 //! code that spawned it by accident. Perform [`Detach`] on the handle for a
 //! task that should keep running on its own.
 //!
@@ -74,7 +74,7 @@ use core::future::Future;
 use core::marker::PhantomData;
 
 /// Spawn one task, providing a handle of type `H` for the length of a
-/// scope. Closing the handle waits for the task; abandoning it aborts it,
+/// scope. Closing the handle waits for the task; dropping it aborts it,
 /// or, on backends that cannot abort (threads), waits for it.
 ///
 /// The task `F` is whatever the backend runs: a future on async backends
@@ -90,7 +90,7 @@ pub struct Spawn<F, H> {
 /// [`JoinNext`] to collect their outputs as they finish.
 ///
 /// Closing the set waits for every task still in it and reports the first
-/// failure; abandoning it aborts them all. Storing the tasks is the
+/// failure; dropping it aborts them all. Storing the tasks is the
 /// backend's business: seam itself allocates nothing.
 pub struct SpawnSet<S> {
     set: PhantomData<fn() -> S>,
@@ -119,7 +119,7 @@ pub struct JoinNext<T> {
 /// anywhere, since it only ever borrows one, so the provider acquires it on
 /// the task's behalf: for example, a listener accepts a connection and
 /// spawns `body` with the stream. Inside the task, the resource is closed
-/// when `body` returns `Ok` and abandoned otherwise.
+/// when `body` returns `Ok` and dropped otherwise.
 ///
 /// `body` is a [`TaskBody`]: a named type, so that a bound can name it, and
 /// nothing is boxed. With `alloc`, `SpawnWith::boxed` takes a closure
@@ -170,7 +170,7 @@ pub trait TaskBody<R>: Send + 'static {
     type Error: Send + 'static;
 
     /// Runs the task. The resource is closed if this returns `Ok`, and
-    /// abandoned otherwise.
+    /// dropped otherwise.
     fn run(
         self,
         resource: &mut R,

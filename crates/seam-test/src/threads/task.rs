@@ -9,7 +9,7 @@ use std::task::Waker;
 use seam_core::ops::task::{
     Detach, IsFinished, Join, JoinError, JoinNext, Spawn, SpawnInto, SpawnSet, YieldNow,
 };
-use seam_core::{Inspect, Perform, Provide, Rejected, Token};
+use seam_core::{Closing, Inspect, Opening, Perform, Rejected};
 
 use super::{Halted, Shared, ThreadSim, lock};
 
@@ -138,20 +138,28 @@ impl<T> Drop for JoinHandle<T> {
     }
 }
 
-impl<T, F> Provide<Spawn<F, JoinHandle<T>>> for ThreadSim
+impl<T, F> Perform<Opening<Spawn<F, JoinHandle<T>>>> for ThreadSim
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    fn provide(
+    fn perform(
         &mut self,
-        op: Spawn<F, JoinHandle<T>>,
-        _: Token,
+        Opening(op, _): Opening<Spawn<F, JoinHandle<T>>>,
     ) -> Result<JoinHandle<T>, JoinError> {
         Ok(spawn(&self.shared, op.task, None))
     }
+}
 
-    fn close(&mut self, thread: JoinHandle<T>) -> Result<(), JoinError> {
+impl<T, F> Perform<Closing<Spawn<F, JoinHandle<T>>>> for ThreadSim
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    fn perform(
+        &mut self,
+        Closing(thread, _): Closing<Spawn<F, JoinHandle<T>>>,
+    ) -> Result<(), JoinError> {
         thread.finish()
     }
 }
@@ -198,8 +206,11 @@ impl<T> core::fmt::Debug for ThreadSet<T> {
     }
 }
 
-impl<T: Send + 'static> Provide<SpawnSet<ThreadSet<T>>> for ThreadSim {
-    fn provide(&mut self, _: SpawnSet<ThreadSet<T>>, _: Token) -> Result<ThreadSet<T>, JoinError> {
+impl<T: Send + 'static> Perform<Opening<SpawnSet<ThreadSet<T>>>> for ThreadSim {
+    fn perform(
+        &mut self,
+        Opening(_, _): Opening<SpawnSet<ThreadSet<T>>>,
+    ) -> Result<ThreadSet<T>, JoinError> {
         Ok(ThreadSet {
             threads: BTreeMap::new(),
             next: 0,
@@ -210,8 +221,13 @@ impl<T: Send + 'static> Provide<SpawnSet<ThreadSet<T>>> for ThreadSim {
             shared: Arc::clone(&self.shared),
         })
     }
+}
 
-    fn close(&mut self, mut set: ThreadSet<T>) -> Result<(), JoinError> {
+impl<T: Send + 'static> Perform<Closing<SpawnSet<ThreadSet<T>>>> for ThreadSim {
+    fn perform(
+        &mut self,
+        Closing(mut set, _): Closing<SpawnSet<ThreadSet<T>>>,
+    ) -> Result<(), JoinError> {
         let mut first = Ok(());
         while let Some(result) = set.join_next() {
             if let (Ok(()), Err(e)) = (&first, result) {

@@ -1,15 +1,16 @@
-//! Filesystem operations, and the [`File`], [`AtomicFile`] and [`Dir`]
-//! handles.
+//! Filesystem operations, and the [`File`], [`FileView`], [`AtomicFile`]
+//! and [`Dir`] handles.
 
 use core::marker::PhantomData;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use seam_core::ops::fs::{
-    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Mode, NextEntry, Open,
-    ReadDir, Readable, RemoveDir, RemoveFile, Rename, SetLen, Stat, SyncAll, SyncData, Writable,
+    CopyFile, CreateAtomic, CreateDir, FileInfo, FileKind, Metadata, Mode, NextEntry, Open, ReadAt,
+    ReadDir, Readable, RemoveDir, RemoveFile, Rename, SetLen, Stat, SyncAll, SyncData, View,
+    Writable,
 };
-use seam_core::{Inspect, Perform, Provide, Token};
+use seam_core::{Closing, Inspect, Opening, Perform};
 
 use crate::Std;
 
@@ -144,8 +145,11 @@ fn temp_path(target: &Path) -> PathBuf {
     target.with_file_name(format!(".{name}.seam-{salt:016x}.tmp"))
 }
 
-impl<M: Mode> Provide<Open<'_, M, File<M>>> for Std {
-    fn provide(&mut self, op: Open<'_, M, File<M>>, _: Token) -> seam_core::io::Result<File<M>> {
+impl<M: Mode> Perform<Opening<Open<'_, M, File<M>>>> for Std {
+    fn perform(
+        &mut self,
+        Opening(op, _): Opening<Open<'_, M, File<M>>>,
+    ) -> seam_core::io::Result<File<M>> {
         let o = op.options;
         crate::sio(
             std::fs::OpenOptions::new()
@@ -159,21 +163,21 @@ impl<M: Mode> Provide<Open<'_, M, File<M>>> for Std {
                 .map(|f| File(f, PhantomData)),
         )
     }
+}
 
-    fn close(&mut self, file: File<M>) -> seam_core::io::Result<()> {
+impl<M: Mode> Perform<Closing<Open<'_, M, File<M>>>> for Std {
+    fn perform(
+        &mut self,
+        Closing(file, _): Closing<Open<'_, M, File<M>>>,
+    ) -> seam_core::io::Result<()> {
         file.commit()
     }
 }
 
-impl Provide<CreateAtomic<'_, AtomicFile>> for Std {
-    fn close(&mut self, file: AtomicFile) -> seam_core::io::Result<()> {
-        file.commit()
-    }
-
-    fn provide(
+impl Perform<Opening<CreateAtomic<'_, AtomicFile>>> for Std {
+    fn perform(
         &mut self,
-        op: CreateAtomic<'_, AtomicFile>,
-        _: Token,
+        Opening(op, _): Opening<CreateAtomic<'_, AtomicFile>>,
     ) -> seam_core::io::Result<AtomicFile> {
         let temp = temp_path(op.path);
         let file = std::fs::OpenOptions::new()
@@ -191,6 +195,82 @@ impl Provide<CreateAtomic<'_, AtomicFile>> for Std {
     }
 }
 
+impl Perform<Closing<CreateAtomic<'_, AtomicFile>>> for Std {
+    fn perform(
+        &mut self,
+        Closing(file, _): Closing<CreateAtomic<'_, AtomicFile>>,
+    ) -> seam_core::io::Result<()> {
+        file.commit()
+    }
+}
+
+/// A regular file open to read at offsets, lent with [`View`]. It inspects
+/// [`ReadAt`] and [`Stat`].
+#[derive(Debug)]
+pub struct FileView(std::fs::File);
+
+/// Opens `path` to read, failing unless it is a regular file. Opening a
+/// FIFO waits for a writer, so the path is checked before opening it, and
+/// the file again after, in case the path was replaced in between.
+fn open_view(path: &Path) -> io::Result<std::fs::File> {
+    let check = |m: std::fs::Metadata| match () {
+        _ if m.is_file() => Ok(()),
+        _ if m.is_dir() => Err(io::Error::new(
+            io::ErrorKind::IsADirectory,
+            "is a directory",
+        )),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        )),
+    };
+    check(std::fs::metadata(path)?)?;
+    let file = std::fs::File::open(path)?;
+    check(file.metadata()?)?;
+    Ok(file)
+}
+
+/// Reads at `offset` without moving the cursor (Unix), or moving one no
+/// handle in seam uses (Windows).
+fn read_at(file: &std::fs::File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+    #[cfg(unix)]
+    return std::os::unix::fs::FileExt::read_at(file, buf, offset);
+    #[cfg(windows)]
+    return std::os::windows::fs::FileExt::seek_read(file, buf, offset);
+    #[cfg(not(any(unix, windows)))]
+    return Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "no positional reads here",
+    ));
+}
+
+impl Inspect<Opening<View<'_, FileView>>> for Std {
+    fn inspect(
+        &self,
+        Opening(op, _): Opening<View<'_, FileView>>,
+    ) -> seam_core::io::Result<FileView> {
+        crate::sio(open_view(op.path).map(FileView))
+    }
+}
+
+impl Inspect<Closing<View<'_, FileView>>> for Std {
+    fn inspect(&self, _: Closing<View<'_, FileView>>) -> seam_core::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Inspect<ReadAt<'_>> for FileView {
+    fn inspect(&self, op: ReadAt<'_>) -> seam_core::io::Result<usize> {
+        crate::sio(read_at(&self.0, op.buf, op.offset))
+    }
+}
+
+impl Inspect<Stat> for FileView {
+    fn inspect(&self, _: Stat) -> seam_core::io::Result<FileInfo> {
+        crate::sio(self.0.metadata().map(file_info))
+    }
+}
+
 impl Inspect<Metadata<'_>> for Std {
     fn inspect(&self, op: Metadata<'_>) -> seam_core::io::Result<FileInfo> {
         crate::sio(std::fs::metadata(op.path).map(file_info))
@@ -202,12 +282,14 @@ impl Inspect<Metadata<'_>> for Std {
 #[derive(Debug)]
 pub struct Dir(std::fs::ReadDir);
 
-impl Provide<ReadDir<'_, Dir>> for Std {
-    fn provide(&mut self, op: ReadDir<'_, Dir>, _: Token) -> seam_core::io::Result<Dir> {
+impl Inspect<Opening<ReadDir<'_, Dir>>> for Std {
+    fn inspect(&self, Opening(op, _): Opening<ReadDir<'_, Dir>>) -> seam_core::io::Result<Dir> {
         crate::sio(std::fs::read_dir(op.path).map(Dir))
     }
+}
 
-    fn close(&mut self, _: Dir) -> seam_core::io::Result<()> {
+impl Inspect<Closing<ReadDir<'_, Dir>>> for Std {
+    fn inspect(&self, Closing(_, _): Closing<ReadDir<'_, Dir>>) -> seam_core::io::Result<()> {
         Ok(())
     }
 }
@@ -275,3 +357,4 @@ fn file_info(m: std::fs::Metadata) -> FileInfo {
 impl seam_core::Capability for AtomicFile {}
 impl seam_core::Capability for Dir {}
 impl<M> seam_core::Capability for File<M> {}
+impl seam_core::Capability for FileView {}

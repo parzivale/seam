@@ -2,6 +2,7 @@
 #![cfg(feature = "full")]
 
 use seam_core::io;
+use seam_core::ops::fs::{ReadAt, View};
 use seam_core::ops::fs::{create_dir_all_send, read_file_send, write_file_send};
 use seam_core::ops::io::{Read, Write, read_exact_send, read_to_end_send, write_all_send};
 use std::future::{Future, poll_fn};
@@ -20,7 +21,7 @@ use seam_core::ops::fs::{
 use seam_core::ops::io::{Seek, SeekFrom};
 use seam_core::ops::net::{Accept, LocalAddr, ResolveInto, TcpBind, TcpConnect};
 use seam_core::ops::time::{Now, Sleep};
-use seam_core::{AsyncAcquire, AsyncProvide, Inspect};
+use seam_core::{AsyncProvide, Inspect, SendLend, SendProvide, SendScope};
 use seam_tokio::Tokio;
 use seam_tokio::fs::AtomicFile;
 use seam_tokio::net::{TcpListener, TcpStream};
@@ -29,10 +30,8 @@ use seam_tokio::net::{TcpListener, TcpStream};
 /// Generic, so it runs on any backend.
 async fn edit_in_place<C, F, R>(c: &mut C, path: &std::path::Path) -> io::Result<()>
 where
-    C: for<'a> AsyncProvide<Open<'a, ReadWrite, F>>
-        + for<'a> AsyncProvide<Open<'a, ReadOnly, R>>
-        + Send,
-    R: for<'a> SendPerform<Read<'a>> + Send,
+    C: for<'a> SendProvide<Open<'a, ReadWrite, F>> + for<'a> SendLend<View<'a, R>> + Send + Sync,
+    R: for<'a> SendInspect<ReadAt<'a>> + Sync,
     F: SendPerform<Seek>
         + for<'a> SendPerform<Write<'a>>
         + for<'a> SendPerform<Read<'a>>
@@ -47,7 +46,7 @@ where
         truncate: true,
         ..OpenOptions::default()
     };
-    c.acquire_async(Open::<ReadWrite, F>::new(path, options), async |_, f| {
+    c.acquire_send(Open::<ReadWrite, F>::new(path, options), async |_, f| {
         write_all_send(f, b"hello world").await?;
         assert_eq!(f.perform_send(Seek(SeekFrom::Start(6))).await?, 6);
         let mut word = [0; 5];
@@ -107,16 +106,16 @@ async fn scratch_dir(tokio: &mut Tokio, name: &str) -> io::Result<PathBuf> {
 /// A core written only against capability bounds.
 async fn copy_file<C, R, W>(c: &mut C, from: PathBuf, to: PathBuf) -> io::Result<()>
 where
-    C: for<'a> AsyncProvide<Open<'a, ReadOnly, R>>
-        + for<'a> AsyncProvide<Open<'a, WriteOnly, W>>
+    C: for<'a> SendProvide<Open<'a, ReadOnly, R>>
+        + for<'a> SendProvide<Open<'a, WriteOnly, W>>
         + Send,
     R: for<'a> SendPerform<Read<'a>> + Send,
     W: for<'a> SendPerform<Write<'a>> + Send,
 {
-    c.acquire_async(Open::read(&from), async |c, src| {
+    c.acquire_send(Open::read(&from), async |c, src| {
         let mut bytes = Vec::new();
         read_to_end_send(src, &mut bytes).await?;
-        c.acquire_async(Open::create(&to), async |_, dst| {
+        c.acquire_send(Open::create(&to), async |_, dst| {
             write_all_send(dst, &bytes).await
         })
         .await
@@ -129,8 +128,8 @@ where
 #[allow(dead_code)]
 fn copy_file_is_send<C, R, W>(c: &mut C)
 where
-    C: for<'a> AsyncProvide<Open<'a, ReadOnly, R>>
-        + for<'a> AsyncProvide<Open<'a, WriteOnly, W>>
+    C: for<'a> SendProvide<Open<'a, ReadOnly, R>>
+        + for<'a> SendProvide<Open<'a, WriteOnly, W>>
         + Send,
     R: for<'a> SendPerform<Read<'a>> + Send,
     W: for<'a> SendPerform<Write<'a>> + Send,
@@ -149,7 +148,7 @@ async fn spawned_core_on_multithreaded_runtime() -> io::Result<()> {
     let copied = tokio::spawn(async move {
         let mut tokio = Tokio::new();
         copy_file(&mut tokio, a, b.clone()).await?;
-        read_file_send(&mut tokio, &b).await
+        read_file_send(&tokio, &b).await
     });
     assert_eq!(copied.await.unwrap()?, b"hello");
     tokio.perform_send(RemoveDir::all(&dir)).await
@@ -288,7 +287,7 @@ async fn atomic_file_listing_is_clean_after_success() -> io::Result<()> {
             write_all_send(f, b"new").await
         })
         .await?;
-    assert_eq!(read_file_send(&mut tokio, &path).await?, b"new");
+    assert_eq!(read_file_send(&tokio, &path).await?, b"new");
     assert_eq!(list(&mut tokio, &dir).await?, std::slice::from_ref(&path));
     tokio.perform_send(RemoveDir::all(&dir)).await
 }

@@ -12,7 +12,7 @@ use std::vec::Vec;
 use seam_core::ops::task::{
     Abort, Detach, IsFinished, Join, JoinError, JoinNext, Spawn, SpawnInto, SpawnSet, YieldNow,
 };
-use seam_core::{AsyncProvide, Inspect, Perform, Rejected, Token};
+use seam_core::{Closing, Inspect, Opening, Perform, Rejected};
 
 use super::{AsyncSim, Shared, TaskId, async_op, lock};
 
@@ -169,23 +169,20 @@ impl<T> core::fmt::Debug for JoinHandle<T> {
     }
 }
 
-impl<F> AsyncProvide<Spawn<F, JoinHandle<F::Output>>> for AsyncSim
-where
-    F: Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    async fn provide_async(
-        &mut self,
-        op: Spawn<F, JoinHandle<F::Output>>,
-        _: Token,
-    ) -> Result<JoinHandle<F::Output>, JoinError> {
-        Ok(JoinHandle::spawn(&self.shared, op.task))
-    }
-
-    async fn close_async(&mut self, task: JoinHandle<F::Output>) -> Result<(), JoinError> {
+async_op!(
+    [F] AsyncSim, Opening<Spawn<F, JoinHandle<F::Output>>>,
+    |s, Opening(op, _)| {
+        Ok(JoinHandle::spawn(&s.shared, op.task))
+    },
+    where F: Future + Send + 'static, F::Output: Send + 'static
+);
+async_op!(
+    [F] AsyncSim, Closing<Spawn<F, JoinHandle<F::Output>>>,
+    |_s, Closing(task, _)| {
         task.finish().await
-    }
-}
+    },
+    where F: Future + Send + 'static, F::Output: Send + 'static
+);
 
 async_op!([T: Send] JoinHandle<T>, Join<T>, |s, _op| s.join().await);
 
@@ -257,28 +254,21 @@ impl<T> core::fmt::Debug for TaskSet<T> {
     }
 }
 
-impl<T: Send + 'static> AsyncProvide<SpawnSet<TaskSet<T>>> for AsyncSim {
-    async fn provide_async(
-        &mut self,
-        _: SpawnSet<TaskSet<T>>,
-        _: Token,
-    ) -> Result<TaskSet<T>, JoinError> {
-        Ok(TaskSet {
-            shared: Arc::clone(&self.shared),
-            tasks: Vec::new(),
-        })
-    }
-
-    async fn close_async(&mut self, mut set: TaskSet<T>) -> Result<(), JoinError> {
-        let mut first = Ok(());
-        while let Some(result) = set.join_next().await {
-            if let (Ok(()), Err(e)) = (&first, result) {
-                first = Err(e);
-            }
+async_op!([T: Send + 'static] AsyncSim, Opening<SpawnSet<TaskSet<T>>>, |s, Opening(_, _)| {
+    Ok(TaskSet {
+        shared: Arc::clone(&s.shared),
+        tasks: Vec::new(),
+    })
+});
+async_op!([T: Send + 'static] AsyncSim, Closing<SpawnSet<TaskSet<T>>>, |_s, Closing(mut set, _)| {
+    let mut first = Ok(());
+    while let Some(result) = set.join_next().await {
+        if let (Ok(()), Err(e)) = (&first, result) {
+            first = Err(e);
         }
-        first
     }
-}
+    first
+});
 
 /// Never full.
 impl<T, F> Perform<SpawnInto<F>> for TaskSet<T>

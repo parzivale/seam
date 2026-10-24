@@ -2,6 +2,7 @@
 #![cfg(feature = "full")]
 
 use seam_core::io;
+use seam_core::ops::fs::{ReadAt, View};
 use seam_core::ops::fs::{create_dir_all, read_file, sweep_atomic, write_file};
 use seam_core::ops::io::{Write, read_exact, read_to_end, write_all};
 use seam_core::ops::sync::{store, try_send};
@@ -18,7 +19,7 @@ use seam_core::ops::io::{Seek, SeekFrom};
 use seam_core::ops::net::{Accept, LocalAddr, ResolveInto, TcpBind, TcpConnect};
 use seam_core::ops::random::FillRandom;
 use seam_core::ops::time::Now;
-use seam_core::{Acquire, Inspect, Perform, Provide};
+use seam_core::{Inspect, Lend, Perform, Provide};
 use seam_std::Std;
 use seam_std::fs::AtomicFile;
 
@@ -26,8 +27,8 @@ use seam_std::fs::AtomicFile;
 /// Generic, so it runs on any backend.
 fn edit_in_place<C, F, R>(c: &mut C, path: &std::path::Path) -> io::Result<()>
 where
-    C: for<'a> Provide<Open<'a, ReadWrite, F>> + for<'a> Provide<Open<'a, ReadOnly, R>>,
-    R: for<'a> Perform<Read<'a>>,
+    C: for<'a> Provide<Open<'a, ReadWrite, F>> + for<'a> Lend<View<'a, R>>,
+    R: for<'a> Inspect<ReadAt<'a>>,
     F: Perform<Seek>
         + for<'a> Perform<Write<'a>>
         + for<'a> Perform<Read<'a>>
@@ -76,7 +77,7 @@ where
     C: for<'a> seam_core::Provide<ReadDir<'a, D>>,
     D: seam_core::Perform<NextEntry>,
 {
-    seam_core::Acquire::acquire(c, ReadDir::new(dir.as_ref()), |_, entries| {
+    seam_core::Provide::acquire(c, ReadDir::new(dir.as_ref()), |_, entries| {
         let mut paths = Vec::new();
         while let Some(path) = seam_core::Perform::perform(entries, NextEntry)? {
             paths.push(path);
@@ -116,7 +117,7 @@ fn filesystem_roundtrip() -> io::Result<()> {
     write_file(&mut std, &a, "hello")?;
     copy_through_handle(&mut std, &a, &b)?;
 
-    assert_eq!(read_file(&mut std, &b)?, b"hello");
+    assert_eq!(read_file(&std, &b)?, b"hello");
     let mut listed = list(&mut std, &dir)?;
     listed.sort();
     assert_eq!(listed, [a, b]);
@@ -188,7 +189,7 @@ mod atomic {
         write_file(&mut std, &path, "old")?;
 
         assert!(replace(&mut std, &path, true).is_err());
-        assert_eq!(read_file(&mut std, &path)?, b"old");
+        assert_eq!(read_file(&std, &path)?, b"old");
 
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut std = Std::new();
@@ -201,7 +202,7 @@ mod atomic {
             )
         }));
         assert!(panicked.is_err());
-        assert_eq!(read_file(&mut std, &path)?, b"old");
+        assert_eq!(read_file(&std, &path)?, b"old");
         assert_eq!(
             list(&mut std, &dir)?,
             std::slice::from_ref(&path),
@@ -209,7 +210,7 @@ mod atomic {
         );
 
         replace(&mut std, &path, false)?;
-        assert_eq!(read_file(&mut std, &path)?, b"new");
+        assert_eq!(read_file(&std, &path)?, b"new");
         assert_eq!(list(&mut std, &dir)?, std::slice::from_ref(&path));
         std.perform(RemoveDir::all(&dir))
     }

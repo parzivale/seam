@@ -7,6 +7,7 @@
 #![allow(clippy::disallowed_types)] // a listener keeps the runtime, to spawn tasks
 
 use core::future::poll_fn;
+use core::marker::PhantomData;
 use core::net::SocketAddr;
 use core::task::Poll;
 use seam_core::io;
@@ -17,7 +18,7 @@ use seam_core::ops::net::{
     Accept, LocalAddr, PeerAddr, RecvFrom, SendTo, Shutdown, TcpBind, TcpConnect, UdpBind,
 };
 use seam_core::ops::task::{SpawnWith, TaskBody};
-use seam_core::{AsyncProvide, Inspect, Perform, Provide, Token};
+use seam_core::{Closing, Inspect, Opening, Perform};
 
 use super::{AsyncSim, JoinHandle, Shared, async_op};
 use crate::net as sim;
@@ -74,53 +75,68 @@ impl TcpStream {
     }
 }
 
-impl Provide<TcpBind<TcpListener>> for AsyncSim {
-    fn provide(&mut self, op: TcpBind<TcpListener>, token: Token) -> io::Result<TcpListener> {
-        Provide::provide(
+impl Perform<Opening<TcpBind<TcpListener>>> for AsyncSim {
+    fn perform(
+        &mut self,
+        Opening(op, token): Opening<TcpBind<TcpListener>>,
+    ) -> io::Result<TcpListener> {
+        Perform::perform(
             &mut *self.shared.sim(),
-            TcpBind::<sim::TcpListener>::new(op.addr),
-            token,
+            Opening(TcpBind::<sim::TcpListener>::new(op.addr), token),
         )
         .map(|l| TcpListener(l, Arc::clone(&self.shared)))
     }
+}
 
-    fn close(&mut self, listener: TcpListener) -> io::Result<()> {
-        Provide::<TcpBind<sim::TcpListener>>::close(&mut *self.shared.sim(), listener.0)
+impl Perform<Closing<TcpBind<TcpListener>>> for AsyncSim {
+    fn perform(&mut self, Closing(listener, _): Closing<TcpBind<TcpListener>>) -> io::Result<()> {
+        Perform::perform(
+            &mut *self.shared.sim(),
+            Closing::<TcpBind<sim::TcpListener>>(listener.0, PhantomData),
+        )
     }
 }
 
-impl Provide<TcpConnect<TcpStream>> for AsyncSim {
-    fn provide(&mut self, op: TcpConnect<TcpStream>, token: Token) -> io::Result<TcpStream> {
-        Provide::provide(
+impl Perform<Opening<TcpConnect<TcpStream>>> for AsyncSim {
+    fn perform(
+        &mut self,
+        Opening(op, token): Opening<TcpConnect<TcpStream>>,
+    ) -> io::Result<TcpStream> {
+        Perform::perform(
             &mut *self.shared.sim(),
-            TcpConnect::<sim::TcpStream>::new(op.addr),
-            token,
+            Opening(TcpConnect::<sim::TcpStream>::new(op.addr), token),
         )
         .map(|s| TcpStream(s, Arc::clone(&self.shared)))
     }
+}
 
-    fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+impl Perform<Closing<TcpConnect<TcpStream>>> for AsyncSim {
+    fn perform(&mut self, Closing(stream, _): Closing<TcpConnect<TcpStream>>) -> io::Result<()> {
         stream.0.commit()
     }
 }
 
-impl Provide<UdpBind<UdpSocket>> for AsyncSim {
-    fn provide(&mut self, op: UdpBind<UdpSocket>, token: Token) -> io::Result<UdpSocket> {
-        Provide::provide(
+impl Perform<Opening<UdpBind<UdpSocket>>> for AsyncSim {
+    fn perform(
+        &mut self,
+        Opening(op, token): Opening<UdpBind<UdpSocket>>,
+    ) -> io::Result<UdpSocket> {
+        Perform::perform(
             &mut *self.shared.sim(),
-            UdpBind::<sim::UdpSocket>::new(op.addr),
-            token,
+            Opening(UdpBind::<sim::UdpSocket>::new(op.addr), token),
         )
         .map(|s| UdpSocket(s, Arc::clone(&self.shared)))
     }
+}
 
-    fn close(&mut self, _: UdpSocket) -> io::Result<()> {
+impl Perform<Closing<UdpBind<UdpSocket>>> for AsyncSim {
+    fn perform(&mut self, Closing(_, _): Closing<UdpBind<UdpSocket>>) -> io::Result<()> {
         Ok(())
     }
 }
 
 impl TcpListener {
-    pub(crate) async fn accept(&mut self, token: Token) -> io::Result<TcpStream> {
+    pub(crate) async fn accept(&mut self, token: seam_core::Token) -> io::Result<TcpStream> {
         poll_fn(|cx| {
             if self.0.poll_acceptable(cx.waker()) {
                 Poll::Ready(())
@@ -130,54 +146,46 @@ impl TcpListener {
         })
         .await;
         self.0
-            .provide(Accept::new(), token)
+            .perform(Opening(Accept::new(), token))
             .map(|s| TcpStream(s, Arc::clone(&self.1)))
     }
 }
 
-impl AsyncProvide<Accept<TcpStream>> for TcpListener {
-    async fn provide_async(&mut self, _: Accept<TcpStream>, token: Token) -> io::Result<TcpStream> {
-        self.accept(token).await
-    }
+async_op!([] TcpListener, Opening<Accept<TcpStream>>, |s, Opening(_, token)| {
+    s.accept(token).await
+});
+async_op!([] TcpListener, Closing<Accept<TcpStream>>, |_s, Closing(stream, _)| {
+    stream.0.commit()
+});
 
-    async fn close_async(&mut self, stream: TcpStream) -> io::Result<()> {
-        stream.0.commit()
-    }
-}
-
-/// Waits for a connection and runs `body` with it in a new task, which owns
-/// the stream. In the task, the stream is shut down when the body returns
-/// `Ok`, and just closed otherwise.
-///
-/// Closing the provided handle waits for the task; perform `Join` on it to
-/// see the body's result.
-impl<B> AsyncProvide<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>>
-    for TcpListener
-where
-    B: TaskBody<TcpStream>,
-    B::Error: From<io::Error>,
-{
-    async fn provide_async(
-        &mut self,
-        op: SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>,
-        token: Token,
-    ) -> io::Result<JoinHandle<Result<B::Output, B::Error>>> {
-        let mut stream = self.accept(token).await?;
+// Waits for a connection and runs `body` with it in a new task, which owns
+// the stream. In the task, the stream is shut down when the body returns
+// `Ok`, and just closed otherwise.
+//
+// Closing the provided handle waits for the task; perform `Join` on it to
+// see the body's result.
+async_op!(
+    [B] TcpListener,
+    Opening<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>>,
+    |s, Opening(op, token)| {
+        let mut stream = s.accept(token).await?;
         let body = op.body;
-        Ok(JoinHandle::spawn(&self.1, async move {
+        Ok(JoinHandle::spawn(&s.1, async move {
             let value = body.run(&mut stream).await?;
             stream.0.commit()?;
             Ok(value)
         }))
-    }
-
-    async fn close_async(
-        &mut self,
-        task: JoinHandle<Result<B::Output, B::Error>>,
-    ) -> io::Result<()> {
+    },
+    where B: TaskBody<TcpStream>, B::Error: From<io::Error>
+);
+async_op!(
+    [B] TcpListener,
+    Closing<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>>,
+    |_s, Closing(task, _)| {
         task.finish().await.map_err(io::Error::from)
-    }
-}
+    },
+    where B: TaskBody<TcpStream>, B::Error: From<io::Error>
+);
 
 async_op!(['a] TcpStream, Read<'a>, |s, op| {
     s.readable().await;

@@ -10,7 +10,7 @@ use seam_core::future::SendPerform;
 
 use seam_core::ops::process::{ChildId, CloseStdin, Kill, Pipe, ReadErr, SpawnChild, Wait};
 use seam_core::ops::time::Timeout;
-use seam_core::{AsyncAcquire, Inspect, Perform};
+use seam_core::{AsyncProvide, Inspect, Perform};
 use seam_tokio::Tokio;
 use seam_tokio::process::Child;
 

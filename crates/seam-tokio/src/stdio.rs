@@ -2,7 +2,7 @@
 //! [`Stderr`] handles.
 
 use seam_core::ops::stdio::{OpenStderr, OpenStdin, OpenStdout};
-use seam_core::{AsyncProvide, Token};
+use seam_core::{Closing, Opening};
 use tokio::io::AsyncWriteExt;
 
 use crate::Tokio;
@@ -30,47 +30,26 @@ read_ops!([] Stdin);
 write_ops!([] Stdout);
 write_ops!([] Stderr);
 
-impl AsyncProvide<OpenStdin<Stdin>> for Tokio {
-    async fn provide_async(
-        &mut self,
-        _: OpenStdin<Stdin>,
-        _: Token,
-    ) -> seam_core::io::Result<Stdin> {
-        Ok(Stdin(tokio::io::stdin()))
-    }
+async_op!(perform [] Tokio, Opening<OpenStdin<Stdin>>, |_s, Opening(_, _)| {
+    seam_core::io::Result::Ok(Stdin(tokio::io::stdin()))
+});
+async_op!(perform [] Tokio, Closing<OpenStdin<Stdin>>, |_s, Closing(_, _)| {
+    seam_core::io::Result::Ok(())
+});
 
-    async fn close_async(&mut self, _: Stdin) -> seam_core::io::Result<()> {
-        Ok(())
-    }
-}
+async_op!(perform [] Tokio, Opening<OpenStdout<Stdout>>, |_s, Opening(_, _)| {
+    seam_core::io::Result::Ok(Stdout(tokio::io::stdout()))
+});
+async_op!(perform [] Tokio, Closing<OpenStdout<Stdout>>, |_s, Closing(mut out, _)| {
+    crate::sio(out.0.flush().await)
+});
 
-impl AsyncProvide<OpenStdout<Stdout>> for Tokio {
-    async fn provide_async(
-        &mut self,
-        _: OpenStdout<Stdout>,
-        _: Token,
-    ) -> seam_core::io::Result<Stdout> {
-        Ok(Stdout(tokio::io::stdout()))
-    }
-
-    async fn close_async(&mut self, mut out: Stdout) -> seam_core::io::Result<()> {
-        crate::sio(out.0.flush().await)
-    }
-}
-
-impl AsyncProvide<OpenStderr<Stderr>> for Tokio {
-    async fn provide_async(
-        &mut self,
-        _: OpenStderr<Stderr>,
-        _: Token,
-    ) -> seam_core::io::Result<Stderr> {
-        Ok(Stderr(tokio::io::stderr()))
-    }
-
-    async fn close_async(&mut self, mut err: Stderr) -> seam_core::io::Result<()> {
-        crate::sio(err.0.flush().await)
-    }
-}
+async_op!(perform [] Tokio, Opening<OpenStderr<Stderr>>, |_s, Opening(_, _)| {
+    seam_core::io::Result::Ok(Stderr(tokio::io::stderr()))
+});
+async_op!(perform [] Tokio, Closing<OpenStderr<Stderr>>, |_s, Closing(mut err, _)| {
+    crate::sio(err.0.flush().await)
+});
 
 // Every capability type opts in to seam's lifts.
 impl seam_core::Capability for Stdin {}

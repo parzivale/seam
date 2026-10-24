@@ -8,7 +8,7 @@ use std::process::Command;
 
 use seam_core::ops::io::Read;
 use seam_core::ops::process::{ChildId, CloseStdin, Kill, Output, Pipe, SpawnChild, Wait};
-use seam_core::{Acquire, Inspect, Perform};
+use seam_core::{Inspect, Perform, Provide};
 use seam_test::Sim;
 use seam_test::process::Child;
 
@@ -142,7 +142,7 @@ fn world_files_script_children_and_check_their_input() -> io::Result<()> {
 /// scripts.
 #[test]
 fn children_on_the_runtime_and_threads() {
-    use seam_core::AsyncAcquire;
+    use seam_core::AsyncProvide;
 
     use seam_test::rt::Runtime;
     use seam_test::threads::Threads;

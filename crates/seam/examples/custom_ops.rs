@@ -22,8 +22,8 @@
 //! ```
 
 use seam::io;
-use seam::ops::fs::{Open, ReadOnly, read_to_string};
-use seam::ops::io::{Read, Write, write_all};
+use seam::ops::fs::{ReadAt, View, read_to_string};
+use seam::ops::io::{Write, write_all};
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::path::PathBuf;
@@ -123,11 +123,11 @@ impl<C, F, R> FileStore<C, F, R> {
 
 impl<C, F, R> FileStore<C, F, R>
 where
-    C: for<'a> Provide<Open<'a, ReadOnly, R>>,
-    R: for<'a> Perform<Read<'a>>,
+    C: for<'a> Lend<View<'a, R>>,
+    R: for<'a> Inspect<ReadAt<'a>>,
 {
-    fn load(&mut self) -> io::Result<BTreeMap<String, String>> {
-        match read_to_string(&mut self.fs, &self.path) {
+    fn load(&self) -> io::Result<BTreeMap<String, String>> {
+        match read_to_string(&self.fs, &self.path) {
             Ok(text) => Ok(text
                 .lines()
                 .filter_map(|line| line.split_once('\t'))
@@ -141,8 +141,8 @@ where
 
 impl<C, F, R> Perform<Get> for FileStore<C, F, R>
 where
-    C: for<'a> Provide<Open<'a, ReadOnly, R>>,
-    R: for<'a> Perform<Read<'a>>,
+    C: for<'a> Lend<View<'a, R>>,
+    R: for<'a> Inspect<ReadAt<'a>>,
 {
     fn perform(&mut self, op: Get) -> io::Result<Option<String>> {
         Ok(self.load()?.remove(&op.0))
@@ -151,9 +151,9 @@ where
 
 impl<C, F, R> Perform<Put> for FileStore<C, F, R>
 where
-    C: for<'a> Provide<Open<'a, ReadOnly, R>> + for<'a> Provide<CreateAtomic<'a, F>>,
+    C: for<'a> Lend<View<'a, R>> + for<'a> Provide<CreateAtomic<'a, F>>,
     F: for<'a> Perform<Write<'a>>,
-    R: for<'a> Perform<Read<'a>>,
+    R: for<'a> Inspect<ReadAt<'a>>,
 {
     /// Rewrites the whole file, atomically: the new file is renamed into
     /// place only if the scope succeeds, that is, if every line was written.
@@ -171,13 +171,13 @@ where
 
 fn main() -> io::Result<()> {
     use seam::stdlib::Std;
-    use seam::stdlib::fs::{AtomicFile, File};
+    use seam::stdlib::fs::{AtomicFile, FileView};
 
     let path = Std::new().inspect(TempDir).join("seam-custom-ops.tsv");
     // The program's root: `Std` for the OS, the file store for `Kv`.
     let mut root = seam::root! {
         std: Std::new() => [seam::kinds::Env],
-        store: FileStore::<_, AtomicFile, File<ReadOnly>>::new(Std::new(), path) => [kv::Kv],
+        store: FileStore::<_, AtomicFile, FileView>::new(Std::new(), path) => [kv::Kv],
     };
     let n = visit(&mut root, "home")?;
     // `main` is the edge, so it may print directly.
@@ -192,7 +192,7 @@ fn main() -> io::Result<()> {
 mod tests {
     use seam::ops::fs::{NextEntry, ReadDir};
     use seam::test::Sim;
-    use seam::test::fs::{AtomicFile, File};
+    use seam::test::fs::{AtomicFile, FileView};
 
     use super::*;
 
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn in_a_simulated_file() {
-        let mut store = FileStore::<_, AtomicFile, File<ReadOnly>>::new(Sim::new(), "/tmp/kv.tsv");
+        let mut store = FileStore::<_, AtomicFile, FileView>::new(Sim::new(), "/tmp/kv.tsv");
         counts_visits(&mut store);
         assert_eq!(
             store.fs.file("/tmp/kv.tsv").unwrap(),
@@ -227,7 +227,7 @@ mod tests {
     fn corrupt_store_is_an_error() {
         let mut sim = Sim::new();
         sim.add_file("/tmp/kv.tsv", "visits:home\tmany\n");
-        let mut store = FileStore::<_, AtomicFile, File<ReadOnly>>::new(sim, "/tmp/kv.tsv");
+        let mut store = FileStore::<_, AtomicFile, FileView>::new(sim, "/tmp/kv.tsv");
         assert_eq!(
             visit(&mut store, "home").unwrap_err().kind(),
             io::ErrorKind::InvalidData

@@ -114,7 +114,7 @@ three_ways! {
             H: for<'a> crate::future::AsyncPerform<Write<'a>>,
         }
         send {
-            C: crate::AsyncProvide<OpenStdout<H>> + Send,
+            C: crate::SendProvide<OpenStdout<H>> + Send,
             H: for<'a> crate::future::SendPerform<Write<'a>> + Send,
         }
     {
@@ -137,7 +137,7 @@ three_ways! {
             H: for<'a> crate::future::AsyncPerform<Write<'a>>,
         }
         send {
-            C: crate::AsyncProvide<OpenStderr<H>> + Send,
+            C: crate::SendProvide<OpenStderr<H>> + Send,
             H: for<'a> crate::future::SendPerform<Write<'a>> + Send,
         }
     {

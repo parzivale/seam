@@ -91,8 +91,8 @@ pub use task::{JoinHandle, TaskSet};
 /// Implements the async capability traits for an operation from one async
 /// body: `AsyncPerform` and `SendPerform`.
 macro_rules! async_op {
-    ([$($gen:tt)*] $ty:ty, $op:ty, |$s:ident, $o:ident| $body:expr) => {
-        impl<$($gen)*> seam_core::future::AsyncPerform<$op> for $ty {
+    ([$($gen:tt)*] $ty:ty, $op:ty, |$s:ident, $o:pat_param| $body:expr $(, where $($w:tt)*)?) => {
+        impl<$($gen)*> seam_core::future::AsyncPerform<$op> for $ty $(where $($w)*)? {
             fn perform_async(
                 &mut self,
                 $o: $op,
@@ -102,7 +102,7 @@ macro_rules! async_op {
             }
         }
 
-        impl<$($gen)*> seam_core::future::SendPerform<$op> for $ty {
+        impl<$($gen)*> seam_core::future::SendPerform<$op> for $ty $(where $($w)*)? {
             fn perform_send(
                 &mut self,
                 $o: $op,

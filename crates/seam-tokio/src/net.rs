@@ -7,7 +7,7 @@ use seam_core::ops::net::{
     Accept, How, LocalAddr, PeerAddr, RecvFrom, ResolveInto, SendTo, Shutdown, TcpBind, TcpConnect,
     UdpBind,
 };
-use seam_core::{AsyncProvide, Inspect, Token};
+use seam_core::{Closing, Inspect, Opening};
 
 #[cfg(feature = "rt")]
 use seam_core::ops::task::{SpawnWith, TaskBody};
@@ -48,97 +48,65 @@ impl TcpStream {
     }
 }
 
-impl AsyncProvide<TcpConnect<TcpStream>> for Tokio {
-    async fn provide_async(
-        &mut self,
-        op: TcpConnect<TcpStream>,
-        _: Token,
-    ) -> seam_core::io::Result<TcpStream> {
-        crate::sio(tokio::net::TcpStream::connect(op.addr).await.map(TcpStream))
-    }
+async_op!(perform [] Tokio, Opening<TcpConnect<TcpStream>>, |_s, Opening(op, _)| {
+    crate::sio(tokio::net::TcpStream::connect(op.addr).await.map(TcpStream))
+});
+async_op!(perform [] Tokio, Closing<TcpConnect<TcpStream>>, |_s, Closing(stream, _)| {
+    stream.commit().await
+});
 
-    async fn close_async(&mut self, stream: TcpStream) -> seam_core::io::Result<()> {
-        stream.commit().await
-    }
-}
+async_op!(perform [] Tokio, Opening<TcpBind<TcpListener>>, |_s, Opening(op, _)| {
+    crate::sio(
+        tokio::net::TcpListener::bind(op.addr)
+            .await
+            .map(TcpListener),
+    )
+});
+async_op!(perform [] Tokio, Closing<TcpBind<TcpListener>>, |_s, Closing(_, _)| {
+    seam_core::io::Result::Ok(())
+});
 
-impl AsyncProvide<TcpBind<TcpListener>> for Tokio {
-    async fn provide_async(
-        &mut self,
-        op: TcpBind<TcpListener>,
-        _: Token,
-    ) -> seam_core::io::Result<TcpListener> {
-        crate::sio(
-            tokio::net::TcpListener::bind(op.addr)
-                .await
-                .map(TcpListener),
-        )
-    }
+async_op!(perform [] Tokio, Opening<UdpBind<UdpSocket>>, |_s, Opening(op, _)| {
+    crate::sio(tokio::net::UdpSocket::bind(op.addr).await.map(UdpSocket))
+});
+async_op!(perform [] Tokio, Closing<UdpBind<UdpSocket>>, |_s, Closing(_, _)| {
+    seam_core::io::Result::Ok(())
+});
 
-    async fn close_async(&mut self, _: TcpListener) -> seam_core::io::Result<()> {
-        Ok(())
-    }
-}
+async_op!(perform [] TcpListener, Opening<Accept<TcpStream>>, |s, Opening(_, _)| {
+    crate::sio(s.0.accept().await.map(|(stream, _)| TcpStream(stream)))
+});
+async_op!(perform [] TcpListener, Closing<Accept<TcpStream>>, |_s, Closing(stream, _)| {
+    stream.commit().await
+});
 
-impl AsyncProvide<UdpBind<UdpSocket>> for Tokio {
-    async fn provide_async(
-        &mut self,
-        op: UdpBind<UdpSocket>,
-        _: Token,
-    ) -> seam_core::io::Result<UdpSocket> {
-        crate::sio(tokio::net::UdpSocket::bind(op.addr).await.map(UdpSocket))
-    }
-
-    async fn close_async(&mut self, _: UdpSocket) -> seam_core::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl AsyncProvide<Accept<TcpStream>> for TcpListener {
-    async fn provide_async(
-        &mut self,
-        _: Accept<TcpStream>,
-        _: Token,
-    ) -> seam_core::io::Result<TcpStream> {
-        crate::sio(self.0.accept().await.map(|(stream, _)| TcpStream(stream)))
-    }
-
-    async fn close_async(&mut self, stream: TcpStream) -> seam_core::io::Result<()> {
-        stream.commit().await
-    }
-}
-
-/// Accepts a connection and runs `body` with it in a new task, which owns
-/// the stream. In the task, the stream is shut down cleanly when the body
-/// returns `Ok`, and just closed otherwise, including when the task is
-/// aborted.
-///
-/// Closing the provided handle waits for the task; the body's own result is
-/// discarded, so perform [`Join`](seam_core::ops::task::Join) on the handle
-/// to see it.
+// Accepts a connection and runs `body` with it in a new task, which owns
+// the stream. In the task, the stream is shut down cleanly when the body
+// returns `Ok`, and just closed otherwise, including when the task is
+// aborted.
+//
+// Closing the provided handle waits for the task; the body's own result is
+// discarded, so perform [`Join`](seam_core::ops::task::Join) on the handle
+// to see it.
 #[cfg(feature = "rt")]
-impl<B> AsyncProvide<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>>
-    for TcpListener
-where
-    B: TaskBody<TcpStream>,
-    B::Error: From<seam_core::io::Error>,
-{
-    async fn provide_async(
-        &mut self,
-        op: SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>,
-        _: Token,
-    ) -> seam_core::io::Result<JoinHandle<Result<B::Output, B::Error>>> {
-        let (stream, _) = self.0.accept().await?;
-        Ok(spawn_connection(stream, op.body))
-    }
-
-    async fn close_async(
-        &mut self,
-        task: JoinHandle<Result<B::Output, B::Error>>,
-    ) -> seam_core::io::Result<()> {
+async_op!(
+    perform [B] TcpListener,
+    Opening<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>>,
+    |s, Opening(op, _)| {
+        let (stream, _) = s.0.accept().await?;
+        seam_core::io::Result::Ok(spawn_connection(stream, op.body))
+    },
+    where B: TaskBody<TcpStream>, B::Error: From<seam_core::io::Error>
+);
+#[cfg(feature = "rt")]
+async_op!(
+    perform [B] TcpListener,
+    Closing<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<B::Output, B::Error>>>>,
+    |_s, Closing(task, _)| {
         crate::sio(task.finish().await.map_err(io::Error::from))
-    }
-}
+    },
+    where B: TaskBody<TcpStream>, B::Error: From<seam_core::io::Error>
+);
 
 async_op!(inspect ['a] Tokio, ResolveInto<'a>, |_s, op| {
     let mut n = 0;

@@ -118,7 +118,10 @@ mod push;
 pub mod root;
 mod three_ways;
 
-pub use acquire::{Acquire, Acquisition, AsyncAcquire, AsyncProvide, Provide, Token};
+pub use acquire::{
+    Acquisition, AsyncLend, AsyncProvide, Closing, Lend, Opening, Provide, SendLend, SendProvide,
+    SendScope, Token,
+};
 pub use capability::{Capability, Inspect, Perform};
 pub use operation::{Operation, Query};
 pub use push::{Push, Rejected};

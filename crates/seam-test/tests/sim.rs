@@ -35,8 +35,9 @@ use seam_core::ops::net::{
 use seam_core::ops::process::{Exit, Output, RunCommand};
 use seam_core::ops::signal::CtrlC;
 
+use seam_core::ops::fs::{ReadAt, View};
 use seam_core::ops::time::{Now, Sleep, WallClock};
-use seam_core::{Acquire, AsyncAcquire, Inspect, Perform, Provide};
+use seam_core::{AsyncProvide, Inspect, Lend, Perform, Provide};
 use seam_test::fs::File;
 use seam_test::net::{TcpListener, TcpStream, UdpSocket};
 use seam_test::{Sim, catch_exit};
@@ -45,8 +46,8 @@ use seam_test::{Sim, catch_exit};
 /// Generic, so it runs on any backend.
 fn edit_in_place<C, F, R>(c: &mut C, path: &std::path::Path) -> io::Result<()>
 where
-    C: for<'a> Provide<Open<'a, ReadWrite, F>> + for<'a> Provide<Open<'a, ReadOnly, R>>,
-    R: for<'a> Perform<Read<'a>>,
+    C: for<'a> Provide<Open<'a, ReadWrite, F>> + for<'a> Lend<View<'a, R>>,
+    R: for<'a> Inspect<ReadAt<'a>>,
     F: Perform<Seek>
         + for<'a> Perform<Write<'a>>
         + for<'a> Perform<Read<'a>>
@@ -95,7 +96,7 @@ where
     C: for<'a> seam_core::Provide<ReadDir<'a, D>>,
     D: seam_core::Perform<NextEntry>,
 {
-    seam_core::Acquire::acquire(c, ReadDir::new(dir.as_ref()), |_, entries| {
+    seam_core::Provide::acquire(c, ReadDir::new(dir.as_ref()), |_, entries| {
         let mut paths = Vec::new();
         while let Some(path) = seam_core::Perform::perform(entries, NextEntry)? {
             paths.push(path);
@@ -177,12 +178,9 @@ fn filesystem_core() {
 fn filesystem_errors_match_a_real_system() {
     let mut sim = Sim::new();
     sim.add_file("/a/file", "x");
-    assert_eq!(kind(read_file(&mut sim, "/missing")), ErrorKind::NotFound);
-    assert_eq!(kind(read_file(&mut sim, "/a")), ErrorKind::IsADirectory);
-    assert_eq!(
-        kind(read_file(&mut sim, "/a/file/x")),
-        ErrorKind::NotADirectory
-    );
+    assert_eq!(kind(read_file(&sim, "/missing")), ErrorKind::NotFound);
+    assert_eq!(kind(read_file(&sim, "/a")), ErrorKind::IsADirectory);
+    assert_eq!(kind(read_file(&sim, "/a/file/x")), ErrorKind::NotADirectory);
     assert_eq!(
         kind(write_file(&mut sim, "/nope/f", "x")),
         ErrorKind::NotFound
@@ -209,10 +207,7 @@ fn filesystem_errors_match_a_real_system() {
     );
 
     sim.add_file("/bad", [0xff]);
-    assert_eq!(
-        kind(read_to_string(&mut sim, "/bad")),
-        ErrorKind::InvalidData
-    );
+    assert_eq!(kind(read_to_string(&sim, "/bad")), ErrorKind::InvalidData);
 
     sim.perform(RemoveDir::all("/a")).unwrap();
     assert!(!sim.exists("/a/file"));
@@ -421,7 +416,7 @@ fn async_send_core() {
     where
         C: for<'r> SendPerform<FillRandom<'r>>
             + SendPerform<Sleep>
-            + for<'a> seam_core::AsyncProvide<Open<'a, seam_core::ops::fs::WriteOnly, W>>
+            + for<'a> seam_core::SendProvide<Open<'a, seam_core::ops::fs::WriteOnly, W>>
             + Send,
         W: for<'a> SendPerform<Write<'a>> + Send,
     {

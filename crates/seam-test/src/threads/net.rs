@@ -7,6 +7,7 @@
 //! possible. Every operation is a scheduling point.
 #![allow(clippy::disallowed_types)] // sockets keep the scheduler
 
+use core::marker::PhantomData;
 use core::net::SocketAddr;
 use seam_core::io;
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use seam_core::ops::net::{
     Accept, LocalAddr, PeerAddr, RecvFrom, SendTo, Shutdown, TcpBind, TcpConnect, UdpBind,
 };
 use seam_core::ops::task::SpawnWith;
-use seam_core::{Inspect, Perform, Provide, Token};
+use seam_core::{Closing, Inspect, Opening, Perform};
 
 use super::task::spawn;
 use super::{JoinHandle, Shared, ThreadSim};
@@ -49,74 +50,91 @@ macro_rules! debug_as_inner {
 
 debug_as_inner!(TcpStream, TcpListener, UdpSocket);
 
-impl Provide<TcpBind<TcpListener>> for ThreadSim {
-    fn provide(&mut self, op: TcpBind<TcpListener>, token: Token) -> io::Result<TcpListener> {
+impl Perform<Opening<TcpBind<TcpListener>>> for ThreadSim {
+    fn perform(
+        &mut self,
+        Opening(op, token): Opening<TcpBind<TcpListener>>,
+    ) -> io::Result<TcpListener> {
         self.shared.switch();
-        Provide::provide(
+        Perform::perform(
             &mut *self.shared.sim(),
-            TcpBind::<sim::TcpListener>::new(op.addr),
-            token,
+            Opening(TcpBind::<sim::TcpListener>::new(op.addr), token),
         )
         .map(|l| TcpListener(l, Arc::clone(&self.shared)))
     }
+}
 
-    fn close(&mut self, listener: TcpListener) -> io::Result<()> {
+impl Perform<Closing<TcpBind<TcpListener>>> for ThreadSim {
+    fn perform(&mut self, Closing(listener, _): Closing<TcpBind<TcpListener>>) -> io::Result<()> {
         self.shared.switch();
-        Provide::<TcpBind<sim::TcpListener>>::close(&mut *self.shared.sim(), listener.0)
+        Perform::perform(
+            &mut *self.shared.sim(),
+            Closing::<TcpBind<sim::TcpListener>>(listener.0, PhantomData),
+        )
     }
 }
 
-impl Provide<TcpConnect<TcpStream>> for ThreadSim {
-    fn provide(&mut self, op: TcpConnect<TcpStream>, token: Token) -> io::Result<TcpStream> {
+impl Perform<Opening<TcpConnect<TcpStream>>> for ThreadSim {
+    fn perform(
+        &mut self,
+        Opening(op, token): Opening<TcpConnect<TcpStream>>,
+    ) -> io::Result<TcpStream> {
         self.shared.switch();
-        Provide::provide(
+        Perform::perform(
             &mut *self.shared.sim(),
-            TcpConnect::<sim::TcpStream>::new(op.addr),
-            token,
+            Opening(TcpConnect::<sim::TcpStream>::new(op.addr), token),
         )
         .map(|s| TcpStream(s, Arc::clone(&self.shared)))
     }
+}
 
-    fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+impl Perform<Closing<TcpConnect<TcpStream>>> for ThreadSim {
+    fn perform(&mut self, Closing(stream, _): Closing<TcpConnect<TcpStream>>) -> io::Result<()> {
         self.shared.switch();
         stream.0.commit()
     }
 }
 
-impl Provide<UdpBind<UdpSocket>> for ThreadSim {
-    fn provide(&mut self, op: UdpBind<UdpSocket>, token: Token) -> io::Result<UdpSocket> {
+impl Perform<Opening<UdpBind<UdpSocket>>> for ThreadSim {
+    fn perform(
+        &mut self,
+        Opening(op, token): Opening<UdpBind<UdpSocket>>,
+    ) -> io::Result<UdpSocket> {
         self.shared.switch();
-        Provide::provide(
+        Perform::perform(
             &mut *self.shared.sim(),
-            UdpBind::<sim::UdpSocket>::new(op.addr),
-            token,
+            Opening(UdpBind::<sim::UdpSocket>::new(op.addr), token),
         )
         .map(|s| UdpSocket(s, Arc::clone(&self.shared)))
     }
+}
 
-    fn close(&mut self, _: UdpSocket) -> io::Result<()> {
+impl Perform<Closing<UdpBind<UdpSocket>>> for ThreadSim {
+    fn perform(&mut self, Closing(_, _): Closing<UdpBind<UdpSocket>>) -> io::Result<()> {
         Ok(())
     }
 }
 
 impl TcpListener {
     /// Blocks for a connection, then takes it.
-    fn accept(&mut self, token: Token) -> io::Result<TcpStream> {
+    fn accept(&mut self, token: seam_core::Token) -> io::Result<TcpStream> {
         self.1.switch();
         self.1
             .wait_until(|w| self.0.poll_acceptable(w).then_some(()));
         self.0
-            .provide(Accept::new(), token)
+            .perform(Opening(Accept::new(), token))
             .map(|s| TcpStream(s, Arc::clone(&self.1)))
     }
 }
 
-impl Provide<Accept<TcpStream>> for TcpListener {
-    fn provide(&mut self, _: Accept<TcpStream>, token: Token) -> io::Result<TcpStream> {
+impl Perform<Opening<Accept<TcpStream>>> for TcpListener {
+    fn perform(&mut self, Opening(_, token): Opening<Accept<TcpStream>>) -> io::Result<TcpStream> {
         self.accept(token)
     }
+}
 
-    fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+impl Perform<Closing<Accept<TcpStream>>> for TcpListener {
+    fn perform(&mut self, Closing(stream, _): Closing<Accept<TcpStream>>) -> io::Result<()> {
         self.1.switch();
         stream.0.commit()
     }
@@ -128,22 +146,33 @@ impl Provide<Accept<TcpStream>> for TcpListener {
 ///
 /// Closing the provided handle joins the thread; perform `Join` on it to
 /// see the body's result.
-impl<B, T, E> Provide<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>> for TcpListener
+impl<B, T, E> Perform<Opening<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>>
+    for TcpListener
 where
     B: FnOnce(&mut TcpStream) -> Result<T, E> + Send + 'static,
     T: Send + 'static,
     E: From<io::Error> + Send + 'static,
 {
-    fn provide(
+    fn perform(
         &mut self,
-        op: SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>,
-        token: Token,
+        Opening(op, token): Opening<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>,
     ) -> io::Result<JoinHandle<Result<T, E>>> {
         let stream = self.accept(token)?;
         Ok(spawn_connection(&self.1, stream, op.body))
     }
+}
 
-    fn close(&mut self, thread: JoinHandle<Result<T, E>>) -> io::Result<()> {
+impl<B, T, E> Perform<Closing<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>>
+    for TcpListener
+where
+    B: FnOnce(&mut TcpStream) -> Result<T, E> + Send + 'static,
+    T: Send + 'static,
+    E: From<io::Error> + Send + 'static,
+{
+    fn perform(
+        &mut self,
+        Closing(thread, _): Closing<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>,
+    ) -> io::Result<()> {
         thread.finish().map_err(io::Error::from)
     }
 }
@@ -255,7 +284,11 @@ mod timeouts {
     }
 
     impl TcpListener {
-        fn accept_within(&mut self, after: Duration, token: Token) -> io::Result<TcpStream> {
+        fn accept_within(
+            &mut self,
+            after: Duration,
+            token: seam_core::Token,
+        ) -> io::Result<TcpStream> {
             self.1.switch();
             if self
                 .1
@@ -265,7 +298,7 @@ mod timeouts {
                 return Err(timed_out());
             }
             self.0
-                .provide(Accept::new(), token)
+                .perform(Opening(Accept::new(), token))
                 .map(|s| TcpStream(s, Arc::clone(&self.1)))
         }
     }
@@ -301,31 +334,39 @@ mod timeouts {
     }
 
     /// Connecting never waits in the simulation, so the timeout is moot.
-    impl Provide<Timeout<TcpConnect<TcpStream>>> for ThreadSim {
-        fn provide(
+    impl Perform<Opening<Timeout<TcpConnect<TcpStream>>>> for ThreadSim {
+        fn perform(
             &mut self,
-            op: Timeout<TcpConnect<TcpStream>>,
-            token: Token,
+            Opening(op, token): Opening<Timeout<TcpConnect<TcpStream>>>,
         ) -> io::Result<TcpStream> {
-            self.provide(op.op, token)
+            self.perform(Opening(op.op, token))
         }
+    }
 
-        fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+    impl Perform<Closing<Timeout<TcpConnect<TcpStream>>>> for ThreadSim {
+        fn perform(
+            &mut self,
+            Closing(stream, _): Closing<Timeout<TcpConnect<TcpStream>>>,
+        ) -> io::Result<()> {
             self.shared.switch();
             stream.0.commit()
         }
     }
 
-    impl Provide<Timeout<Accept<TcpStream>>> for TcpListener {
-        fn provide(
+    impl Perform<Opening<Timeout<Accept<TcpStream>>>> for TcpListener {
+        fn perform(
             &mut self,
-            op: Timeout<Accept<TcpStream>>,
-            token: Token,
+            Opening(op, token): Opening<Timeout<Accept<TcpStream>>>,
         ) -> io::Result<TcpStream> {
             self.accept_within(op.after, token)
         }
+    }
 
-        fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+    impl Perform<Closing<Timeout<Accept<TcpStream>>>> for TcpListener {
+        fn perform(
+            &mut self,
+            Closing(stream, _): Closing<Timeout<Accept<TcpStream>>>,
+        ) -> io::Result<()> {
             self.1.switch();
             stream.0.commit()
         }
@@ -333,23 +374,39 @@ mod timeouts {
 
     /// Blocks at most the timeout for a connection, then handles it on a
     /// new thread, as `SpawnWith` without a timeout does.
-    impl<B, T, E> Provide<Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>>
+    impl<B, T, E>
+        Perform<Opening<Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>>>
         for TcpListener
     where
         B: FnOnce(&mut TcpStream) -> Result<T, E> + Send + 'static,
         T: Send + 'static,
         E: From<io::Error> + Send + 'static,
     {
-        fn provide(
+        fn perform(
             &mut self,
-            op: Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>,
-            token: Token,
+            Opening(op, token): Opening<
+                Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>,
+            >,
         ) -> io::Result<JoinHandle<Result<T, E>>> {
             let stream = self.accept_within(op.after, token)?;
             Ok(spawn_connection(&self.1, stream, op.op.body))
         }
+    }
 
-        fn close(&mut self, thread: JoinHandle<Result<T, E>>) -> io::Result<()> {
+    impl<B, T, E>
+        Perform<Closing<Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>>>
+        for TcpListener
+    where
+        B: FnOnce(&mut TcpStream) -> Result<T, E> + Send + 'static,
+        T: Send + 'static,
+        E: From<io::Error> + Send + 'static,
+    {
+        fn perform(
+            &mut self,
+            Closing(thread, _): Closing<
+                Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>,
+            >,
+        ) -> io::Result<()> {
             thread.finish().map_err(io::Error::from)
         }
     }

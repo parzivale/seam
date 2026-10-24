@@ -5,7 +5,7 @@
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
-use seam_core::Acquire;
+use seam_core::Provide;
 use seam_core::io;
 use seam_core::ops::io::{BufReader, Line};
 use seam_core::ops::stdio::OpenStdin;

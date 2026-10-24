@@ -2,7 +2,7 @@
 //! [`Stderr`] handles.
 
 use seam_core::ops::stdio::{OpenStderr, OpenStdin, OpenStdout};
-use seam_core::{Provide, Token};
+use seam_core::{Closing, Opening, Perform};
 
 use crate::Std;
 
@@ -26,32 +26,53 @@ crate::read_ops!([] Stdin);
 crate::write_ops!([] Stdout);
 crate::write_ops!([] Stderr);
 
-impl Provide<OpenStdin<Stdin>> for Std {
-    fn provide(&mut self, _: OpenStdin<Stdin>, _: Token) -> seam_core::io::Result<Stdin> {
+impl Perform<Opening<OpenStdin<Stdin>>> for Std {
+    fn perform(
+        &mut self,
+        Opening(_, _): Opening<OpenStdin<Stdin>>,
+    ) -> seam_core::io::Result<Stdin> {
         Ok(Stdin(std::io::stdin()))
     }
+}
 
-    fn close(&mut self, _: Stdin) -> seam_core::io::Result<()> {
+impl Perform<Closing<OpenStdin<Stdin>>> for Std {
+    fn perform(&mut self, Closing(_, _): Closing<OpenStdin<Stdin>>) -> seam_core::io::Result<()> {
         Ok(())
     }
 }
 
-impl Provide<OpenStdout<Stdout>> for Std {
-    fn provide(&mut self, _: OpenStdout<Stdout>, _: Token) -> seam_core::io::Result<Stdout> {
+impl Perform<Opening<OpenStdout<Stdout>>> for Std {
+    fn perform(
+        &mut self,
+        Opening(_, _): Opening<OpenStdout<Stdout>>,
+    ) -> seam_core::io::Result<Stdout> {
         Ok(Stdout(std::io::stdout()))
     }
+}
 
-    fn close(&mut self, mut out: Stdout) -> seam_core::io::Result<()> {
+impl Perform<Closing<OpenStdout<Stdout>>> for Std {
+    fn perform(
+        &mut self,
+        Closing(mut out, _): Closing<OpenStdout<Stdout>>,
+    ) -> seam_core::io::Result<()> {
         crate::sio(std::io::Write::flush(&mut out.0))
     }
 }
 
-impl Provide<OpenStderr<Stderr>> for Std {
-    fn provide(&mut self, _: OpenStderr<Stderr>, _: Token) -> seam_core::io::Result<Stderr> {
+impl Perform<Opening<OpenStderr<Stderr>>> for Std {
+    fn perform(
+        &mut self,
+        Opening(_, _): Opening<OpenStderr<Stderr>>,
+    ) -> seam_core::io::Result<Stderr> {
         Ok(Stderr(std::io::stderr()))
     }
+}
 
-    fn close(&mut self, mut err: Stderr) -> seam_core::io::Result<()> {
+impl Perform<Closing<OpenStderr<Stderr>>> for Std {
+    fn perform(
+        &mut self,
+        Closing(mut err, _): Closing<OpenStderr<Stderr>>,
+    ) -> seam_core::io::Result<()> {
         crate::sio(std::io::Write::flush(&mut err.0))
     }
 }

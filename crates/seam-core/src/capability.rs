@@ -111,8 +111,9 @@ pub trait Perform<O: Operation> {
 
 /// Opts a type in to seam's lifts: every [`Inspect`] it implements is also
 /// a [`Perform`], and every sync operation also works from async code
-/// (`AsyncInspect`, `AsyncPerform`, `SendInspect`, `SendPerform`,
-/// `AsyncProvide`).
+/// (`AsyncInspect`, `AsyncPerform`, `SendInspect`, `SendPerform`). Scopes
+/// are operations, so the same lifts make every `Lend` a `Provide`, and
+/// every sync scope an async one.
 ///
 /// Implement it, with no body, on any capability type you write:
 ///

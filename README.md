@@ -57,13 +57,17 @@ both outputs means reading two pipes at once).
 Files open in a mode named by a type, `Open<'a, ReadOnly, F>`,
 `Open<'a, WriteOnly, F>`, ..., and a backend's handle implements `Read` or
 `Write` only for modes that allow it. A core bounded on `ReadOnly` cannot
-write, and that is checked at compile time:
+write, and that is checked at compile time.
+
+Reading a whole file changes nothing outside the read, so it is a query: a
+`View` opens a regular file to read at offsets (`ReadAt`, an `Inspect`),
+and is lent from shared access:
 
 ```rust
-fn word_count<C, F>(c: &mut C, path: &str) -> io::Result<usize>
+fn word_count<C, F>(c: &C, path: &str) -> io::Result<usize>
 where
-    C: for<'a> Provide<Open<'a, ReadOnly, F>>,
-    F: for<'a> Perform<Read<'a>>,
+    C: for<'a> Lend<View<'a, F>>,
+    F: for<'a> Inspect<ReadAt<'a>>,
 {
     Ok(read_to_string(c, path)?.split_whitespace().count())
 }
@@ -73,7 +77,7 @@ where
 
 | Crate | What it is |
 |---|---|
-| [`seam-core`](https://github.com/parzivale/seam/tree/main/crates/seam-core) (`seam-rs-core`) | The traits (`Operation`, `Query`, `Inspect`, `Perform`, `Provide`/`Acquire` and their async forms, `block_on`), the operation and acquisition types, and a `prelude`. `no_std`. |
+| [`seam-core`](https://github.com/parzivale/seam/tree/main/crates/seam-core) (`seam-rs-core`) | The traits (`Operation`, `Query`, `Inspect`, `Perform`, `Provide`/`Lend` and their async forms, `block_on`), the operation and acquisition types, and a `prelude`. `no_std`. |
 | [`seam-std`](https://github.com/parzivale/seam/tree/main/crates/seam-std) (`seam-rs-std`) | The std backend: a `Std` capability (used alone, or as a part of a `Root`) and newtype handles (`File`, `TcpStream`, ...) that expose no std I/O traits. |
 | [`seam-tokio`](https://github.com/parzivale/seam/tree/main/crates/seam-tokio) (`seam-rs-tokio`) | The Tokio backend: a `Tokio` capability implementing the async and `Send` capability traits, for time, files, the network, stdio, processes, signals, tasks and channels. |
 | [`seam-test`](https://github.com/parzivale/seam/tree/main/crates/seam-test) (`seam-rs-test`) | The pure test backend: a `Sim` world with a virtual clock, seeded randomness, in-memory filesystem and network, scripted commands and captured stdio. Its only real effect is allocation. |
@@ -301,6 +305,11 @@ c.acquire(CreateAtomic::new("settings.conf"), |c, file| {
     Ok(())                           // acquire_async) cancellation here...
 })?;                                 // ...leaves the old file untouched
 ```
+
+Opening and closing are operations themselves (`Opening`, `Closing`), so
+scopes work everywhere operations do: async, in a `Root`, through a
+wrapper. A scope that changes nothing outside itself is lent (`Lend`) from
+`&C`; one that does is provided (`Provide`) from `&mut C`.
 
 When the body returns `Ok` the resource is committed: a file is synced, an
 atomic file renamed into place, a stream shut down cleanly, a task or child

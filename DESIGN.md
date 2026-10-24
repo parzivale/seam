@@ -137,7 +137,8 @@ functions beside the operations they use, not as operations:
 |---|---|
 | `read_exact`, `write_all`, `copy`, `read_to_end` (alloc) | `Read`, `Write` |
 | `BufReader<N>`: `read_until`, `read_line`, `read` | `Read`, through a fixed buffer |
-| `read_file`, `read_to_string`, `write_file` | `Open` and the above |
+| `read_file`, `read_to_string` | `View`, `ReadAt` |
+| `write_file` | `Open` and `write_all` |
 | `create_dir_all` | `CreateDir`, `Metadata` |
 | `sweep_atomic` | `ReadDir`, `Metadata`, `RemoveFile`, `WallClock` |
 | `resolve` (alloc) | `ResolveInto` |
@@ -160,8 +161,9 @@ three forms. Helpers do too: `write_all` (`Perform`), `write_all_async`
 (`AsyncPerform`) and `write_all_send` (`SendPerform`, so that a generic
 core spawned on a multithreaded runtime can prove its future is `Send`).
 A crate-private macro, `three_ways!`, writes all three from one body, in
-which `run!`, `ask!`, `acquire!` and `call!` perform an effect, run a query,
-open a scope and call another helper in the form being generated.
+which `run!`, `ask!`, `acquire!`, `lend!` and `call!` perform an effect, run
+a query, open a scope (or lend one) and call another helper in the form
+being generated.
 
 **What stays a primitive.** Four effects could be built from others but are
 not, each because the built version would be worse in a way that matters:
@@ -188,14 +190,10 @@ is now "open, then read".
 
 **Costs.**
 
-- **Bounds are longer.** `read_file` needs
-  `for<'a> Provide<Open<'a, ReadOnly, F>>` and `F: for<'a> Perform<Read<'a>>`
-  where one `Inspect` bound used to do, and a core names a type parameter
-  per handle type (`F` for files, `O` for stdout). Inference fills them in.
-- **Reading a file needs `&mut`.** Opening is an acquisition, and
-  acquisitions take `&mut self`, so a query (`Inspect`, `&self`) cannot
-  read a file. A program's own read-only operation backed by a file is a
-  `Perform`, as `Get` is in the `custom_ops` example.
+- **Bounds are longer.** `read_file` needs `for<'a> Lend<View<'a, F>>`
+  and `F: for<'a> Inspect<ReadAt<'a>>` where one `Inspect` bound used to
+  do, and a core names a type parameter per handle type (`F` for files,
+  `O` for stdout). Inference fills them in.
 - **Timeouts cover primitives only.** A helper made of several has no timed
   form; a core that needs one times each primitive against a deadline it
   keeps.
@@ -360,42 +358,68 @@ network, and adds programmability that tests already have in Rust.
 ## Resources: forced scopes
 
 Effects that produce something lasting (a file, a socket, a task) are
-`Acquisition`s, not operations. A core never owns one:
+`Acquisition`s. A core never owns one; it uses one for the length of a
+scope:
 
 ```rust
 pub trait Acquisition { type Resource; type Error; }
 
-pub trait Provide<A: Acquisition> {          // AsyncProvide: the same, async
-    fn provide(&mut self, a: A, token: Token) -> Result<A::Resource, A::Error>;
-    fn close(&mut self, r: A::Resource) -> Result<(), A::Error>;  // commit
-    fn abandon(r: A::Resource) {}                                  // roll back
-}
+pub struct Opening<A>(pub A, pub Token);                       // produces the resource
+pub struct Closing<A: Acquisition>(pub A::Resource, pub PhantomData<fn() -> A>); // commits it
 
-c.acquire(a, |c, resource| -> Result<R, E> { .. })                 // Acquire
-c.acquire_async(a, async |c, resource| -> Result<R, E> { .. })     // AsyncAcquire
+// Names for the pair, with a blanket impl each; the methods run a scope.
+pub trait Provide<A>: Perform<Opening<A>> + Perform<Closing<A>> { fn acquire(..) }
+pub trait Lend<A>: Inspect<Opening<A>> + Inspect<Closing<A>> { fn lend(..) }
+// AsyncProvide, AsyncLend: the same over AsyncPerform, AsyncInspect.
+// SendProvide, SendLend: bounds over SendPerform, SendInspect; their scopes
+// are `acquire_send` and `lend_send`, on `SendScope`.
+
+c.acquire(a, |c, resource| -> Result<R, E> { .. })
+c.lend(a, |c, resource| -> Result<R, E> { .. })                 // c: &C
+c.acquire_async(a, async |c, resource| -> Result<R, E> { .. })
 ```
 
-Cores bound on `Provide`/`AsyncProvide` and call `acquire`/`acquire_async`,
-which come from a single blanket impl each. The body borrows the resource,
-so it cannot keep, leak or drop it, and gets the capability back, so it can
-perform other effects and nest acquisitions. `Ok` closes the resource and
-returns any close error (through `E: From<A::Error>`); `Err`, a panic, or
-dropping the async future abandons it.
+**A scope is two operations.** Opening and closing are ordinary
+operations, so a scope is a collection of effects like any other, and
+everything built for operations works for scopes without a second set of
+traits: the async and `Send` forms, the lifts from sync, a `Root` routing
+them to a part by kind, and a wrapper forwarding every `Perform<O>`. A
+backend implements `Perform<Opening<A>>` and `Perform<Closing<A>>`.
 
-`provide` takes a `Token` that only `seam-core` can create, so a core cannot
-call it to get a resource outside a scope. A provider that wraps another can
-pass its token on. The remaining escape hatch is a core implementing
-`Provide` itself to intercept a token, which shows up in its source as an
-`impl Provide`.
+The body borrows the resource, so it cannot keep, leak or drop it, and gets
+the capability back, so it can perform other effects and nest scopes. `Ok`
+performs `Closing` and returns any error from it (through
+`E: From<A::Error>`); `Err`, a panic, or dropping the async future drops
+the resource, which rolls it back.
 
-The commit logic lives with the provider, not the resource, so a resource
-type needs no trait of its own. Every `Send` `Provide` is an `AsyncProvide`.
-A generic core bounding only `AsyncProvide` (plus `Send`) gets a `Send`
-`acquire_async` future, because the blanket impl's preconditions are exactly
-its bounds; this was checked before building it.
+`Opening` holds a `Token` that only `seam-core` can create, so a core
+cannot open a resource outside a scope, and only a scope ever holds a
+resource by value, so only a scope can close one. A provider that opens by
+asking another passes its token on: `Opening(other, token)`. The remaining
+escape hatch is a core implementing `Perform<Opening<_>>` itself to
+intercept a token, which shows up in its source.
 
-**Drop means abandon.** A provider must make dropping a resource leave
-things as `abandon` would; only `close` commits. A future can be dropped at
+**Scopes that are queries.** A scope can change nothing outside itself:
+reading a file opened read-only moves only a cursor that dies with the
+scope. Such a scope is a query, the way a function that mutates only its
+own variables is pure, so its provider implements `Inspect` for both
+operations and the scope is `Lend`, which needs only `&C`. The lift from
+`Inspect` to `Perform` makes every lending capability a providing one.
+`View` (a regular file read at offsets, with `ReadAt`, which moves no
+cursor at all) and `ReadDir` are lent; `read_file` and `read_to_string`
+take `&C`. A FIFO or a device is not a regular file: reading one consumes
+what it reads, so `View` refuses it, and it is opened with `Open`.
+
+**`Send` futures.** A scope's method is defined in its trait's only
+(blanket) impl rather than as a default, so a call on a concrete type sees
+the future's auto traits. Generic code bounded on `SendProvide` would still
+resolve `acquire_send` through its bound, which hides the future's type, so
+the `Send` forms' methods live on `SendScope` instead: implemented for
+every type and named in no bound, its method calls resolve to the impl,
+and a generic core's future is `Send` whenever what it holds is.
+
+**Drop means roll back.** A provider must make dropping a resource leave
+things as they were; only closing commits. A future can be dropped at
 any `.await`, including halfway through opening or closing, so this is what
 makes scopes cancellation-safe. Tokio's `AtomicFile` creates its temporary
 file and renames it inside blocking tasks that own the cleanup guard: a
@@ -416,8 +440,8 @@ storage could implement them without `alloc`.
 **Threads.** On `seam-std` a task is a closure on its own OS thread, so
 the same `Spawn`, `SpawnSet` and `SpawnWith` acquisitions work for sync
 cores. A running thread cannot be stopped from outside, so thread handles do
-not implement `Abort`, and abandoning one (a failed or panicking scope, or a
-drop) joins it instead, as `std::thread::scope` does: no thread outlives its
+not implement `Abort`, and dropping one (a failed or panicking scope)
+joins it instead, as `std::thread::scope` does: no thread outlives its
 scope unless detached. Stopping a thread early is cooperative, through a
 `Shared<bool>` or a channel. Threads cannot borrow from their spawner:
 `std::thread::scope` hands out its scope only inside a callback, which does

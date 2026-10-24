@@ -4,6 +4,8 @@
 //! acquisitions, lending a file to a scope (see [`acquire`](crate::acquire)),
 //! where the [`io`](super::io) operations read and write it, along with the
 //! file operations here: [`Stat`], [`SetLen`], [`SyncAll`] and [`SyncData`].
+//! [`View`] opens a regular file to read it at offsets, with [`ReadAt`]: a
+//! scope that is a query, so it needs only shared access.
 //! [`ReadDir`] lends a directory listing, stepped through with
 //! [`NextEntry`]. Operations borrow their paths, so describing one
 //! allocates nothing.
@@ -20,15 +22,14 @@
 //! ```
 //! use seam_core::io;
 //! use seam_core::prelude::*;
-//! use seam_core::ops::fs::{self, Metadata, Open, ReadOnly};
-//! use seam_core::ops::io::Read;
+//! use seam_core::ops::fs::{self, Metadata, ReadAt, View};
 //!
 //! /// Reads a config file, if there is one. It can look up and read files,
-//! /// and nothing else.
-//! fn load_config<C, F>(c: &mut C, path: &str) -> io::Result<Option<String>>
+//! /// and nothing else: its bounds are all queries, so it needs only `&C`.
+//! fn load_config<C, F>(c: &C, path: &str) -> io::Result<Option<String>>
 //! where
-//!     C: for<'a> Inspect<Metadata<'a>> + for<'a> Provide<Open<'a, ReadOnly, F>>,
-//!     F: for<'a> Perform<Read<'a>>,
+//!     C: for<'a> Inspect<Metadata<'a>> + for<'a> Lend<View<'a, F>>,
+//!     F: for<'a> Inspect<ReadAt<'a>>,
 //! {
 //!     match c.inspect(Metadata::new(path)) {
 //!         Ok(info) if info.is_file() => fs::read_to_string(c, path).map(Some),
@@ -294,6 +295,76 @@ impl<'a, F> CreateAtomic<'a, F> {
     }
 }
 
+/// Open the regular file at `path` to read it at offsets, producing a
+/// handle of type `F`, which performs [`ReadAt`] and nothing else.
+///
+/// A scope that is a query: the handle has no cursor and cannot write, so
+/// nothing outside the scope changes, and it is lent, with
+/// [`Lend`](crate::Lend), from shared access. [`read_file`] and
+/// [`read_to_string`] are built on it.
+///
+/// Opening fails with `io::ErrorKind::IsADirectory` for a directory, and
+/// `io::ErrorKind::InvalidInput` for anything else that is not a regular
+/// file: a FIFO or a device can block, or lose what is read, so open those
+/// with [`Open`], in a scope that is not a query.
+///
+/// ```
+/// use seam_core::io;
+/// use seam_core::prelude::*;
+/// use seam_core::ops::fs::{ReadAt, View};
+///
+/// /// The first four bytes of a file, from shared access.
+/// fn magic<C, F>(c: &C, path: &str) -> io::Result<[u8; 4]>
+/// where
+///     C: for<'a> Lend<View<'a, F>>,
+///     F: for<'a> Inspect<ReadAt<'a>>,
+/// {
+///     c.lend(View::new(path), |_, file| {
+///         let mut magic = [0; 4];
+///         let n = file.inspect(ReadAt::new(0, &mut magic))?;
+///         if n < magic.len() {
+///             return Err(io::ErrorKind::UnexpectedEof.into());
+///         }
+///         Ok(magic)
+///     })
+/// }
+/// ```
+pub struct View<'a, F> {
+    /// The file to read.
+    pub path: &'a Path,
+    handle: PhantomData<fn() -> F>,
+}
+
+impl<'a, F> View<'a, F> {
+    /// Describes opening `path` to read it at offsets.
+    pub fn new(path: &'a (impl AsRef<Path> + ?Sized)) -> Self {
+        Self {
+            path: path.as_ref(),
+            handle: PhantomData,
+        }
+    }
+}
+
+/// Read from a file at `offset` into `buf`, moving no cursor. Produces how
+/// many bytes were read: 0 at the end of the file, and possibly fewer than
+/// asked for before it.
+///
+/// A query: the same offset reads the same bytes until the file is written.
+#[derive(Debug)]
+pub struct ReadAt<'a> {
+    /// Where in the file to start.
+    pub offset: u64,
+    /// Where to put what is read.
+    pub buf: &'a mut [u8],
+}
+
+impl<'a> ReadAt<'a> {
+    /// Describes reading into `buf` from `offset`.
+    pub fn new(offset: u64, buf: &'a mut [u8]) -> Self {
+        Self { offset, buf }
+    }
+}
+
 /// Whether `name` is a temporary file name from [`CreateAtomic`].
 pub fn is_temp_name(name: &std::ffi::OsStr) -> bool {
     name.to_str()
@@ -477,7 +548,12 @@ macro_rules! handle_ops {
         }
     )*};
 }
-handle_ops!([M, F] Open { path, options }, [F] CreateAtomic { path }, [D] ReadDir { path });
+handle_ops!(
+    [M, F] Open { path, options },
+    [F] CreateAtomic { path },
+    [F] View { path },
+    [D] ReadDir { path }
+);
 
 impl<M, F> crate::Acquisition for Open<'_, M, F> {
     type Resource = F;
@@ -485,6 +561,11 @@ impl<M, F> crate::Acquisition for Open<'_, M, F> {
 }
 
 impl<F> crate::Acquisition for CreateAtomic<'_, F> {
+    type Resource = F;
+    type Error = io::Error;
+}
+
+impl<F> crate::Acquisition for View<'_, F> {
     type Resource = F;
     type Error = io::Error;
 }
@@ -501,6 +582,7 @@ operations! {
     SyncAll => io::Result<()>;
     SyncData => io::Result<()>;
     #[query] Stat => io::Result<FileInfo>;
+    #[query] ReadAt<'_> => io::Result<usize>;
     CreateDir<'_> => io::Result<()>;
     RemoveFile<'_> => io::Result<()>;
     RemoveDir<'_> => io::Result<()>;
@@ -511,7 +593,8 @@ operations! {
 crate::root::in_kind!(crate::kinds::Fs:
     ['a] Metadata<'a>, ['a] CreateDir<'a>, ['a] RemoveFile<'a>, ['a] RemoveDir<'a>,
     ['a] Rename<'a>, ['a] CopyFile<'a>,
-    ['a, M, F] Open<'a, M, F>, ['a, F] CreateAtomic<'a, F>, ['a, D] ReadDir<'a, D>,
+    ['a, M, F] Open<'a, M, F>, ['a, F] CreateAtomic<'a, F>, ['a, F] View<'a, F>,
+    ['a, D] ReadDir<'a, D>,
 );
 
 fn not_utf8() -> io::Error {
@@ -519,46 +602,55 @@ fn not_utf8() -> io::Error {
 }
 
 three_ways! {
-    /// Reads the whole file at `path`.
+    /// Reads the whole regular file at `path`, through a [`View`], from
+    /// shared access. For a FIFO or a device, open it with [`Open`] and use
+    /// `io::read_to_end`.
     pub fn read_file, read_file_async, read_file_send
-    [C, F] (c: &mut C, path: &(impl AsRef<Path> + ?Sized)) -> io::Result<Vec<u8>>
+    [C, F] (c: &C, path: &(impl AsRef<Path> + ?Sized)) -> io::Result<Vec<u8>>
     where
         sync {
-            C: for<'a> crate::Provide<Open<'a, ReadOnly, F>>,
-            F: for<'a> crate::Perform<Read<'a>>,
+            C: for<'a> crate::Lend<View<'a, F>>,
+            F: for<'a> crate::Inspect<ReadAt<'a>>,
         }
         async {
-            C: for<'a> crate::AsyncProvide<Open<'a, ReadOnly, F>>,
-            F: for<'a> crate::future::AsyncPerform<Read<'a>>,
+            C: for<'a> crate::AsyncLend<View<'a, F>>,
+            F: for<'a> crate::future::AsyncInspect<ReadAt<'a>>,
         }
         send {
-            C: for<'a> crate::AsyncProvide<Open<'a, ReadOnly, F>> + Send,
-            F: for<'a> crate::future::SendPerform<Read<'a>> + Send,
+            C: for<'a> crate::SendLend<View<'a, F>> + Sync,
+            F: for<'a> crate::future::SendInspect<ReadAt<'a>> + Sync,
         }
     {
-        acquire!(c, Open::read(path), |_, file| {
+        lend!(c, View::new(path), |_, file| {
             let mut bytes = Vec::new();
-            call!(super::io::read_to_end, super::io::read_to_end_async, super::io::read_to_end_send; (file, &mut bytes))?;
-            io::Result::Ok(bytes)
+            let mut chunk = [0; 4096];
+            loop {
+                match ask!(&*file, ReadAt::new(bytes.len() as u64, &mut chunk)) {
+                    Ok(0) => return io::Result::Ok(bytes),
+                    Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(e),
+                }
+            }
         })
     }
 
-    /// Reads the whole file at `path` as UTF-8. Fails with
-    /// `io::ErrorKind::InvalidData` if it is not.
+    /// Reads the whole regular file at `path` as UTF-8, as [`read_file`]
+    /// does. Fails with `io::ErrorKind::InvalidData` if it is not UTF-8.
     pub fn read_to_string, read_to_string_async, read_to_string_send
-    [C, F] (c: &mut C, path: &(impl AsRef<Path> + ?Sized)) -> io::Result<String>
+    [C, F] (c: &C, path: &(impl AsRef<Path> + ?Sized)) -> io::Result<String>
     where
         sync {
-            C: for<'a> crate::Provide<Open<'a, ReadOnly, F>>,
-            F: for<'a> crate::Perform<Read<'a>>,
+            C: for<'a> crate::Lend<View<'a, F>>,
+            F: for<'a> crate::Inspect<ReadAt<'a>>,
         }
         async {
-            C: for<'a> crate::AsyncProvide<Open<'a, ReadOnly, F>>,
-            F: for<'a> crate::future::AsyncPerform<Read<'a>>,
+            C: for<'a> crate::AsyncLend<View<'a, F>>,
+            F: for<'a> crate::future::AsyncInspect<ReadAt<'a>>,
         }
         send {
-            C: for<'a> crate::AsyncProvide<Open<'a, ReadOnly, F>> + Send,
-            F: for<'a> crate::future::SendPerform<Read<'a>> + Send,
+            C: for<'a> crate::SendLend<View<'a, F>> + Sync,
+            F: for<'a> crate::future::SendInspect<ReadAt<'a>> + Sync,
         }
     {
         let bytes = call!(read_file, read_file_async, read_file_send; (c, path))?;
@@ -584,7 +676,7 @@ three_ways! {
             F: for<'a> crate::future::AsyncPerform<Write<'a>>,
         }
         send {
-            C: for<'a> crate::AsyncProvide<Open<'a, WriteOnly, F>> + Send,
+            C: for<'a> crate::SendProvide<Open<'a, WriteOnly, F>> + Send,
             F: for<'a> crate::future::SendPerform<Write<'a>> + Send,
         }
     {
@@ -659,7 +751,7 @@ three_ways! {
             D: crate::future::AsyncPerform<NextEntry>,
         }
         send {
-            C: for<'a> crate::AsyncProvide<ReadDir<'a, D>>
+            C: for<'a> crate::SendProvide<ReadDir<'a, D>>
                 + for<'a> crate::future::SendInspect<Metadata<'a>>
                 + for<'a> crate::future::SendPerform<RemoveFile<'a>>
                 + crate::future::SendInspect<crate::ops::time::WallClock>

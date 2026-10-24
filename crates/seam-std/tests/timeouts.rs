@@ -11,7 +11,7 @@ use seam_core::ops::net::{Accept, LocalAddr, TcpBind, TcpConnect};
 use seam_core::ops::sync::{Channel, RecvError, RecvMsg, SendError, SendMsg};
 use seam_core::ops::task::{Join, JoinError, JoinNext, Spawn, SpawnInto, SpawnSet};
 use seam_core::ops::time::{Sleep, Timeout};
-use seam_core::{Acquire, Inspect, Perform};
+use seam_core::{Inspect, Perform, Provide};
 use seam_std::Std;
 use seam_std::net::{TcpListener, TcpStream};
 use seam_std::sync::{Receiver, Sender};

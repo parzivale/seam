@@ -6,7 +6,7 @@ use seam_core::ops::task::{
     Abort, AvailableParallelism, Detach, IsFinished, Join, JoinError, JoinNext, Spawn, SpawnInto,
     SpawnSet, YieldNow,
 };
-use seam_core::{AsyncProvide, Inspect, Perform, Rejected, Token};
+use seam_core::{Closing, Inspect, Opening, Perform, Rejected};
 
 use crate::Tokio;
 
@@ -57,28 +57,25 @@ impl<T> JoinHandle<T> {
     }
 }
 
-/// Spawns onto the current Tokio runtime.
-///
-/// # Panics
-///
-/// If called outside a Tokio runtime.
-impl<F> AsyncProvide<Spawn<F, JoinHandle<F::Output>>> for Tokio
-where
-    F: Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    async fn provide_async(
-        &mut self,
-        op: Spawn<F, JoinHandle<F::Output>>,
-        _: Token,
-    ) -> Result<JoinHandle<F::Output>, JoinError> {
+// Spawns onto the current Tokio runtime.
+//
+// # Panics
+//
+// If called outside a Tokio runtime.
+async_op!(
+    perform [F] Tokio, Opening<Spawn<F, JoinHandle<F::Output>>>,
+    |_s, Opening(op, _)| {
         Ok(JoinHandle::new(tokio::spawn(op.task)))
-    }
-
-    async fn close_async(&mut self, task: JoinHandle<F::Output>) -> Result<(), JoinError> {
+    },
+    where F: Future + Send + 'static, F::Output: Send + 'static
+);
+async_op!(
+    perform [F] Tokio, Closing<Spawn<F, JoinHandle<F::Output>>>,
+    |_s, Closing(task, _)| {
         task.finish().await
-    }
-}
+    },
+    where F: Future + Send + 'static, F::Output: Send + 'static
+);
 
 /// A set of tasks on Tokio, acquired with [`SpawnSet`]. Perform
 /// [`SpawnInto`] to add a task, [`JoinNext`] to take the next output as
@@ -104,16 +101,12 @@ fn join_error(e: tokio::task::JoinError) -> JoinError {
     }
 }
 
-impl<T: Send + 'static> AsyncProvide<SpawnSet<TaskSet<T>>> for Tokio {
-    async fn provide_async(
-        &mut self,
-        _: SpawnSet<TaskSet<T>>,
-        _: Token,
-    ) -> Result<TaskSet<T>, JoinError> {
-        Ok(TaskSet(tokio::task::JoinSet::new()))
-    }
-
-    async fn close_async(&mut self, mut set: TaskSet<T>) -> Result<(), JoinError> {
+async_op!(perform [T: Send + 'static] Tokio, Opening<SpawnSet<TaskSet<T>>>, |_s, Opening(_, _)| {
+    Ok(TaskSet(tokio::task::JoinSet::new()))
+});
+async_op!(
+    perform [T: Send + 'static] Tokio, Closing<SpawnSet<TaskSet<T>>>,
+    |_s, Closing(mut set, _)| {
         let mut first = Ok(());
         while let Some(result) = set.0.join_next().await {
             if let (Ok(()), Err(e)) = (&first, result) {
@@ -122,7 +115,7 @@ impl<T: Send + 'static> AsyncProvide<SpawnSet<TaskSet<T>>> for Tokio {
         }
         first
     }
-}
+);
 
 /// Spawns onto the current Tokio runtime. Never full.
 ///

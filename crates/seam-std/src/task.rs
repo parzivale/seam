@@ -22,7 +22,7 @@ use seam_core::ops::task::{
 };
 #[cfg(feature = "time")]
 use seam_core::ops::time::{Timeout, TimesOut};
-use seam_core::{Inspect, Perform, Provide, Rejected, Token};
+use seam_core::{Closing, Inspect, Opening, Perform, Rejected};
 
 use crate::Std;
 
@@ -117,20 +117,28 @@ impl<T> Drop for JoinHandle<T> {
     }
 }
 
-impl<T, F> Provide<Spawn<F, JoinHandle<T>>> for Std
+impl<T, F> Perform<Opening<Spawn<F, JoinHandle<T>>>> for Std
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    fn provide(
+    fn perform(
         &mut self,
-        op: Spawn<F, JoinHandle<T>>,
-        _: Token,
+        Opening(op, _): Opening<Spawn<F, JoinHandle<T>>>,
     ) -> Result<JoinHandle<T>, JoinError> {
         Ok(spawn(op.task, None))
     }
+}
 
-    fn close(&mut self, task: JoinHandle<T>) -> Result<(), JoinError> {
+impl<T, F> Perform<Closing<Spawn<F, JoinHandle<T>>>> for Std
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    fn perform(
+        &mut self,
+        Closing(task, _): Closing<Spawn<F, JoinHandle<T>>>,
+    ) -> Result<(), JoinError> {
         task.finish()
     }
 }
@@ -186,8 +194,11 @@ pub struct TaskSet<T> {
     done_rx: mpsc::Receiver<u64>,
 }
 
-impl<T: Send + 'static> Provide<SpawnSet<TaskSet<T>>> for Std {
-    fn provide(&mut self, _: SpawnSet<TaskSet<T>>, _: Token) -> Result<TaskSet<T>, JoinError> {
+impl<T: Send + 'static> Perform<Opening<SpawnSet<TaskSet<T>>>> for Std {
+    fn perform(
+        &mut self,
+        Opening(_, _): Opening<SpawnSet<TaskSet<T>>>,
+    ) -> Result<TaskSet<T>, JoinError> {
         let (done_tx, done_rx) = mpsc::channel();
         Ok(TaskSet {
             threads: BTreeMap::new(),
@@ -196,8 +207,13 @@ impl<T: Send + 'static> Provide<SpawnSet<TaskSet<T>>> for Std {
             done_rx,
         })
     }
+}
 
-    fn close(&mut self, mut set: TaskSet<T>) -> Result<(), JoinError> {
+impl<T: Send + 'static> Perform<Closing<SpawnSet<TaskSet<T>>>> for Std {
+    fn perform(
+        &mut self,
+        Closing(mut set, _): Closing<SpawnSet<TaskSet<T>>>,
+    ) -> Result<(), JoinError> {
         let mut first = Ok(());
         while let Some(result) = set.join_next() {
             if let (Ok(()), Err(e)) = (&first, result) {

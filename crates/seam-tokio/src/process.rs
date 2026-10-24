@@ -9,7 +9,7 @@ use seam_core::ops::process::{
     ChildId, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, RunCommand, SpawnChild,
     Wait,
 };
-use seam_core::{AsyncProvide, Inspect, Perform, Token};
+use seam_core::{Closing, Inspect, Opening, Perform};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 
@@ -101,35 +101,28 @@ impl Child {
     }
 }
 
-impl AsyncProvide<SpawnChild<Child>> for Tokio {
-    async fn provide_async(
-        &mut self,
-        op: SpawnChild<Child>,
-        _: Token,
-    ) -> seam_core::io::Result<Child> {
-        let mut cmd = tokio::process::Command::from(op.command);
-        cmd.stdin(stdio(op.stdin))
-            .stdout(stdio(op.stdout))
-            .stderr(stdio(op.stderr))
-            .kill_on_drop(true);
-        let mut inner = cmd.spawn()?;
-        Ok(Child {
-            stdin: inner.stdin.take(),
-            stdout: inner.stdout.take(),
-            stderr: inner.stderr.take(),
-            inner,
-            status: None,
-        })
-    }
-
-    /// Closes the pipes, so a child blocked writing to one cannot hang the
-    /// wait, then waits for it.
-    async fn close_async(&mut self, mut child: Child) -> seam_core::io::Result<()> {
-        child.stdout = None;
-        child.stderr = None;
-        child.wait().await.map(drop)
-    }
-}
+async_op!(perform [] Tokio, Opening<SpawnChild<Child>>, |_s, Opening(op, _)| {
+    let mut cmd = tokio::process::Command::from(op.command);
+    cmd.stdin(stdio(op.stdin))
+        .stdout(stdio(op.stdout))
+        .stderr(stdio(op.stderr))
+        .kill_on_drop(true);
+    let mut inner = cmd.spawn()?;
+    std::io::Result::Ok(Child {
+        stdin: inner.stdin.take(),
+        stdout: inner.stdout.take(),
+        stderr: inner.stderr.take(),
+        inner,
+        status: None,
+    })
+});
+// Closes the pipes, so a child blocked writing to one cannot hang the
+// wait, then waits for it.
+async_op!(perform [] Tokio, Closing<SpawnChild<Child>>, |_s, Closing(mut child, _)| {
+    child.stdout = None;
+    child.stderr = None;
+    child.wait().await.map(drop)
+});
 
 async_op!(perform ['a] Child, Write<'a>, |s, op| s.stdin()?.write(op.0).await);
 async_op!(perform [] Child, Flush, |s, _op| s.stdin()?.flush().await);

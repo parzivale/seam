@@ -17,7 +17,7 @@ use seam_core::ops::process::RunCommand;
 use seam_core::ops::signal::CtrlC;
 
 use seam_core::ops::time::{Now, Sleep, WallClock};
-use seam_core::{Acquire, Inspect, Perform};
+use seam_core::{Inspect, Perform, Provide};
 use seam_test::Sim;
 
 /// Lists `dir` through `ReadDir`, one entry at a time.
@@ -26,7 +26,7 @@ where
     C: for<'a> seam_core::Provide<ReadDir<'a, D>>,
     D: seam_core::Perform<NextEntry>,
 {
-    seam_core::Acquire::acquire(c, ReadDir::new(dir.as_ref()), |_, entries| {
+    seam_core::Provide::acquire(c, ReadDir::new(dir.as_ref()), |_, entries| {
         let mut paths = Vec::new();
         while let Some(path) = seam_core::Perform::perform(entries, NextEntry)? {
             paths.push(path);

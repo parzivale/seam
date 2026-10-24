@@ -20,7 +20,7 @@ use seam_core::ops::task::{
     Detach, Join, JoinError, JoinNext, Spawn, SpawnInto, SpawnSet, YieldNow,
 };
 use seam_core::ops::time::{Now, Sleep};
-use seam_core::{AsyncAcquire, Inspect};
+use seam_core::{AsyncProvide, Inspect};
 use seam_test::Sim;
 use seam_test::fs::AtomicFile;
 use seam_test::rt::net::{TcpListener, TcpStream, UdpSocket};
@@ -32,7 +32,7 @@ where
     C: for<'a> seam_core::Provide<ReadDir<'a, D>>,
     D: seam_core::Perform<NextEntry>,
 {
-    seam_core::Acquire::acquire(c, ReadDir::new(dir.as_ref()), |_, entries| {
+    seam_core::Provide::acquire(c, ReadDir::new(dir.as_ref()), |_, entries| {
         let mut paths = Vec::new();
         while let Some(path) = seam_core::Perform::perform(entries, NextEntry)? {
             paths.push(path);
@@ -158,7 +158,7 @@ fn seeds_find_and_replay_a_race() {
                     for _ in 0..2 {
                         let mut sim = sim.clone();
                         let increment = async move {
-                            let n: u32 = read_to_string_send(&mut sim, "/counter")
+                            let n: u32 = read_to_string_send(&sim, "/counter")
                                 .await?
                                 .parse()
                                 .unwrap();
@@ -397,7 +397,7 @@ fn the_world_carries_over() {
     sim.add_file("/in", "hello");
     let rt = Runtime::new(sim);
     rt.block_on(|mut sim| async move {
-        let text = read_to_string_send(&mut sim, "/in").await.unwrap();
+        let text = read_to_string_send(&sim, "/in").await.unwrap();
         write_file_send(&mut sim, "/out", &text.to_uppercase())
             .await
             .unwrap();

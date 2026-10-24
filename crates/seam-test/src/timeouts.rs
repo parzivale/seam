@@ -10,7 +10,7 @@
 #[allow(unused_imports)]
 use seam_core::ops::time::Timeout;
 #[allow(unused_imports)]
-use seam_core::{Perform, Provide, Token};
+use seam_core::{Closing, Opening, Perform};
 
 /// Turns a `WouldBlock` into the `TimedOut` of an expired wait.
 #[allow(dead_code)]
@@ -49,31 +49,39 @@ mod net {
         UdpSocket: RecvFrom<'_> => io::Result<(usize, SocketAddr)>;
     }
 
-    impl Provide<Timeout<Accept<TcpStream>>> for TcpListener {
-        fn provide(
+    impl Perform<Opening<Timeout<Accept<TcpStream>>>> for TcpListener {
+        fn perform(
             &mut self,
-            op: Timeout<Accept<TcpStream>>,
-            token: Token,
+            Opening(op, token): Opening<Timeout<Accept<TcpStream>>>,
         ) -> io::Result<TcpStream> {
-            expired(self.provide(op.op, token))
+            expired(self.perform(Opening(op.op, token)))
         }
+    }
 
-        fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+    impl Perform<Closing<Timeout<Accept<TcpStream>>>> for TcpListener {
+        fn perform(
+            &mut self,
+            Closing(stream, _): Closing<Timeout<Accept<TcpStream>>>,
+        ) -> io::Result<()> {
             stream.commit()
         }
     }
 
     /// Connecting never waits in the simulation, so the timeout is moot.
-    impl Provide<Timeout<TcpConnect<TcpStream>>> for Sim {
-        fn provide(
+    impl Perform<Opening<Timeout<TcpConnect<TcpStream>>>> for Sim {
+        fn perform(
             &mut self,
-            op: Timeout<TcpConnect<TcpStream>>,
-            token: Token,
+            Opening(op, token): Opening<Timeout<TcpConnect<TcpStream>>>,
         ) -> io::Result<TcpStream> {
-            self.provide(op.op, token)
+            self.perform(Opening(op.op, token))
         }
+    }
 
-        fn close(&mut self, stream: TcpStream) -> io::Result<()> {
+    impl Perform<Closing<Timeout<TcpConnect<TcpStream>>>> for Sim {
+        fn perform(
+            &mut self,
+            Closing(stream, _): Closing<Timeout<TcpConnect<TcpStream>>>,
+        ) -> io::Result<()> {
             stream.commit()
         }
     }

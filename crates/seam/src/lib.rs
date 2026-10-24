@@ -26,16 +26,16 @@
 //! # #[cfg(all(feature = "std", feature = "test", feature = "fs", feature = "io-std"))] {
 //! use seam::io;
 //! use seam::prelude::*;
-//! use seam::ops::fs::{Open, ReadOnly, read_to_string};
-//! use seam::ops::io::{Read, Write};
+//! use seam::ops::fs::{ReadAt, View, read_to_string};
+//! use seam::ops::io::Write;
 //! use seam::ops::stdio::{OpenStdout, print};
 //!
-//! /// The core. It can open files read-only and print, and nothing else.
-//! /// `F` and `O` are the backend's file and stdout types, inferred.
+//! /// The core. It can read files and print, and nothing else. `F` and `O`
+//! /// are the backend's file and stdout types, inferred.
 //! fn shout<C, F, O>(c: &mut C, path: &str) -> io::Result<()>
 //! where
-//!     C: for<'a> Provide<Open<'a, ReadOnly, F>> + Provide<OpenStdout<O>>,
-//!     F: for<'a> Perform<Read<'a>>,
+//!     C: for<'a> Lend<View<'a, F>> + Provide<OpenStdout<O>>,
+//!     F: for<'a> Inspect<ReadAt<'a>>,
 //!     O: for<'a> Perform<Write<'a>>,
 //! {
 //!     let text = read_to_string(c, path)?;
@@ -108,13 +108,15 @@
 //! async one (again, for types that opt in with [`Capability`]), so an
 //! async core runs on `Std`, `Sim` or a hand-written fake through
 //! [`block_on`](future::block_on), and on Tokio through
-//! `seam::tokio::block_on`. Write `SendPerform`/`SendInspect` bounds for a
-//! core that must run on a multithreaded runtime.
+//! `seam::tokio::block_on`. Write `SendPerform`, `SendInspect`,
+//! `SendProvide` and `SendLend` bounds for a core that must run on a
+//! multithreaded runtime; its scopes are `acquire_send` and `lend_send`,
+//! from [`SendScope`].
 //!
 //! # Resources
 //!
 //! A core never owns a file, a socket or a task. It asks for the capability
-//! to [`Provide`] one, and [`acquire`](Acquire::acquire)s it for the length
+//! to [`Provide`] one, and [`acquire`](Provide::acquire)s it for the length
 //! of a closure, which borrows it and gets the capability back:
 //!
 //! ```
@@ -138,11 +140,18 @@
 //!
 //! When the body returns `Ok`, the resource is committed (here, renamed
 //! into place) and any error from that is returned. When it returns `Err`,
-//! panics, or (with [`acquire_async`](AsyncAcquire::acquire_async)) is
+//! panics, or (with [`acquire_async`](AsyncProvide::acquire_async)) is
 //! cancelled, the resource is rolled back. Providers make dropping a
 //! resource equal rolling it back, so a cancellation at any `.await` never
 //! commits half a result. Tasks follow the same rule: a scope waits for its
-//! task on success and aborts it otherwise. See [`acquire`] for details.
+//! task on success and aborts it otherwise.
+//!
+//! Opening and closing are operations, [`Opening`] and [`Closing`], and
+//! `Provide` is the pair of them, so a scope works wherever operations do:
+//! async, through a [`Root`], through a wrapper. A scope that changes
+//! nothing outside itself, such as reading a file through a
+//! [`View`](ops::fs::View), is a query: [`Lend`] it, from shared access.
+//! See [`acquire`] for details.
 //!
 //! When a body's only error path is a `?`, Rust may not be able to infer its
 //! error type; end it with `io::Result::Ok(..)` (or your error type).
@@ -230,7 +239,8 @@ pub use seam_core::*;
 ///
 /// The capability traits ([`Inspect`], [`Perform`] and their async and
 /// `Send` forms), [`Operation`] and [`Query`] for defining operations,
-/// [`Provide`] and [`Acquire`] (and their async forms) for resources,
+/// [`Provide`] and [`Lend`] (and their async forms, and [`SendScope`]) for
+/// resources,
 /// [`Push`], and
 /// [`block_on`](crate::future::block_on). Operation types and backends are
 /// imported separately, so that a module's imports also show what it can

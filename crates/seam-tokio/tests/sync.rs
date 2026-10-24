@@ -6,7 +6,7 @@ use std::time::Duration;
 use seam_core::future::{SendInspect, SendPerform};
 use seam_core::ops::sync::{Channel, Load, RecvError, RecvMsg, SendMsg, Share, Update};
 use seam_core::ops::task::{JoinError, JoinNext, SpawnInto, SpawnSet};
-use seam_core::{AsyncAcquire, Perform};
+use seam_core::{AsyncProvide, Perform};
 use seam_tokio::Tokio;
 use seam_tokio::sync::{Receiver, Sender, Shared};
 use seam_tokio::task::TaskSet;

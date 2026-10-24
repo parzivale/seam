@@ -7,7 +7,7 @@ use seam_core::ops::net::{
     Accept, LocalAddr, PeerAddr, RecvFrom, ResolveInto, SendTo, Shutdown, TcpBind, TcpConnect,
     UdpBind,
 };
-use seam_core::{Inspect, Perform, Provide, Token};
+use seam_core::{Closing, Inspect, Opening, Perform};
 
 #[cfg(feature = "rt")]
 use seam_core::ops::task::SpawnWith;
@@ -61,46 +61,71 @@ impl Inspect<ResolveInto<'_>> for Std {
     }
 }
 
-impl Provide<TcpConnect<TcpStream>> for Std {
-    fn provide(&mut self, op: TcpConnect<TcpStream>, _: Token) -> seam_core::io::Result<TcpStream> {
+impl Perform<Opening<TcpConnect<TcpStream>>> for Std {
+    fn perform(
+        &mut self,
+        Opening(op, _): Opening<TcpConnect<TcpStream>>,
+    ) -> seam_core::io::Result<TcpStream> {
         crate::sio(std::net::TcpStream::connect(op.addr).map(TcpStream))
     }
+}
 
-    fn close(&mut self, stream: TcpStream) -> seam_core::io::Result<()> {
+impl Perform<Closing<TcpConnect<TcpStream>>> for Std {
+    fn perform(
+        &mut self,
+        Closing(stream, _): Closing<TcpConnect<TcpStream>>,
+    ) -> seam_core::io::Result<()> {
         stream.commit()
     }
 }
 
-impl Provide<TcpBind<TcpListener>> for Std {
-    fn provide(
+impl Perform<Opening<TcpBind<TcpListener>>> for Std {
+    fn perform(
         &mut self,
-        op: TcpBind<TcpListener>,
-        _: Token,
+        Opening(op, _): Opening<TcpBind<TcpListener>>,
     ) -> seam_core::io::Result<TcpListener> {
         crate::sio(std::net::TcpListener::bind(op.addr).map(TcpListener))
     }
+}
 
-    fn close(&mut self, _: TcpListener) -> seam_core::io::Result<()> {
+impl Perform<Closing<TcpBind<TcpListener>>> for Std {
+    fn perform(
+        &mut self,
+        Closing(_, _): Closing<TcpBind<TcpListener>>,
+    ) -> seam_core::io::Result<()> {
         Ok(())
     }
 }
 
-impl Provide<UdpBind<UdpSocket>> for Std {
-    fn provide(&mut self, op: UdpBind<UdpSocket>, _: Token) -> seam_core::io::Result<UdpSocket> {
+impl Perform<Opening<UdpBind<UdpSocket>>> for Std {
+    fn perform(
+        &mut self,
+        Opening(op, _): Opening<UdpBind<UdpSocket>>,
+    ) -> seam_core::io::Result<UdpSocket> {
         crate::sio(std::net::UdpSocket::bind(op.addr).map(UdpSocket))
     }
+}
 
-    fn close(&mut self, _: UdpSocket) -> seam_core::io::Result<()> {
+impl Perform<Closing<UdpBind<UdpSocket>>> for Std {
+    fn perform(&mut self, Closing(_, _): Closing<UdpBind<UdpSocket>>) -> seam_core::io::Result<()> {
         Ok(())
     }
 }
 
-impl Provide<Accept<TcpStream>> for TcpListener {
-    fn provide(&mut self, _: Accept<TcpStream>, _: Token) -> seam_core::io::Result<TcpStream> {
+impl Perform<Opening<Accept<TcpStream>>> for TcpListener {
+    fn perform(
+        &mut self,
+        Opening(_, _): Opening<Accept<TcpStream>>,
+    ) -> seam_core::io::Result<TcpStream> {
         crate::sio(self.0.accept().map(|(stream, _)| TcpStream(stream)))
     }
+}
 
-    fn close(&mut self, stream: TcpStream) -> seam_core::io::Result<()> {
+impl Perform<Closing<Accept<TcpStream>>> for TcpListener {
+    fn perform(
+        &mut self,
+        Closing(stream, _): Closing<Accept<TcpStream>>,
+    ) -> seam_core::io::Result<()> {
         stream.commit()
     }
 }
@@ -112,22 +137,34 @@ impl Provide<Accept<TcpStream>> for TcpListener {
 /// Closing the provided handle joins the thread; perform `Join` on it to
 /// see the body's result.
 #[cfg(feature = "rt")]
-impl<B, T, E> Provide<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>> for TcpListener
+impl<B, T, E> Perform<Opening<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>>
+    for TcpListener
 where
     B: FnOnce(&mut TcpStream) -> Result<T, E> + Send + 'static,
     T: Send + 'static,
     E: From<seam_core::io::Error> + Send + 'static,
 {
-    fn provide(
+    fn perform(
         &mut self,
-        op: SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>,
-        _: Token,
+        Opening(op, _): Opening<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>,
     ) -> seam_core::io::Result<JoinHandle<Result<T, E>>> {
         let (stream, _) = self.0.accept()?;
         Ok(spawn_connection(stream, op.body))
     }
+}
 
-    fn close(&mut self, task: JoinHandle<Result<T, E>>) -> seam_core::io::Result<()> {
+#[cfg(feature = "rt")]
+impl<B, T, E> Perform<Closing<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>>
+    for TcpListener
+where
+    B: FnOnce(&mut TcpStream) -> Result<T, E> + Send + 'static,
+    T: Send + 'static,
+    E: From<seam_core::io::Error> + Send + 'static,
+{
+    fn perform(
+        &mut self,
+        Closing(task, _): Closing<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>,
+    ) -> seam_core::io::Result<()> {
         task.finish().map_err(seam_core::io::Error::from)
     }
 }
@@ -287,11 +324,10 @@ mod timeouts {
         }
     }
 
-    impl Provide<Timeout<TcpConnect<TcpStream>>> for Std {
-        fn provide(
+    impl Perform<Opening<Timeout<TcpConnect<TcpStream>>>> for Std {
+        fn perform(
             &mut self,
-            op: Timeout<TcpConnect<TcpStream>>,
-            _: Token,
+            Opening(op, _): Opening<Timeout<TcpConnect<TcpStream>>>,
         ) -> seam_core::io::Result<TcpStream> {
             if op.after.is_zero() {
                 return Err(op.op.timed_out()); // a connection cannot be made instantly
@@ -303,8 +339,13 @@ mod timeouts {
                 })
                 .map(TcpStream)
         }
+    }
 
-        fn close(&mut self, stream: TcpStream) -> seam_core::io::Result<()> {
+    impl Perform<Closing<Timeout<TcpConnect<TcpStream>>>> for Std {
+        fn perform(
+            &mut self,
+            Closing(stream, _): Closing<Timeout<TcpConnect<TcpStream>>>,
+        ) -> seam_core::io::Result<()> {
             stream.commit()
         }
     }
@@ -337,16 +378,20 @@ mod timeouts {
         }
     }
 
-    impl Provide<Timeout<Accept<TcpStream>>> for TcpListener {
-        fn provide(
+    impl Perform<Opening<Timeout<Accept<TcpStream>>>> for TcpListener {
+        fn perform(
             &mut self,
-            op: Timeout<Accept<TcpStream>>,
-            _: Token,
+            Opening(op, _): Opening<Timeout<Accept<TcpStream>>>,
         ) -> seam_core::io::Result<TcpStream> {
             self.accept_within(op.after).map(TcpStream)
         }
+    }
 
-        fn close(&mut self, stream: TcpStream) -> seam_core::io::Result<()> {
+    impl Perform<Closing<Timeout<Accept<TcpStream>>>> for TcpListener {
+        fn perform(
+            &mut self,
+            Closing(stream, _): Closing<Timeout<Accept<TcpStream>>>,
+        ) -> seam_core::io::Result<()> {
             stream.commit()
         }
     }
@@ -354,23 +399,39 @@ mod timeouts {
     /// Waits at most the timeout for a connection, then handles it on a
     /// new thread, as `SpawnWith` without a timeout does.
     #[cfg(feature = "rt")]
-    impl<B, T, E> Provide<Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>>
+    impl<B, T, E>
+        Perform<Opening<Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>>>
         for TcpListener
     where
         B: FnOnce(&mut TcpStream) -> Result<T, E> + Send + 'static,
         T: Send + 'static,
         E: From<seam_core::io::Error> + Send + 'static,
     {
-        fn provide(
+        fn perform(
             &mut self,
-            op: Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>,
-            _: Token,
+            Opening(op, _): Opening<
+                Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>,
+            >,
         ) -> seam_core::io::Result<JoinHandle<Result<T, E>>> {
             let stream = self.accept_within(op.after)?;
             Ok(spawn_connection(stream, op.op.body))
         }
+    }
 
-        fn close(&mut self, task: JoinHandle<Result<T, E>>) -> seam_core::io::Result<()> {
+    impl<B, T, E>
+        Perform<Closing<Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>>>
+        for TcpListener
+    where
+        B: FnOnce(&mut TcpStream) -> Result<T, E> + Send + 'static,
+        T: Send + 'static,
+        E: From<seam_core::io::Error> + Send + 'static,
+    {
+        fn perform(
+            &mut self,
+            Closing(task, _): Closing<
+                Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>,
+            >,
+        ) -> seam_core::io::Result<()> {
             task.finish().map_err(seam_core::io::Error::from)
         }
     }

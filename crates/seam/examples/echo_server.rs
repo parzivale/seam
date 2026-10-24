@@ -50,7 +50,7 @@ where
 /// `Ok`, and just closed if it returns `Err` or the task is aborted.
 async fn connection<C, O, S>(log: &mut C, stream: &mut S) -> io::Result<()>
 where
-    C: AsyncProvide<OpenStdout<O>> + Send,
+    C: SendProvide<OpenStdout<O>> + Send,
     O: for<'a> SendPerform<Write<'a>> + Send,
     S: for<'a> SendPerform<Read<'a>> + for<'a> SendPerform<Write<'a>> + Inspect<PeerAddr> + Send,
 {
@@ -72,7 +72,7 @@ struct Echo<C, O>(C, PhantomData<fn() -> O>);
 
 impl<C, O, S> TaskBody<S> for Echo<C, O>
 where
-    C: AsyncProvide<OpenStdout<O>> + Send + 'static,
+    C: SendProvide<OpenStdout<O>> + Send + 'static,
     O: for<'a> SendPerform<Write<'a>> + Send + 'static,
     S: for<'a> SendPerform<Read<'a>> + for<'a> SendPerform<Write<'a>> + Inspect<PeerAddr> + Send,
 {
@@ -91,12 +91,12 @@ where
 /// connection and hand it to a new task running `Echo`, which owns it.
 async fn serve<C, O, L, S, H>(c: &mut C, addr: SocketAddr) -> io::Result<()>
 where
-    C: AsyncProvide<TcpBind<L>> + AsyncProvide<OpenStdout<O>> + Clone + Send + 'static,
+    C: SendProvide<TcpBind<L>> + SendProvide<OpenStdout<O>> + Clone + Send + 'static,
     O: for<'a> SendPerform<Write<'a>> + Send + 'static,
-    L: AsyncProvide<SpawnWith<Accept<S>, Echo<C, O>, H>> + Inspect<LocalAddr> + Send,
+    L: SendProvide<SpawnWith<Accept<S>, Echo<C, O>, H>> + Inspect<LocalAddr> + Send,
     H: SendPerform<Detach> + Send,
 {
-    c.acquire_async(TcpBind::new(addr), async |c, listener| {
+    c.acquire_send(TcpBind::new(addr), async |c, listener| {
         let local = listener.inspect(LocalAddr)?;
         print_send(c, format!("listening on {local}\n").as_bytes()).await?;
         loop {
@@ -104,7 +104,7 @@ where
             // The handle's scope would wait for the task; detach it so the
             // server can accept the next connection meanwhile.
             listener
-                .acquire_async(task, async |_, task| {
+                .acquire_send(task, async |_, task| {
                     task.perform_send(Detach).await;
                     io::Result::Ok(())
                 })
@@ -210,16 +210,16 @@ mod tests {
                     >(&mut server, addr)
                     .await
                 });
-                sim.acquire_async(serving, async |sim, server| {
+                sim.acquire_send(serving, async |sim, server| {
                     // Let the server bind before the clients connect.
                     sim.perform_send(Sleep(std::time::Duration::from_millis(1)))
                         .await;
                     let clients = SpawnSet::<TaskSet<io::Result<(String, Vec<u8>)>>>::new();
-                    sim.acquire_async(clients, async |sim, clients| {
+                    sim.acquire_send(clients, async |sim, clients| {
                         for name in ["alice", "bob", "carol"] {
                             let mut c = sim.clone();
                             let client = async move {
-                                c.acquire_async(TcpConnect::<RtStream>::new(addr), async |_, s| {
+                                c.acquire_send(TcpConnect::<RtStream>::new(addr), async |_, s| {
                                     for part in [name, " says hi"] {
                                         write_all_send(s, part.as_bytes()).await?;
                                     }

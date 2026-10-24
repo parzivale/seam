@@ -15,7 +15,7 @@ use seam_core::ops::sync::{store, store_send, try_recv, try_send};
 use seam_core::ops::sync::{Channel, Load, RecvError, RecvMsg, SendError, SendMsg, Share, Update};
 use seam_core::ops::task::{JoinError, JoinNext, SpawnInto, SpawnSet, YieldNow};
 use seam_core::ops::time::Sleep;
-use seam_core::{AsyncAcquire, Inspect, Perform};
+use seam_core::{AsyncProvide, Inspect, Perform};
 use seam_test::Sim;
 use seam_test::rt::{Deadlock, Runtime, TaskSet};
 use seam_test::sync::{Receiver, Sender, Shared};
@@ -300,7 +300,7 @@ fn a_worker_pool() {
         .await
         .unwrap();
         for n in 1..=6u32 {
-            let out = read_to_string_send(&mut sim, &format!("/tmp/{n}"))
+            let out = read_to_string_send(&sim, &format!("/tmp/{n}"))
                 .await
                 .unwrap();
             assert_eq!(out, (n * n).to_string());

@@ -11,7 +11,8 @@
 /// - `run!(handle, op)`: `Perform`, `AsyncPerform` or `SendPerform`.
 /// - `ask!(handle, query)`: `Inspect`, `AsyncInspect` or `SendInspect`.
 /// - `acquire!(c, acquisition, |c, resource| body)`: `acquire`, or
-///   `acquire_async` with an async closure.
+///   `acquire_async` or `acquire_send` with an async closure.
+/// - `lend!(c, acquisition, |c, resource| body)`: the same for `lend`.
 /// - `call!(sync, async, send; (args))`: another helper, in the same form.
 #[allow(unused_macros)]
 macro_rules! three_ways {
@@ -39,7 +40,13 @@ macro_rules! three_ways {
             #[allow(unused_macros)]
             macro_rules! acquire {
                 ($c:expr, $a:expr, |$cc:pat_param, $r:pat_param| $b:expr) => {
-                    $crate::Acquire::acquire($c, $a, |$cc, $r| $b)
+                    $crate::Provide::acquire($c, $a, |$cc, $r| $b)
+                };
+            }
+            #[allow(unused_macros)]
+            macro_rules! lend {
+                ($c:expr, $a:expr, |$cc:pat_param, $r:pat_param| $b:expr) => {
+                    $crate::Lend::lend($c, $a, |$cc, $r| $b)
                 };
             }
             #[allow(unused_macros)]
@@ -63,7 +70,13 @@ macro_rules! three_ways {
             #[allow(unused_macros)]
             macro_rules! acquire {
                 ($c:expr, $a:expr, |$cc:pat_param, $r:pat_param| $b:expr) => {
-                    $crate::AsyncAcquire::acquire_async($c, $a, async |$cc, $r| $b).await
+                    $crate::AsyncProvide::acquire_async($c, $a, async |$cc, $r| $b).await
+                };
+            }
+            #[allow(unused_macros)]
+            macro_rules! lend {
+                ($c:expr, $a:expr, |$cc:pat_param, $r:pat_param| $b:expr) => {
+                    $crate::AsyncLend::lend_async($c, $a, async |$cc, $r| $b).await
                 };
             }
             #[allow(unused_macros)]
@@ -90,7 +103,13 @@ macro_rules! three_ways {
             #[allow(unused_macros)]
             macro_rules! acquire {
                 ($c:expr, $a:expr, |$cc:pat_param, $r:pat_param| $b:expr) => {
-                    $crate::AsyncAcquire::acquire_async($c, $a, async |$cc, $r| $b).await
+                    $crate::SendScope::acquire_send($c, $a, async |$cc, $r| $b).await
+                };
+            }
+            #[allow(unused_macros)]
+            macro_rules! lend {
+                ($c:expr, $a:expr, |$cc:pat_param, $r:pat_param| $b:expr) => {
+                    $crate::SendScope::lend_send($c, $a, async |$cc, $r| $b).await
                 };
             }
             #[allow(unused_macros)]

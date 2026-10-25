@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.4.0
+
+Roots route each effect to the part that serves it, and every simulated
+part reads its own share of a world file. All of these are breaking.
+
+### Roots route per effect
+
+| Removed | Use |
+|---|---|
+| `kinds::Fs`, `kinds::Time`, ... | one key per effect, in `effects`: `effects::View`, `effects::Open<ReadOnly>`, `effects::Now`, ... |
+| `InKind { type Kind }` | `Effect { type Key }`; a program's own effect is usually its own key |
+
+A root lists the effects each part serves and grants a core exactly those.
+`Open` is keyed by its mode, so reading and writing are separate grants.
+`root!` no longer lets a part's name shadow a path in its keys.
+
+A root is a list of parts, each with the effects it serves:
+`root![Std<fx::Args, fx::View>, Sim<fx::Now> = sim, Pool<fx::Query>(4),
+mounts::Bind]`. Each part is built with its own construction syntax; a
+handler of the root's own crate can be listed bare, keyed by `Effect`. The
+`name: value => [keys]` form remains, for parts whose type is inferred.
+`root.part::<K>()` returns the part serving `K`. `Std` and `Tokio` are
+plain unit structs (no longer `non_exhaustive`), and `Copy`.
+
+### World files for every simulated part
+
+- `World`: a simulated part's share of a world file, the blocks it reads
+  and `load` and `check` for them. `Sim` implements it.
+- `load_world::<(K, ..), _>(&mut root, text)` and `check_world` set up and
+  check a whole root through the effects listed, up to 32.
+- `world_file::Node` and `Value` are public, with the checks `Sim`'s
+  loader uses, so other crates' parts can read their blocks.
+
 ## 0.3.0
 
 Every effect is now a primitive or built from primitives. A backend
@@ -44,33 +77,6 @@ so scopes work wherever operations do: the async forms and lifts, a `Root`
   `ReadAt`, a query. Backends' handle is `FileView`. A FIFO or a device is
   refused (`InvalidInput`): open those with `Open`.
 - `ReadDir` is lent.
-
-### Roots route per effect
-
-| Removed | Use |
-|---|---|
-| `kinds::Fs`, `kinds::Time`, ... | one key per effect, in `effects`: `effects::View`, `effects::Open<ReadOnly>`, `effects::Now`, ... |
-| `InKind { type Kind }` | `Effect { type Key }`; a program's own effect is usually its own key |
-
-A root lists the effects each part serves and grants a core exactly those.
-`Open` is keyed by its mode, so reading and writing are separate grants.
-`root!` no longer lets a part's name shadow a path in its keys.
-
-A root is a list of parts, each with the effects it serves:
-`root![Std<fx::Args, fx::View>, Sim<fx::Now> = sim, Pool<fx::Query>(4),
-mounts::Bind]`. Each part is built with its own construction syntax; a
-handler of the root's own crate can be listed bare, keyed by `Effect`. The
-`name: value => [keys]` form remains, for parts whose type is inferred. `root.part::<K>()` returns the part serving `K`. `Std` and
-`Tokio` are plain unit structs (no longer `non_exhaustive`), and `Copy`.
-
-### World files for every simulated part
-
-- `World`: a simulated part's share of a world file, the blocks it reads
-  and `load` and `check` for them. `Sim` implements it.
-- `load_world::<(K, ..), _>(&mut root, text)` and `check_world` set up and
-  check a whole root through the effects listed, up to 32.
-- `world_file::Node` and `Value` are public, with the checks `Sim`'s
-  loader uses, so other crates' parts can read their blocks.
 
 ### New
 

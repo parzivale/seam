@@ -92,6 +92,10 @@ Sim<fx::Now>::from_world(W)?]`. The named form is
 - `Sim` is `Clone` (with std), and every clone is a handle to one world:
   a part built over the simulation is given a clone. `Sim::invocations`
   returns a `Vec`, since the log lives behind the world's lock.
+- `Sim`'s world-file blocks are an ordinary `World` impl over public API
+  only, checked by compiling it outside the crate. New for every part:
+  `world_file::load` and `world_file::check` set up and check one part
+  outside a root, and `Sim::script_command` is public.
 - `Timeout` covers primitives only. Backends no longer time `ReadExact`,
   `ReadToEnd`, `WriteAll` or `ReadErrToEnd`.
 - `sync` turns on `time`, for `try_send` and `try_recv`.

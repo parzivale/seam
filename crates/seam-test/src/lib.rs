@@ -129,6 +129,9 @@
 
 #[cfg(feature = "std")]
 extern crate std;
+// So that `sim_world` names this crate as an outside crate would.
+#[cfg(feature = "std")]
+extern crate self as seam_test;
 
 #[cfg(feature = "env")]
 mod env;
@@ -146,6 +149,8 @@ mod random;
 pub mod rt;
 #[cfg(feature = "signal")]
 mod signal;
+#[cfg(feature = "std")]
+mod sim_world;
 #[cfg(feature = "io-std")]
 pub mod stdio;
 #[cfg(feature = "sync")]

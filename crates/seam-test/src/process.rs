@@ -176,7 +176,7 @@ impl Sim {
     /// responses win, and one for exact arguments wins over one for any.
     /// Replaces a handler from [`on_command`](Self::on_command) for the
     /// same program.
-    pub(crate) fn script_command(
+    pub fn script_command(
         &mut self,
         program: OsString,
         args: Option<Vec<OsString>>,

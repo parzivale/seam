@@ -89,9 +89,8 @@ fn on_std_and_in_the_simulation() {
 #[test]
 fn on_tokio_and_the_simulated_runtime() {
     let real = seam::tokio::block_on(async {
-        let mut root = seam::root! {
-            tokio: seam::tokio::Tokio::new() => [seam::effects::SpawnChild],
-        };
+        use seam::tokio::Tokio;
+        let mut root = seam::root![Tokio<seam::effects::SpawnChild>];
         filter_async::<_, seam::tokio::process::Child>(&mut root, upper(), b"seam").await
     })
     .unwrap();

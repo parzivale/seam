@@ -299,8 +299,8 @@ where
     }
 }
 
-/// Builds a root from its parts: one field per part, each with the effects
-/// it serves. It evaluates to the [`Root`], ready to hand to a core:
+/// Builds a root from its parts. It evaluates to the [`Root`], ready to
+/// hand to a core:
 ///
 /// ```
 /// # #[cfg(feature = "time")] {
@@ -310,44 +310,30 @@ where
 /// # impl Capability for Clock {}
 /// # impl Inspect<Now> for Clock { fn inspect(&self, _: Now) -> Instant { Instant::EPOCH } }
 /// # impl Perform<Sleep> for Clock { fn perform(&mut self, _: Sleep) {} }
-/// let mut root = seam_core::root! {
-///     clock: Clock => [effects::Now, effects::Sleep],
-/// };
+/// let mut root = seam_core::root![Clock<effects::Now, effects::Sleep>];
 /// root.perform(Sleep(core::time::Duration::from_secs(1)));
-/// let _clock: &Clock = &root.parts().clock;
+/// let _clock: &Clock = root.part::<effects::Now>();
 /// # }
 /// ```
 ///
-/// Parts can also be listed one effect at a time, as handlers, with no
-/// key lists:
+/// Each part is written as Rust builds a value of its type, with the effects
+/// it serves in brackets after the type's name:
 ///
 /// ```text
 /// seam::root![
-///     Std<fx::Args, fx::View>,                  // a backend, serving these effects
-///     Sim<fx::Now, fx::Sleep> = world,          // built by any expression
-///     Pool<fx::Query>(4),                       // built as `Pool(4)`
-///     Pool<fx::Exec> { size: 4 },               // built as `Pool { size: 4 }`
-///     mounts::Bind,                             // a handler of this crate, keyed by `Effect`
-///     cache: Cache::new() => [Get, Put],        // a part whose type is inferred
+///     Std<fx::Args, fx::View>,                        // a unit struct
+///     Pool<fx::Query>(4),                             // a tuple struct: Pool(4)
+///     FileStore<Get, Put> { fs: sim.clone(), path },  // a struct literal
+///     Sim<fx::Now, fx::Sleep>::from_world(WORLD)?,    // one of the type's constructors, with `?`
 /// ]
 /// ```
 ///
 /// The brackets name the effects a part serves, and the root grants only
-/// those, whatever else the part could do. A part from another crate names
-/// them there: Rust cannot tell two keys apart when it would have to look
-/// them up in another crate's `Effect` impls, so the keys have to be written
-/// where the macro can copy them. Inside `root!`, `Name<..>` therefore
-/// always lists effects. A handler defined in the same crate as the root can
-/// be listed bare, and is then routed by its own `Effect` impl. A part whose
-/// type is generic, or long, is given a name and a value instead.
-/// The root derives `Clone`, `Copy`, `Debug` and `Default` whenever its
-/// parts do, unless it has a bare handler, whose type has to be written
-/// out.
-///
-/// One part may serve several effects; each effect is served by one part.
-/// The root's struct is generated, and is `Clone`, `Copy`, `Debug` and
-/// `Default` whenever its parts are; its fields are named as given. A root
-/// value has at most 16 parts.
+/// those, whatever else the part could do. Inside `root!`, `Name<..>`
+/// always lists effects, so a part whose type is generic is built by a
+/// constructor or a struct literal of that type. Each effect is served by
+/// one part; a root has at most 32 parts. Its struct is generated, and is
+/// `Clone`, `Copy`, `Debug` and `Default` whenever its parts are.
 ///
 /// To name the root's type (to store it in a struct, say), define the
 /// struct instead, and wrap a value of it in [`Root::new`]:
@@ -362,7 +348,7 @@ where
 /// seam_core::root! {
 ///     #[derive(Clone, Default)]
 ///     pub struct App {
-///         pub clock: Clock => [effects::Now],
+///         pub clock: Clock<effects::Now>,
 ///     }
 /// }
 /// let root: seam_core::Root<App> = seam_core::Root::new(App::default());
@@ -371,19 +357,22 @@ where
 /// ```
 #[macro_export]
 macro_rules! root {
-    // A named struct.
+    // A named struct: each field a part, with the effects it serves.
     (
         $(#[$meta:meta])*
         $vis:vis struct $name:ident {
-            $($fvis:vis $field:ident : $part:ty => [$($key:ty),+ $(,)?]),* $(,)?
+            $($fvis:vis $field:ident : $($seg:ident)::+ < $($key:ty),+ $(,)? >),* $(,)?
         }
     ) => {
         $(#[$meta])*
         $vis struct $name {
-            $($fvis $field: $part),*
+            $($fvis $field: $($seg)::+),*
         }
 
-        $($(
+        $($crate::root!(@named $name $field ($($seg)::+) [$($key),+]);)*
+    };
+    (@named $name:ident $field:ident ($part:ty) [$($key:ty),+]) => {
+        $(
             impl $crate::Pick<$name> for $key {
                 type Part = $part;
                 fn pick(parts: &$name) -> &$part {
@@ -393,127 +382,75 @@ macro_rules! root {
                     &mut parts.$field
                 }
             }
-        )+)*
+        )+
     };
 
-    // `name: value => [keys]`.
-    (@munch [$($named:tt)*] $handlers:tt [$p:ident $($ps:ident)*] $fs:tt
-        $field:ident : $value:expr => [$($key:ty),+ $(,)?] $(, $($rest:tt)*)?) => {
-        $crate::root!(@munch [$($named)* ($field $p ($value) [$($key),+])] $handlers
-            [$($ps)*] $fs $($($rest)*)?)
-    };
-
-    // `Backend<Keys>`, in each construction form: the backend, serving the
-    // effects listed in the brackets. The keys are written, so the part's
-    // type is inferred, as a named part's is.
-    (@munch [$($named:tt)*] $handlers:tt [$p:ident $($ps:ident)*] [$f:ident $($fs:ident)*]
+    // A root value: a list of parts, each `Name<Keys>`, built from what
+    // follows. The struct is generic over the parts' types, so they are
+    // inferred from the values; its type parameters and fields are named
+    // from the lists below, not after anything the caller wrote.
+    (@munch [$($done:tt)*] [$p:ident $($ps:ident)*] [$f:ident $($fs:ident)*]
         $($seg:ident)::+ < $($key:ty),+ $(,)? > ($($args:tt)*) $(, $($rest:tt)*)?) => {
-        $crate::root!(@munch [$($named)* ($f $p ($($seg)::+($($args)*)) [$($key),+])] $handlers
+        $crate::root!(@munch [$($done)* ($f $p ($($seg)::+($($args)*)) [$($key),+])]
             [$($ps)*] [$($fs)*] $($($rest)*)?)
     };
-    (@munch [$($named:tt)*] $handlers:tt [$p:ident $($ps:ident)*] [$f:ident $($fs:ident)*]
+    (@munch [$($done:tt)*] [$p:ident $($ps:ident)*] [$f:ident $($fs:ident)*]
         $($seg:ident)::+ < $($key:ty),+ $(,)? > { $($fields:tt)* } $(, $($rest:tt)*)?) => {
-        $crate::root!(@munch [$($named)* ($f $p ($($seg)::+ { $($fields)* }) [$($key),+])] $handlers
+        $crate::root!(@munch [$($done)* ($f $p ($($seg)::+ { $($fields)* }) [$($key),+])]
             [$($ps)*] [$($fs)*] $($($rest)*)?)
     };
-    (@munch [$($named:tt)*] $handlers:tt [$p:ident $($ps:ident)*] [$f:ident $($fs:ident)*]
-        $($seg:ident)::+ < $($key:ty),+ $(,)? > = $value:expr $(, $($rest:tt)*)?) => {
-        $crate::root!(@munch [$($named)* ($f $p ({ let part: $($seg)::+ = $value; part }) [$($key),+])]
-            $handlers [$($ps)*] [$($fs)*] $($($rest)*)?)
+    (@munch [$($done:tt)*] [$p:ident $($ps:ident)*] [$f:ident $($fs:ident)*]
+        $($seg:ident)::+ < $($key:ty),+ $(,)? > :: $ctor:ident ($($args:tt)*) ? $(, $($rest:tt)*)?) => {
+        $crate::root!(@munch [$($done)* ($f $p ($($seg)::+::$ctor($($args)*)?) [$($key),+])]
+            [$($ps)*] [$($fs)*] $($($rest)*)?)
     };
-    (@munch [$($named:tt)*] $handlers:tt [$p:ident $($ps:ident)*] [$f:ident $($fs:ident)*]
+    (@munch [$($done:tt)*] [$p:ident $($ps:ident)*] [$f:ident $($fs:ident)*]
+        $($seg:ident)::+ < $($key:ty),+ $(,)? > :: $ctor:ident ($($args:tt)*) $(, $($rest:tt)*)?) => {
+        $crate::root!(@munch [$($done)* ($f $p ($($seg)::+::$ctor($($args)*)) [$($key),+])]
+            [$($ps)*] [$($fs)*] $($($rest)*)?)
+    };
+    (@munch [$($done:tt)*] [$p:ident $($ps:ident)*] [$f:ident $($fs:ident)*]
         $($seg:ident)::+ < $($key:ty),+ $(,)? > $(, $($rest:tt)*)?) => {
-        $crate::root!(@munch [$($named)* ($f $p ($($seg)::+) [$($key),+])] $handlers
+        $crate::root!(@munch [$($done)* ($f $p ($($seg)::+) [$($key),+])]
             [$($ps)*] [$($fs)*] $($($rest)*)?)
     };
-
-    // A handler of this crate, naming its effect through `Effect`, in each
-    // construction form. (A handler from another crate names its key in
-    // brackets instead: Rust cannot tell such keys apart.)
-    (@munch $named:tt [$($handlers:tt)*] $ps:tt [$f:ident $($fs:ident)*]
-        $($seg:ident)::+ ($($args:tt)*) $(, $($rest:tt)*)?) => {
-        $crate::root!(@munch $named [$($handlers)* ($f ($($seg)::+) ($($seg)::+($($args)*))
-            [<$($seg)::+ as $crate::Effect>::Key])] $ps [$($fs)*] $($($rest)*)?)
-    };
-    (@munch $named:tt [$($handlers:tt)*] $ps:tt [$f:ident $($fs:ident)*]
-        $($seg:ident)::+ { $($fields:tt)* } $(, $($rest:tt)*)?) => {
-        $crate::root!(@munch $named [$($handlers)* ($f ($($seg)::+) ($($seg)::+ { $($fields)* })
-            [<$($seg)::+ as $crate::Effect>::Key])] $ps [$($fs)*] $($($rest)*)?)
-    };
-    (@munch $named:tt [$($handlers:tt)*] $ps:tt [$f:ident $($fs:ident)*]
-        $($seg:ident)::+ = $value:expr $(, $($rest:tt)*)?) => {
-        $crate::root!(@munch $named [$($handlers)* ($f ($($seg)::+) ($value)
-            [<$($seg)::+ as $crate::Effect>::Key])] $ps [$($fs)*] $($($rest)*)?)
-    };
-    (@munch $named:tt [$($handlers:tt)*] $ps:tt [$f:ident $($fs:ident)*]
-        $($seg:ident)::+ $(, $($rest:tt)*)?) => {
-        $crate::root!(@munch $named [$($handlers)* ($f ($($seg)::+) ($($seg)::+)
-            [<$($seg)::+ as $crate::Effect>::Key])] $ps [$($fs)*] $($($rest)*)?)
-    };
-
-    // Done, with no bare handlers: every part is a type parameter, so the
-    // struct derives what its parts allow.
-    (@munch [$(($field:ident $p:ident ($value:expr) [$($key:ty),+]))+] [] $ps:tt $fs:tt) => {{
+    (@munch [$(($f:ident $p:ident ($value:expr) [$($key:ty),+]))+] $ps:tt $fs:tt) => {{
         #[derive(Clone, Copy, Debug, Default)]
         struct Parts<$($p),+> {
-            $($field: $p),+
+            $($f: $p),+
         }
-        $crate::root!(@picks [$($p),+] $($field $p [$($key),+])+);
-        $crate::Root::new(Parts { $($field: $value),+ })
-    }};
-    // Done, with bare handlers: their types are written out, so nothing is
-    // derived.
-    (@munch [$(($field:ident $p:ident ($value:expr) [$($key:ty),+]))*]
-        [$(($f:ident ($h:ty) ($hv:expr) [$($hk:ty),+]))+] $ps:tt $fs:tt) => {{
-        struct Parts<$($p),*> {
-            $($field: $p,)*
-            $($f: $h,)+
-        }
-        $crate::root!(@picks [$($p),*] $($field $p [$($key),+])*);
-        $crate::root!(@handlers [$($p),*] $($f ($h) [$($hk),+])+);
-        $crate::Root::new(Parts { $($field: $value,)* $($f: $hv,)+ })
+        $crate::root!(@picks [$($p),+] $($f $p [$($key),+])+);
+        $crate::Root::new(Parts { $($f: $value),+ })
     }};
 
-    (@picks $all:tt $($field:ident $p:ident [$($key:ty),+])*) => {
-        $($($crate::root!(@pick $all $field $p $key);)+)*
+    // Anything else is not a part.
+    (@munch $done:tt $ps:tt $fs:tt $($bad:tt)+) => {
+        ::core::compile_error!(::core::concat!(
+            "expected a part, written as its type builds: `Name<Keys>`, `Name<Keys>(..)`, ",
+            "`Name<Keys> { .. }` or `Name<Keys>::constructor(..)`; found `",
+            ::core::stringify!($($bad)+), "`"
+        ))
     };
-    (@pick [$($all:ident),*] $field:ident $p:ident $key:ty) => {
-        impl<$($all),*> $crate::Pick<Parts<$($all),*>> for $key {
+
+    (@picks $all:tt $($f:ident $p:ident [$($key:ty),+])+) => {
+        $($($crate::root!(@pick $all $f $p $key);)+)+
+    };
+    (@pick [$($all:ident),+] $f:ident $p:ident $key:ty) => {
+        impl<$($all),+> $crate::Pick<Parts<$($all),+>> for $key {
             type Part = $p;
-            fn pick(parts: &Parts<$($all),*>) -> &$p {
-                &parts.$field
-            }
-            fn pick_mut(parts: &mut Parts<$($all),*>) -> &mut $p {
-                &mut parts.$field
-            }
-        }
-    };
-    (@handlers $all:tt $($f:ident ($h:ty) [$($hk:ty),+])+) => {
-        $($($crate::root!(@handler $all $f ($h) ($hk));)+)+
-    };
-    (@handler [$($all:ident),*] $f:ident ($h:ty) ($hk:ty)) => {
-        impl<$($all),*> $crate::Pick<Parts<$($all),*>> for $hk {
-            type Part = $h;
-            fn pick(parts: &Parts<$($all),*>) -> &$h {
+            fn pick(parts: &Parts<$($all),+>) -> &$p {
                 &parts.$f
             }
-            fn pick_mut(parts: &mut Parts<$($all),*>) -> &mut $h {
+            fn pick_mut(parts: &mut Parts<$($all),+>) -> &mut $p {
                 &mut parts.$f
             }
         }
     };
 
-    // A root value: a list of parts, each either a handler (a value whose
-    // type names its effect, through `Effect`) or `name: value => [keys]`.
-    // Parts listed with keys are generic, so their types are inferred; a
-    // handler's type is written, so that its key can be read from it. The
-    // type parameters and handler fields are named from the lists below,
-    // not after anything the caller wrote, so nothing shadows a path.
     ($($items:tt)+) => {
-        $crate::root!(@munch [] []
-            [P0 P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13 P14 P15]
-            [__seam0 __seam1 __seam2 __seam3 __seam4 __seam5 __seam6 __seam7
-             __seam8 __seam9 __seam10 __seam11 __seam12 __seam13 __seam14 __seam15]
+        $crate::root!(@munch []
+            [P0 P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13 P14 P15 P16 P17 P18 P19 P20 P21 P22 P23 P24 P25 P26 P27 P28 P29 P30 P31]
+            [__seam0 __seam1 __seam2 __seam3 __seam4 __seam5 __seam6 __seam7 __seam8 __seam9 __seam10 __seam11 __seam12 __seam13 __seam14 __seam15 __seam16 __seam17 __seam18 __seam19 __seam20 __seam21 __seam22 __seam23 __seam24 __seam25 __seam26 __seam27 __seam28 __seam29 __seam30 __seam31]
             $($items)+)
     };
 }

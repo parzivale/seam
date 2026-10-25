@@ -97,44 +97,39 @@ where
 
 #[test]
 fn a_sync_root_with_a_simulated_world_and_an_own_part() {
-    seam::root! {
-        struct App {
-            sim: Sim => [fx::Var, fx::Now, fx::Sleep, fx::CreateAtomic],
-            store: Memory => [Get, Put],
-        }
-    }
-    let mut sim = Sim::new();
-    sim.set_var("SEAM_ROOT_TEST_USER", "ada");
-    let mut root = Root::new(App {
-        sim,
-        store: Memory::default(),
-    });
+    let mut root = seam::root![
+        Sim < fx::Var,
+        fx::Now,
+        fx::Sleep,
+        fx::CreateAtomic > ::new(),
+        Memory < Get,
+        Put > ::default(),
+    ];
+    root.part_mut::<fx::Var>()
+        .set_var("SEAM_ROOT_TEST_USER", "ada");
     assert_eq!(visit(&mut root), "hello, ada");
     assert_eq!(visit(&mut root), "welcome back, ada");
-    assert_eq!(root.parts().store.0["ada"], "seen");
+    assert_eq!(root.part::<Get>().0["ada"], "seen");
 
     // Acquisitions go through the root too.
     root.acquire(CreateAtomic::new("/tmp/out"), |_, file| {
         write_all(file, b"ok")
     })
     .unwrap();
-    assert_eq!(root.parts().sim.file("/tmp/out").unwrap(), b"ok");
+    assert_eq!(
+        root.part::<fx::CreateAtomic>().file("/tmp/out").unwrap(),
+        b"ok"
+    );
 }
 
 /// Tokio for what waits, std for what does not: one root, sync and async
 /// parts mixed, serving a `Send` async core on a multithreaded runtime.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tokio_and_std_in_one_root() {
-    seam::root! {
-        struct App {
-            std: Std => [fx::FillRandom],
-            tokio: Tokio => [fx::Now, fx::Sleep, fx::Open<WriteOnly>, fx::View],
-        }
-    }
-    let mut root = Root::new(App {
-        std: Std::new(),
-        tokio: Tokio::new(),
-    });
+    let mut root = seam::root![
+        Std<fx::FillRandom>,
+        Tokio<fx::Now, fx::Sleep, fx::Open<WriteOnly>, fx::View>,
+    ];
     let path = std::env::temp_dir().join(format!("seam-root-{}", std::process::id()));
     let path = path.to_str().unwrap().to_owned();
     let read = tokio::spawn(async move {
@@ -159,8 +154,8 @@ fn a_root_on_simulated_threads() {
     seam::root! {
         #[derive(Clone)]
         struct App {
-            sim: ThreadSim => [fx::Now, fx::Sleep, fx::Spawn, fx::Channel],
-            store: Memory => [Get, Put],
+            sim: ThreadSim<fx::Now, fx::Sleep, fx::Spawn, fx::Channel>,
+            store: Memory<Get, Put>,
         }
     }
     let threads = Threads::new(Sim::new());
@@ -192,7 +187,7 @@ fn a_named_root() {
     seam::root! {
         #[derive(Default)]
         struct App {
-            store: Memory => [Get, Put],
+            store: Memory<Get, Put>,
         }
     }
     struct Service {
@@ -208,20 +203,16 @@ fn a_named_root() {
 /// Two roots in one function do not clash.
 #[test]
 fn roots_side_by_side() {
-    let a = seam::root! { store: Memory::default() => [Get, Put] };
-    let b = seam::root! { sim: Sim::new() => [fx::Now], store: Memory::default() => [Get] };
+    let a = seam::root![Memory < Get, Put > ::default()];
+    let b = seam::root![Sim<fx::Now>::new(), Memory<Get>::default()];
     assert_eq!(a.inspect(Get("x".into())), None);
     assert_eq!(b.inspect(Now).since_epoch(), Duration::ZERO);
 }
 
-// ---- roots built from handlers, one per effect ----
+// ---- each construction form ----
 
-/// A handler of a program's own: a unit struct serving `Get`.
-#[derive(Default)]
+/// A unit struct, serving `Get`.
 struct Fixed;
-impl Effect for Fixed {
-    type Key = Get;
-}
 impl Capability for Fixed {}
 impl Inspect<Get> for Fixed {
     fn inspect(&self, op: Get) -> Option<String> {
@@ -229,11 +220,8 @@ impl Inspect<Get> for Fixed {
     }
 }
 
-/// A tuple-struct handler, serving `Put` into a log.
+/// A tuple struct, serving `Put` into a log.
 struct Log(Vec<String>);
-impl Effect for Log {
-    type Key = Put;
-}
 impl Capability for Log {}
 impl Perform<Put> for Log {
     fn perform(&mut self, op: Put) {
@@ -241,12 +229,9 @@ impl Perform<Put> for Log {
     }
 }
 
-/// A struct-literal handler, serving `Now` at a fixed instant.
+/// A struct with fields, serving `Now` at a fixed instant.
 struct Frozen {
     at: seam::ops::time::Instant,
-}
-impl Effect for Frozen {
-    type Key = fx::Now;
 }
 impl Capability for Frozen {}
 impl Inspect<Now> for Frozen {
@@ -256,49 +241,33 @@ impl Inspect<Now> for Frozen {
 }
 
 #[test]
-fn a_root_of_handlers() {
+fn every_construction_form() -> Result<(), seam::test::WorldError> {
     let mut root = seam::root![
-        Std<fx::Var>, // a backend, restricted to one effect
-        Std<fx::Sleep>,
-        Fixed,           // a handler of this crate: a unit struct
-        Log(Vec::new()), // a tuple struct
-        Frozen {
-            at: seam::ops::time::Instant::EPOCH
-        }, // a struct literal
+        Std<fx::Var>,                                                   // a unit struct
+        Sim<fx::Sleep>::from_world("seed 1")?,                          // a constructor, with `?`
+        Fixed<Get>,
+        Log<Put>(Vec::new()),                                           // a tuple struct
+        Frozen<fx::Now> { at: seam::ops::time::Instant::EPOCH },        // a struct literal
     ];
     // `visit` asks for Var, Now, Sleep, Get and Put: exactly what is listed.
     assert_eq!(visit(&mut root), "welcome back, nobody");
     assert_eq!(root.part::<Put>().0, ["nobody=seen"]);
     assert_eq!(root.part::<fx::Now>().at, seam::ops::time::Instant::EPOCH);
+    Ok(())
 }
 
-#[test]
-fn handlers_and_keyed_parts_mix() {
-    let mut sim = Sim::new();
-    sim.set_var("SEAM_ROOT_TEST_USER", "ada");
-    let mut root = seam::root![
-        sim: sim => [fx::Var, fx::Now, fx::Sleep],
-        Fixed,
-        Memory = Memory::default(),                     // `Handler = value`
-    ];
-    assert_eq!(root.inspect(Get("k".into())).as_deref(), Some("fixed k"));
-    root.perform(Put("k".into(), "v".into()));
-    assert_eq!(root.part::<Put>().0["k"], "v");
-}
-
-impl Effect for Memory {
-    type Key = Put;
-}
-
-/// One value serving several effects: the brackets list them all.
+/// A part listed with several effects serves them all from one value.
 #[test]
 fn one_value_serving_several_effects() {
-    let mut sim = Sim::new();
-    sim.set_var("SEAM_ROOT_TEST_USER", "ada");
     let mut root = seam::root![
-        Sim<fx::Var, fx::Now, fx::Sleep> = sim,
-        Memory<Get, Put> = Memory::default(),
+        Sim < fx::Var,
+        fx::Now,
+        fx::Sleep > ::new(),
+        Memory < Get,
+        Put > ::default(),
     ];
+    root.part_mut::<fx::Var>()
+        .set_var("SEAM_ROOT_TEST_USER", "ada");
     assert_eq!(visit(&mut root), "hello, ada");
     assert_eq!(visit(&mut root), "welcome back, ada");
     assert_eq!(root.part::<Get>().0["ada"], "seen");
@@ -306,16 +275,12 @@ fn one_value_serving_several_effects() {
         root.part::<fx::Now>().inspect(Now).since_epoch(),
         Duration::from_millis(2)
     );
-
-    // A backend with no value to build serves several effects too.
-    let std_root = seam::root![Std<fx::Var, fx::Now>];
-    let _ = std_root.inspect(Now);
 }
 
-/// Tokio's handlers in a root serving a `Send` core on a multithreaded
-/// runtime.
+/// Tokio's effects one part at a time, in a root serving a `Send` core on a
+/// multithreaded runtime.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn tokio_handlers_in_a_send_root() {
+async fn tokio_parts_in_a_send_root() {
     let mut root = seam::root![
         Tokio<fx::Now>,
         Tokio<fx::Sleep>,

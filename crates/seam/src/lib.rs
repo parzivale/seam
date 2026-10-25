@@ -99,7 +99,7 @@
 //!
 //! let root = seam::root![
 //!     Std<fx::Var>,
-//!     Sim<fx::Now> = Sim::new(), // a simulated clock
+//!     Sim<fx::Now>::new(), // a simulated clock
 //! ];
 //! let _home = root.inspect(Var::new("HOME"));
 //! assert_eq!(root.inspect(Now).since_epoch().as_secs(), 0);

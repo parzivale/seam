@@ -56,11 +56,11 @@ A root lists the effects each part serves and grants a core exactly those.
 `Open` is keyed by its mode, so reading and writing are separate grants.
 `root!` no longer lets a part's name shadow a path in its keys.
 
-A root is a list of parts, each with the effects it serves:
-`root![Std<fx::Args, fx::View>, Sim<fx::Now> = sim, Pool<fx::Query>(4),
-mounts::Bind]`. Each part is built with its own construction syntax; a
-handler of the root's own crate can be listed bare, keyed by `Effect`. The
-`name: value => [keys]` form remains, for parts whose type is inferred. `root.part::<K>()` returns the part serving `K`. `Std` and
+A root is a list of parts, each with the effects it serves, built as
+Rust builds a value of its type: `root![Std<fx::Args, fx::View>,
+Pool<fx::Query>(4), Pool<fx::Exec> { size: 4 },
+Sim<fx::Now>::from_world(W)?]`. The named form is
+`root! { struct App { clock: Clock<fx::Now> } }`. `root.part::<K>()` returns the part serving `K`. `Std` and
 `Tokio` are plain unit structs (no longer `non_exhaustive`), and `Copy`.
 
 ### World files for every simulated part

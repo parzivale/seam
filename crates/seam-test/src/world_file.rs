@@ -1307,7 +1307,7 @@ fn owner<K: WorldKeys<A>, A>(parts: &A, node: &Node) -> Result<usize> {
 /// use seam_core::effects as fx;
 /// use seam_test::Sim;
 ///
-/// let mut root = seam_core::root![Sim<fx::Var, fx::View> = Sim::new()];
+/// let mut root = seam_core::root![Sim<fx::Var, fx::View>::new()];
 /// seam_test::load_world::<(fx::Var, fx::View), _>(&mut root, r#"
 ///     env { var USER ada }
 ///     fs { file "/notes.txt" "buy milk" }

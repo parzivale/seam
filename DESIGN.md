@@ -597,16 +597,18 @@ in the same form. Two things make that legal in Rust:
 The `Send` forms hand back the part's own future, so parts behind them are
 `'static`.
 
-**Listing parts.** A root is usually written as a list of parts, each
-with the effects it serves in brackets:
-`root![Std<fx::Args, fx::View>, Sim<fx::Now> = sim, mounts::Bind]`. Each is
-built with its own construction syntax (a unit struct by its path,
-`Pool<fx::Query>(4)`, `Pool<..> { .. }`, or `= value`), and the root grants
-exactly the listed effects, so no wrapper restricts the part itself. The
-keys are in brackets because the `Pick` impls must name them: routing by
-`<H as Effect>::Key` works for a handler of the root's own crate, but Rust's
-overlap check does not resolve a projection through another crate's impls,
-so two upstream handlers' impls would "conflict". Generic lookups (a type
+**Listing parts.** A root is a list of parts, each with the effects it
+serves in brackets: `root![Std<fx::Args, fx::View>,
+Sim<fx::Now>::from_world(W)?, Pool<fx::Query>(4)]`. Each is built as Rust
+builds a value of its type (a unit struct, a tuple struct, a struct
+literal, or one of the type's constructors), and nothing else: no free
+expression and no inference beyond a generic type's own parameters. The
+root grants exactly the listed effects, so no wrapper restricts the part
+itself. The keys are in brackets because the `Pick` impls must name them:
+routing by `<H as Effect>::Key` would work only for a handler of the
+root's own crate, since Rust's overlap check does not resolve a projection
+through another crate's impls, and two upstream handlers' impls would
+"conflict". Generic lookups (a type
 list, an HList, a `Select<A, B, ..>` of any arity) fail too: their impls
 overlap unless key inequality could be stated, or they need an index
 parameter that only a method call could infer, and the root forwards

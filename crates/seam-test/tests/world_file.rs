@@ -437,8 +437,10 @@ impl World for Mounts {
 #[test]
 fn one_world_file_sets_up_and_checks_every_part() {
     let mut root = seam_core::root![
-        Sim<fx::Var, fx::View, fx::OpenStdout> = Sim::new(),
-        Mounts<Bind> = Mounts::default(),
+        Sim < fx::Var,
+        fx::View,
+        fx::OpenStdout > ::new(),
+        Mounts<Bind>::default(),
     ];
     seam_test::load_world::<(fx::Var, fx::View, fx::OpenStdout, Bind), _>(
         &mut root,
@@ -477,10 +479,7 @@ fn one_world_file_sets_up_and_checks_every_part() {
 #[cfg(feature = "fs")]
 #[test]
 fn a_block_no_listed_part_reads_is_an_error() {
-    let mut root = seam_core::root![
-        Sim<fx::View> = Sim::new(),
-        Mounts<Bind> = Mounts::default(),
-    ];
+    let mut root = seam_core::root![Sim<fx::View>::new(), Mounts<Bind>::default(),];
     // `Bind` is not listed, so nothing reads `mounts`.
     let err = seam_test::load_world::<(fx::View,), _>(&mut root, "mounts { }").unwrap_err();
     assert!(
@@ -495,10 +494,7 @@ fn a_block_no_listed_part_reads_is_an_error() {
 #[cfg(feature = "fs")]
 #[test]
 fn two_parts_reading_one_block_is_an_error() {
-    let mut root = seam_core::root![
-        Sim<fx::View> = Sim::new(),
-        Sim<fx::Metadata> = Sim::new(),
-    ];
+    let mut root = seam_core::root![Sim<fx::View>::new(), Sim<fx::Metadata>::new(),];
     let err =
         seam_test::load_world::<(fx::View, fx::Metadata), _>(&mut root, "fs { }").unwrap_err();
     assert!(
@@ -563,7 +559,7 @@ fn thirty_two_effects() {
             fx::UdpBind, fx::RunCommand, fx::SpawnChild, fx::Exit, fx::FillRandom, fx::CtrlC,
             fx::OpenStdin, fx::OpenStdout, fx::OpenStderr, fx::Now, fx::Sleep, fx::WallClock,
             fx::Channel, fx::Share,
-        > = Sim::new(),
+        >::new(),
     ];
     seam_test::load_world::<All, _>(&mut root, "env { var USER ada }").unwrap();
     seam_test::check_world::<All, _>(&root, "env { var USER ada }").unwrap();

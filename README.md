@@ -128,16 +128,17 @@ use seam::effects as fx;
 let mut root = seam::root![
     Std<fx::Var, fx::FillRandom>,           // a backend, and the effects it serves
     Tokio<fx::Now, fx::Sleep, fx::View, fx::TcpBind>,
-    Redis<Get, Put> = Redis::connect(url)?, // built by any expression
+    Redis<Get, Put>::connect(url)?,         // built by one of its constructors
 ];
 serve(&mut root).await;                     // bounded as usual: SendPerform<Sleep>, ...
 ```
 
-A part is built with its own construction syntax: a unit struct by its
-path, `Pool<fx::Query>(4)`, `Pool<fx::Query> { size: 4 }`, or
-`Type<Keys> = value`. A test lists the simulation the same way:
-`Sim<fx::Args, fx::View> = sim`. A handler of the program's own can name
-its effect with `Effect` and be listed bare.
+A part is written the way Rust builds a value of its type, with the effects
+it serves in brackets after the type's name: a unit struct (`Std<..>`), a
+tuple struct (`Pool<fx::Query>(4)`), a struct literal
+(`Pool<fx::Query> { size: 4 }`), or one of the type's constructors
+(`Sim<fx::Args, fx::View>::from_world(WORLD)?`). Those four are all there
+is.
 
 A core asking for an effect the root does not list fails to compile: "the
 root `Parts<..>` has no part for `fx::Open<WriteOnly>`". `Open` is keyed by
@@ -162,9 +163,10 @@ impl Effect for Get { type Key = Get; }
 ```
 
 `root!` evaluates to the root. It writes a struct of the parts and one
-`Pick` impl per effect, which is why a backend from another crate names
-its key in brackets: Rust cannot tell apart keys it would have to look up in
-another crate. `root.part::<fx::Var>()` gives back a part; a named form (`root! { struct App { ... } }`) gives
+`Pick` impl per effect, which is why every part names its effects in
+brackets: Rust cannot tell apart keys it would have to look up in another
+crate. `root.part::<fx::Var>()` gives back a part; a named form
+(`root! { struct App { clock: Clock<fx::Now> } }`) gives
 the struct a name, for when the root's type must be written out.
 Capability types opt in to seam's lifts (an `Inspect` is also a `Perform`,
 a sync operation also works from async code) with
@@ -229,7 +231,7 @@ impl Capability for Memory {}
 // 4. At the edge, put the real one in a root next to a backend.
 let mut root = seam::root![
     Std<fx::Var, fx::OpenStdout>,
-    Redis<Get, Put> = Redis::connect()?,
+    Redis<Get, Put>::connect()?,
 ];
 visit(&mut root, "home")?;
 ```
@@ -403,8 +405,8 @@ file sets up and checks the whole root through the effects it lists:
 
 ```rust
 let mut root = seam::root![
-    Sim<fx::Args, fx::View, fx::OpenStdout> = Sim::new(),
-    FakeMounts<BindMount, Unmount> = FakeMounts::default(),   // reads `mounts { .. }`
+    Sim<fx::Args, fx::View, fx::OpenStdout>::new(),
+    FakeMounts<BindMount, Unmount>::default(),   // reads `mounts { .. }`
 ];
 seam::test::load_world::<(fx::Args, fx::View, BindMount), _>(&mut root, WORLD)?;
 run(&mut root)?;

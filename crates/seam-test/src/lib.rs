@@ -169,7 +169,7 @@ pub mod world_file;
 #[cfg(feature = "process")]
 pub use process::{Exited, Invocation, catch_exit};
 #[cfg(feature = "std")]
-pub use world_file::{Failure, WorldError, WorldMismatch};
+pub use world_file::{Failure, World, WorldError, WorldMismatch, check_world, load_world};
 
 /// A simulated world: the test backend's capability.
 ///

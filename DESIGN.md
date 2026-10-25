@@ -347,6 +347,19 @@ Expectations check only what they list: the clock, variables (`var`,
 bytes, and `ran` lines must be every command, in order. Everything is
 checked before reporting, so one run shows every difference.
 
+**Parts read their own blocks.** A simulated part of a root implements
+`World`: the top-level blocks it reads, and `load` and `check` for one of
+them. `Sim` is one such part, reading the blocks above; a fake of a
+program's own, or another crate's simulated effect, reads its own, through
+seam-test's public `Node` and `Value`. `load_world::<K, _>(&mut root, text)`
+and `check_world` take the effects whose parts take part, as a tuple of up
+to 32 keys (impls written by a macro): each block goes to the first listed
+part that reads it, a part reached through several keys is used once
+(compared by address and type), two different parts reading one block are
+an error, and so is a block no listed part reads. Listing effects rather
+than parts keeps the call in the root's own vocabulary, and it is the only
+handle on a part a root gives.
+
 The parser is a small one for the subset of KDL v2 world files use (no type
 annotations, integers only), rather than the `kdl` crate, which keeps
 seam-test free of dependencies and lets errors speak in the world's terms.

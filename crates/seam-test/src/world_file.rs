@@ -93,7 +93,8 @@ use std::string::String;
 use std::vec::Vec;
 
 use crate::Sim;
-use crate::kdl::{self, Kind, Node, Pos, Value};
+use crate::kdl::{self, Kind, Pos};
+pub use crate::kdl::{Node, Value};
 
 /// A world file that cannot be loaded: it is not valid KDL, or it says
 /// something the world does not understand.
@@ -148,7 +149,8 @@ impl fmt::Display for WorldMismatch {
 
 impl core::error::Error for WorldMismatch {}
 
-type Result<T> = core::result::Result<T, WorldError>;
+/// A result whose error is a [`WorldError`].
+pub type Result<T> = core::result::Result<T, WorldError>;
 
 fn error(pos: Pos, message: impl Into<String>) -> WorldError {
     WorldError {
@@ -226,17 +228,63 @@ fn needs_feature(node: &Node, feature: &str) -> WorldError {
     )
 }
 
-#[allow(dead_code)]
+/// Reading a node, for a [`World`] part's own blocks. The checks return a
+/// [`WorldError`] that points at the offending line and column.
 impl Node {
-    fn no_children(&self) -> Result<()> {
+    /// Its name: `file` in `file "/a" "x"`.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Its line, from 1.
+    pub fn line(&self) -> usize {
+        self.pos.line
+    }
+
+    /// Its column, from 1.
+    pub fn column(&self) -> usize {
+        self.pos.column
+    }
+
+    /// Its arguments, in order.
+    pub fn args(&self) -> &[Value] {
+        &self.args
+    }
+
+    /// Its block: the nodes in braces after it.
+    pub fn children(&self) -> &[Node] {
+        &self.children
+    }
+
+    /// An error about this node.
+    pub fn error(&self, message: impl Into<String>) -> WorldError {
+        error(self.pos, message)
+    }
+
+    /// A failed expectation at this node.
+    pub fn failure(&self, message: impl Into<String>) -> Failure {
+        Failure {
+            line: self.pos.line,
+            message: message.into(),
+        }
+    }
+
+    /// An error for a node that is not one of `options`, inside `within`,
+    /// suggesting the closest.
+    pub fn unknown(&self, within: &str, options: &[&str]) -> WorldError {
+        unknown(self, within, options)
+    }
+
+    /// Checks that it has no block.
+    pub fn no_children(&self) -> Result<()> {
         match self.children.first() {
             Some(child) => Err(error(child.pos, format!("`{}` takes no block", self.name))),
             None => Ok(()),
         }
     }
 
-    /// A block: children only.
-    fn block(&self) -> Result<&[Node]> {
+    /// Its block, checking that it has no arguments or properties.
+    pub fn block(&self) -> Result<&[Node]> {
         if let Some(arg) = self.args.first() {
             return Err(error(
                 arg.pos,
@@ -248,7 +296,7 @@ impl Node {
     }
 
     /// Checks that every property is one of `allowed`.
-    fn props_only(&self, allowed: &[&str]) -> Result<()> {
+    pub fn props_only(&self, allowed: &[&str]) -> Result<()> {
         for (key, value) in &self.props {
             if !allowed.contains(&key.as_str()) {
                 let hint = if allowed.is_empty() {
@@ -266,7 +314,7 @@ impl Node {
     }
 
     /// A property's value; the last one, if it repeats.
-    fn prop(&self, key: &str) -> Option<&Value> {
+    pub fn prop(&self, key: &str) -> Option<&Value> {
         self.props
             .iter()
             .rev()
@@ -275,7 +323,7 @@ impl Node {
     }
 
     /// Checks the number of arguments, with `usage` saying what they are.
-    fn arity(&self, min: usize, max: Option<usize>, usage: &str) -> Result<()> {
+    pub fn arity(&self, min: usize, max: Option<usize>, usage: &str) -> Result<()> {
         let n = self.args.len();
         if n < min || max.is_some_and(|max| n > max) {
             let pos = self.args.get(max.unwrap_or(n)).map_or(self.pos, |a| a.pos);
@@ -285,9 +333,26 @@ impl Node {
     }
 }
 
-#[allow(dead_code)]
+/// Reading a value. `what` names it in the error, as in "the seed must be
+/// an integer".
 impl Value {
-    fn string(&self, what: &str) -> Result<&str> {
+    /// Its line, from 1.
+    pub fn line(&self) -> usize {
+        self.pos.line
+    }
+
+    /// Its column, from 1.
+    pub fn column(&self) -> usize {
+        self.pos.column
+    }
+
+    /// An error about this value.
+    pub fn error(&self, message: impl Into<String>) -> WorldError {
+        error(self.pos, message)
+    }
+
+    /// The string it is.
+    pub fn string(&self, what: &str) -> Result<&str> {
         match &self.kind {
             Kind::Str(s) => Ok(s),
             k => Err(error(
@@ -297,7 +362,8 @@ impl Value {
         }
     }
 
-    fn int(&self, what: &str) -> Result<i128> {
+    /// The integer it is.
+    pub fn int(&self, what: &str) -> Result<i128> {
         match &self.kind {
             Kind::Int(n) => Ok(*n),
             k => Err(error(
@@ -307,9 +373,21 @@ impl Value {
         }
     }
 
-    fn uint<T: TryFrom<i128>>(&self, what: &str) -> Result<T> {
+    /// The integer it is, which must fit in `T`.
+    pub fn uint<T: TryFrom<i128>>(&self, what: &str) -> Result<T> {
         let n = self.int(what)?;
         T::try_from(n).map_err(|_| error(self.pos, format!("{what} is out of range: {n}")))
+    }
+
+    /// The boolean it is: `#true` or `#false`.
+    pub fn bool(&self, what: &str) -> Result<bool> {
+        match &self.kind {
+            Kind::Bool(b) => Ok(*b),
+            k => Err(error(
+                self.pos,
+                format!("{what} must be `#true` or `#false`, not {}", k.describe()),
+            )),
+        }
     }
 }
 
@@ -1020,5 +1098,255 @@ fn show(bytes: &[u8]) -> String {
             let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
             format!("hex {}", hex.join(""))
         }
+    }
+}
+
+/// A simulated part's share of a world file: the top-level blocks it reads,
+/// set up from them, and checked against them after a run.
+///
+/// [`Sim`] reads the blocks above. A part of a program's own, or of another
+/// crate's, reads its own, so one world file sets up and checks a whole
+/// root with [`load_world`] and [`check_world`]:
+///
+/// ```
+/// use seam_test::world_file::{self, Failure, Node, World, WorldError};
+///
+/// /// A fake mount table.
+/// #[derive(Default)]
+/// struct Mounts(Vec<(String, String)>);
+///
+/// impl World for Mounts {
+///     const BLOCKS: &'static [&'static str] = &["mounts"];
+///
+///     /// `mounts { bind "/srv/a" "/mnt/a" }` mounts one, before the run.
+///     fn load(&mut self, block: &Node) -> Result<(), WorldError> {
+///         for node in block.block()? {
+///             match node.name() {
+///                 "bind" => {
+///                     node.arity(2, Some(2), "a source and a target")?;
+///                     let (from, to) = (&node.args()[0], &node.args()[1]);
+///                     self.0.push((from.string("the source")?.into(), to.string("the target")?.into()));
+///                 }
+///                 _ => return Err(node.unknown("`mounts`", &["bind"])),
+///             }
+///         }
+///         Ok(())
+///     }
+///
+///     /// The same, after: each `bind` must be in place.
+///     fn check(&self, block: &Node, failures: &mut Vec<Failure>) -> Result<(), WorldError> {
+///         for node in block.block()? {
+///             node.arity(2, Some(2), "a source and a target")?;
+///             let from = node.args()[0].string("the source")?;
+///             let to = node.args()[1].string("the target")?;
+///             if !self.0.iter().any(|(f, t)| f == from && t == to) {
+///                 failures.push(node.failure(format!("{to} is not bound to {from}")));
+///             }
+///         }
+///         Ok(())
+///     }
+/// }
+/// # let mut m = Mounts::default();
+/// # m.load(&world_file::parse_one(r#"mounts { bind "/a" "/b" }"#).unwrap()).unwrap();
+/// # assert_eq!(m.0.len(), 1);
+/// ```
+pub trait World {
+    /// The top-level blocks it reads, by name.
+    const BLOCKS: &'static [&'static str];
+
+    /// Sets it up from one of its blocks.
+    fn load(&mut self, block: &Node) -> Result<()>;
+
+    /// Checks it against one of its blocks, adding a [`Failure`] for each
+    /// expectation that does not hold. An `Err` is for expectations that
+    /// cannot be read.
+    fn check(&self, block: &Node, failures: &mut Vec<Failure>) -> Result<()>;
+}
+
+impl World for Sim {
+    const BLOCKS: &'static [&'static str] = TOP;
+
+    fn load(&mut self, block: &Node) -> Result<()> {
+        self.load_top(block)
+    }
+
+    fn check(&self, block: &Node, failures: &mut Vec<Failure>) -> Result<()> {
+        self.check_top(block, failures)
+    }
+}
+
+/// Parses a world file holding one node, for testing a [`World`] part on
+/// its own.
+pub fn parse_one(text: &str) -> Result<Node> {
+    let mut nodes = parse(text)?;
+    match nodes.len() {
+        1 => Ok(nodes.remove(0)),
+        n => Err(WorldError {
+            line: 1,
+            column: 1,
+            message: format!("expected one node, found {n}"),
+        }),
+    }
+}
+
+/// The effects whose parts take part in [`load_world`] and
+/// [`check_world`]: a tuple of up to 32 keys, each served by a [`World`]
+/// part of the root.
+pub trait WorldKeys<A> {
+    /// The blocks the part of the key at `i` reads, or `None` past the end.
+    #[doc(hidden)]
+    fn blocks(i: usize) -> Option<&'static [&'static str]>;
+    /// Where the part of the key at `i` is, to use a part reached through
+    /// several keys once.
+    #[doc(hidden)]
+    fn place(parts: &A, i: usize) -> (usize, core::any::TypeId);
+    #[doc(hidden)]
+    fn load(parts: &mut A, i: usize, block: &Node) -> Result<()>;
+    #[doc(hidden)]
+    fn check(parts: &A, i: usize, block: &Node, failures: &mut Vec<Failure>) -> Result<()>;
+}
+
+macro_rules! world_keys {
+    ([$($k:ident $i:tt)*]) => {};
+    ([$($k:ident $i:tt)*] $next:ident $ni:tt $($rest:tt)*) => {
+        impl<A, $($k,)* $next> WorldKeys<A> for ($($k,)* $next,)
+        where
+            $($k: seam_core::Pick<A>, $k::Part: World + 'static,)*
+            $next: seam_core::Pick<A>,
+            $next::Part: World + 'static,
+        {
+            fn blocks(i: usize) -> Option<&'static [&'static str]> {
+                match i {
+                    $($i => Some(<$k::Part as World>::BLOCKS),)*
+                    $ni => Some(<$next::Part as World>::BLOCKS),
+                    _ => None,
+                }
+            }
+
+            fn place(parts: &A, i: usize) -> (usize, core::any::TypeId) {
+                match i {
+                    $($i => (
+                        core::ptr::from_ref($k::pick(parts)).addr(),
+                        core::any::TypeId::of::<$k::Part>(),
+                    ),)*
+                    _ => (
+                        core::ptr::from_ref($next::pick(parts)).addr(),
+                        core::any::TypeId::of::<$next::Part>(),
+                    ),
+                }
+            }
+
+            fn load(parts: &mut A, i: usize, block: &Node) -> Result<()> {
+                match i {
+                    $($i => World::load($k::pick_mut(parts), block),)*
+                    _ => World::load($next::pick_mut(parts), block),
+                }
+            }
+
+            fn check(parts: &A, i: usize, block: &Node, failures: &mut Vec<Failure>) -> Result<()> {
+                match i {
+                    $($i => World::check($k::pick(parts), block, failures),)*
+                    _ => World::check($next::pick(parts), block, failures),
+                }
+            }
+        }
+
+        world_keys!([$($k $i)* $next $ni] $($rest)*);
+    };
+}
+
+world_keys!([]
+    K0 0 K1 1 K2 2 K3 3 K4 4 K5 5 K6 6 K7 7 K8 8 K9 9 K10 10 K11 11 K12 12 K13 13 K14 14 K15 15
+    K16 16 K17 17 K18 18 K19 19 K20 20 K21 21 K22 22 K23 23 K24 24 K25 25 K26 26 K27 27 K28 28
+    K29 29 K30 30 K31 31
+);
+
+/// The key whose part reads `name`: the first listed. Two different parts
+/// that read the same block are an error.
+fn owner<K: WorldKeys<A>, A>(parts: &A, node: &Node) -> Result<usize> {
+    let mut found: Option<(usize, (usize, core::any::TypeId))> = None;
+    let mut all: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while let Some(blocks) = K::blocks(i) {
+        all.extend(blocks.iter().copied());
+        if blocks.contains(&node.name.as_str()) {
+            let place = K::place(parts, i);
+            match found {
+                None => found = Some((i, place)),
+                Some((_, first)) if first == place => {}
+                Some(_) => {
+                    return Err(node.error(format!(
+                        "two parts of the root read `{}`; list one of them",
+                        node.name
+                    )));
+                }
+            }
+        }
+        i += 1;
+    }
+    match found {
+        Some((i, _)) => Ok(i),
+        None => {
+            all.sort_unstable();
+            all.dedup();
+            Err(node.error(format!(
+                "no part of the root reads `{}`{}",
+                node.name,
+                suggest(&node.name, &all)
+            )))
+        }
+    }
+}
+
+/// Sets up the parts of `root` serving the effects `K` from a world file:
+/// each block goes to the part that reads it, and a part serving several of
+/// the effects is set up once.
+///
+/// ```
+/// # #[cfg(all(feature = "fs", feature = "env"))] {
+/// use seam_core::effects as fx;
+/// use seam_test::Sim;
+///
+/// let mut root = seam_core::root![Sim<fx::Var, fx::View> = Sim::new()];
+/// seam_test::load_world::<(fx::Var, fx::View), _>(&mut root, r#"
+///     env { var USER ada }
+///     fs { file "/notes.txt" "buy milk" }
+/// "#).unwrap();
+/// seam_test::check_world::<(fx::View,), _>(&root, r#"fs { file "/notes.txt" "buy milk" }"#).unwrap();
+/// # }
+/// ```
+pub fn load_world<K: WorldKeys<A>, A>(
+    root: &mut seam_core::Root<A>,
+    text: &str,
+) -> core::result::Result<(), WorldError> {
+    for node in &parse(text)? {
+        let i = owner::<K, A>(root.parts(), node)?;
+        K::load(root.parts_mut(), i, node)?;
+    }
+    Ok(())
+}
+
+/// Checks the parts of `root` serving the effects `K` against expectations
+/// written as a world file. Every failing expectation is reported, with its
+/// line.
+pub fn check_world<K: WorldKeys<A>, A>(
+    root: &seam_core::Root<A>,
+    text: &str,
+) -> core::result::Result<(), WorldMismatch> {
+    let invalid = |e: WorldError| WorldMismatch {
+        failures: std::vec![Failure {
+            line: e.line,
+            message: format!("invalid expectations (column {}): {}", e.column, e.message),
+        }],
+    };
+    let mut failures = Vec::new();
+    for node in &parse(text).map_err(invalid)? {
+        let i = owner::<K, A>(root.parts(), node).map_err(invalid)?;
+        K::check(root.parts(), i, node, &mut failures).map_err(invalid)?;
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(WorldMismatch { failures })
     }
 }

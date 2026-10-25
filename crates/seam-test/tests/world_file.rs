@@ -377,3 +377,194 @@ fn env_expectations_check_what_a_core_changed() {
         ]
     );
 }
+
+// ---- a root's parts, each reading its own blocks ----
+
+use seam_core::{Effect, Operation, effects as fx};
+use seam_test::world_file::{Failure, Node, World, WorldError};
+
+struct Bind(String, String);
+impl Operation for Bind {
+    type Outcome = ();
+}
+impl Effect for Bind {
+    type Key = Bind;
+}
+
+/// A fake mount table, with a `mounts` block of its own.
+#[derive(Default)]
+struct Mounts(Vec<(String, String)>);
+impl seam_core::Capability for Mounts {}
+impl Perform<Bind> for Mounts {
+    fn perform(&mut self, op: Bind) {
+        self.0.push((op.0, op.1));
+    }
+}
+
+fn pair(node: &Node) -> Result<(String, String), WorldError> {
+    node.arity(2, Some(2), "a source and a target")?;
+    Ok((
+        node.args()[0].string("the source")?.to_owned(),
+        node.args()[1].string("the target")?.to_owned(),
+    ))
+}
+
+impl World for Mounts {
+    const BLOCKS: &'static [&'static str] = &["mounts"];
+
+    fn load(&mut self, block: &Node) -> Result<(), WorldError> {
+        for node in block.block()? {
+            match node.name() {
+                "bind" => self.0.push(pair(node)?),
+                _ => return Err(node.unknown("`mounts`", &["bind"])),
+            }
+        }
+        Ok(())
+    }
+
+    fn check(&self, block: &Node, failures: &mut Vec<Failure>) -> Result<(), WorldError> {
+        for node in block.block()? {
+            let want = pair(node)?;
+            if !self.0.contains(&want) {
+                failures.push(node.failure(format!("{} is not bound to {}", want.1, want.0)));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(feature = "fs", feature = "env", feature = "io-std"))]
+#[test]
+fn one_world_file_sets_up_and_checks_every_part() {
+    let mut root = seam_core::root![
+        Sim<fx::Var, fx::View, fx::OpenStdout> = Sim::new(),
+        Mounts<Bind> = Mounts::default(),
+    ];
+    seam_test::load_world::<(fx::Var, fx::View, fx::OpenStdout, Bind), _>(
+        &mut root,
+        r#"
+        env { var USER ada }
+        fs { file "/etc/binds" "x" }
+        mounts { bind "/srv/a" "/mnt/a" }
+        "#,
+    )
+    .unwrap();
+    // Set up once, though the `Sim` serves three of the keys.
+    assert_eq!(root.part::<fx::View>().file("/etc/binds").unwrap(), b"x");
+    assert_eq!(root.part::<Bind>().0.len(), 1);
+
+    root.perform(Bind("/srv/b".into(), "/mnt/b".into()));
+    seam_test::check_world::<(fx::View, Bind), _>(
+        &root,
+        r#"
+        fs { file "/etc/binds" "x" }
+        mounts { bind "/srv/a" "/mnt/a"; bind "/srv/b" "/mnt/b" }
+        "#,
+    )
+    .unwrap();
+
+    let mismatch = seam_test::check_world::<(fx::View, Bind), _>(
+        &root,
+        "mounts { bind \"/srv/c\" \"/mnt/c\" }",
+    )
+    .unwrap_err();
+    assert_eq!(
+        mismatch.failures[0].message,
+        "/mnt/c is not bound to /srv/c"
+    );
+}
+
+#[cfg(feature = "fs")]
+#[test]
+fn a_block_no_listed_part_reads_is_an_error() {
+    let mut root = seam_core::root![
+        Sim<fx::View> = Sim::new(),
+        Mounts<Bind> = Mounts::default(),
+    ];
+    // `Bind` is not listed, so nothing reads `mounts`.
+    let err = seam_test::load_world::<(fx::View,), _>(&mut root, "mounts { }").unwrap_err();
+    assert!(
+        err.message
+            .starts_with("no part of the root reads `mounts`"),
+        "{err}"
+    );
+    let err = seam_test::load_world::<(fx::View, Bind), _>(&mut root, "mount { }").unwrap_err();
+    assert!(err.message.contains("did you mean `mounts`?"), "{err}");
+}
+
+#[cfg(feature = "fs")]
+#[test]
+fn two_parts_reading_one_block_is_an_error() {
+    let mut root = seam_core::root![
+        Sim<fx::View> = Sim::new(),
+        Sim<fx::Metadata> = Sim::new(),
+    ];
+    let err =
+        seam_test::load_world::<(fx::View, fx::Metadata), _>(&mut root, "fs { }").unwrap_err();
+    assert!(
+        err.message.contains("two parts of the root read `fs`"),
+        "{err}"
+    );
+}
+
+/// Up to 32 effects can be listed.
+#[cfg(all(
+    feature = "fs",
+    feature = "env",
+    feature = "net",
+    feature = "process",
+    feature = "random",
+    feature = "signal",
+    feature = "io-std",
+    feature = "time",
+    feature = "sync"
+))]
+#[test]
+fn thirty_two_effects() {
+    type All = (
+        fx::Var,
+        fx::SetVar,
+        fx::RemoveVar,
+        fx::Args,
+        fx::CurrentDir,
+        fx::TempDir,
+        fx::Metadata,
+        fx::CreateDir,
+        fx::RemoveFile,
+        fx::RemoveDir,
+        fx::Rename,
+        fx::CopyFile,
+        fx::CreateAtomic,
+        fx::View,
+        fx::ReadDir,
+        fx::ResolveInto,
+        fx::TcpConnect,
+        fx::TcpBind,
+        fx::UdpBind,
+        fx::RunCommand,
+        fx::SpawnChild,
+        fx::Exit,
+        fx::FillRandom,
+        fx::CtrlC,
+        fx::OpenStdin,
+        fx::OpenStdout,
+        fx::OpenStderr,
+        fx::Now,
+        fx::Sleep,
+        fx::WallClock,
+        fx::Channel,
+        fx::Share,
+    );
+    let mut root = seam_core::root![
+        Sim<
+            fx::Var, fx::SetVar, fx::RemoveVar, fx::Args, fx::CurrentDir, fx::TempDir,
+            fx::Metadata, fx::CreateDir, fx::RemoveFile, fx::RemoveDir, fx::Rename, fx::CopyFile,
+            fx::CreateAtomic, fx::View, fx::ReadDir, fx::ResolveInto, fx::TcpConnect, fx::TcpBind,
+            fx::UdpBind, fx::RunCommand, fx::SpawnChild, fx::Exit, fx::FillRandom, fx::CtrlC,
+            fx::OpenStdin, fx::OpenStdout, fx::OpenStderr, fx::Now, fx::Sleep, fx::WallClock,
+            fx::Channel, fx::Share,
+        > = Sim::new(),
+    ];
+    seam_test::load_world::<All, _>(&mut root, "env { var USER ada }").unwrap();
+    seam_test::check_world::<All, _>(&root, "env { var USER ada }").unwrap();
+}

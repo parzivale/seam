@@ -63,6 +63,15 @@ handler of the root's own crate can be listed bare, keyed by `Effect`. The
 `name: value => [keys]` form remains, for parts whose type is inferred. `root.part::<K>()` returns the part serving `K`. `Std` and
 `Tokio` are plain unit structs (no longer `non_exhaustive`), and `Copy`.
 
+### World files for every simulated part
+
+- `World`: a simulated part's share of a world file, the blocks it reads
+  and `load` and `check` for them. `Sim` implements it.
+- `load_world::<(K, ..), _>(&mut root, text)` and `check_world` set up and
+  check a whole root through the effects listed, up to 32.
+- `world_file::Node` and `Value` are public, with the checks `Sim`'s
+  loader uses, so other crates' parts can read their blocks.
+
 ### New
 
 - Standard input, output and error are handles: `OpenStdin<H>`,

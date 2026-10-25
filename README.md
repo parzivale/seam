@@ -355,8 +355,8 @@ allocates nothing. Bounds name them for every lifetime:
 ## World files
 
 A test can describe the world a core starts in, and what it should look
-like afterwards, in [KDL](https://kdl.dev): one block per kind of
-operation, the same kinds a root is built from.
+like afterwards, in [KDL](https://kdl.dev): one block per area of the
+world (`env`, `fs`, `net`, ...).
 
 ```kdl
 // app.world
@@ -396,6 +396,24 @@ A failing expectation is reported with its line, all of them at once, and
 a mistake in the file is an error with its line and column ("unknown `fil`
 in `fs` (did you mean `file`?)"). The parser is seam-test's own, for the
 part of KDL world files use, so seam-test still has no dependencies.
+
+A root's other simulated parts read blocks of their own: a part
+implements `World` (the block names it reads, `load` and `check`), and one
+file sets up and checks the whole root through the effects it lists:
+
+```rust
+let mut root = seam::root![
+    Sim<fx::Args, fx::View, fx::OpenStdout> = Sim::new(),
+    FakeMounts<BindMount, Unmount> = FakeMounts::default(),   // reads `mounts { .. }`
+];
+seam::test::load_world::<(fx::Args, fx::View, BindMount), _>(&mut root, WORLD)?;
+run(&mut root)?;
+seam::test::check_world::<(fx::OpenStdout, BindMount), _>(&root, EXPECTED)?;
+```
+
+Up to 32 effects are listed. Each block goes to the part that reads it, a
+part serving several of them is used once, and a block no listed part reads
+is an error, with a suggestion.
 
 ## Timeouts
 

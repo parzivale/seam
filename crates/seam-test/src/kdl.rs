@@ -22,8 +22,10 @@ pub(crate) struct Pos {
     pub(crate) column: usize,
 }
 
+/// A node of a world file: a name, arguments, properties and a block of
+/// children. Read it through its methods, in [`world_file`](crate::world_file).
 #[derive(Debug)]
-pub(crate) struct Node {
+pub struct Node {
     pub(crate) name: String,
     pub(crate) pos: Pos,
     pub(crate) args: Vec<Value>,
@@ -32,8 +34,11 @@ pub(crate) struct Node {
     pub(crate) children: Vec<Node>,
 }
 
+/// An argument or property value in a world file: a string, an integer, a
+/// boolean or `#null`. Read it through its methods, in
+/// [`world_file`](crate::world_file).
 #[derive(Debug, Clone)]
-pub(crate) struct Value {
+pub struct Value {
     pub(crate) kind: Kind,
     pub(crate) pos: Pos,
 }

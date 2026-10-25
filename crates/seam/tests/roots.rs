@@ -290,6 +290,28 @@ impl Effect for Memory {
     type Key = Put;
 }
 
+/// One value serving several effects: the brackets list them all.
+#[test]
+fn one_value_serving_several_effects() {
+    let mut sim = Sim::new();
+    sim.set_var("SEAM_ROOT_TEST_USER", "ada");
+    let mut root = seam::root![
+        Sim<fx::Var, fx::Now, fx::Sleep> = sim,
+        Memory<Get, Put> = Memory::default(),
+    ];
+    assert_eq!(visit(&mut root), "hello, ada");
+    assert_eq!(visit(&mut root), "welcome back, ada");
+    assert_eq!(root.part::<Get>().0["ada"], "seen");
+    assert_eq!(
+        root.part::<fx::Now>().inspect(Now).since_epoch(),
+        Duration::from_millis(2)
+    );
+
+    // A backend with no value to build serves several effects too.
+    let std_root = seam::root![Std<fx::Var, fx::Now>];
+    let _ = std_root.inspect(Now);
+}
+
 /// Tokio's handlers in a root serving a `Send` core on a multithreaded
 /// runtime.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

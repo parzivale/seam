@@ -584,12 +584,13 @@ in the same form. Two things make that legal in Rust:
 The `Send` forms hand back the part's own future, so parts behind them are
 `'static`.
 
-**Handlers.** A root can also be listed one effect at a time:
-`root![Std<fx::Args>, Tokio<fx::Now>, mounts::Bind]`. `Std<fx::Args>` is
-`Only<fx::Args, Std>`, std forwarding only the operations keyed
-`fx::Args`, built with the backend's own construction syntax
-(`Pool<fx::Query>(4)`, `Client<fx::Get> = connect()?`). The key is in
-brackets because the `Pick` impls must name it: routing by
+**Listing parts.** A root is usually written as a list of parts, each
+with the effects it serves in brackets:
+`root![Std<fx::Args, fx::View>, Sim<fx::Now> = sim, mounts::Bind]`. Each is
+built with its own construction syntax (a unit struct by its path,
+`Pool<fx::Query>(4)`, `Pool<..> { .. }`, or `= value`), and the root grants
+exactly the listed effects, so no wrapper restricts the part itself. The
+keys are in brackets because the `Pick` impls must name them: routing by
 `<H as Effect>::Key` works for a handler of the root's own crate, but Rust's
 overlap check does not resolve a projection through another crate's impls,
 so two upstream handlers' impls would "conflict". Generic lookups (a type

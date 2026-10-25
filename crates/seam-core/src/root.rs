@@ -108,9 +108,6 @@
 //! `Join` on a task) never go through the root, so they have no key: the
 //! handle a part hands out implements them itself.
 
-use core::fmt;
-use core::marker::PhantomData;
-
 use crate::future::{AsyncInspect, AsyncPerform, SendInspect, SendPerform};
 use crate::{Inspect, Operation, Perform, Query};
 
@@ -226,98 +223,6 @@ impl<A> Root<A> {
     }
 }
 
-/// A backend `B`, serving only the effect `K`: it forwards exactly the
-/// operations whose key is `K` (including its scopes, and its timed form).
-///
-/// [`root!`](crate::root!) writes these: `Std<fx::Args>` in a root is
-/// `Only<fx::Args, Std>`, std restricted to reading the arguments.
-pub struct Only<K, B>(B, PhantomData<fn() -> K>);
-
-impl<K, B> Only<K, B> {
-    /// `backend`, serving only `K`.
-    pub const fn new(backend: B) -> Self {
-        Self(backend, PhantomData)
-    }
-
-    /// The backend.
-    pub fn backend(&self) -> &B {
-        &self.0
-    }
-
-    /// The backend, exclusively.
-    pub fn backend_mut(&mut self) -> &mut B {
-        &mut self.0
-    }
-}
-
-impl<K, B: Clone> Clone for Only<K, B> {
-    fn clone(&self) -> Self {
-        Self::new(self.0.clone())
-    }
-}
-
-impl<K, B: Copy> Copy for Only<K, B> {}
-
-impl<K, B: Default> Default for Only<K, B> {
-    fn default() -> Self {
-        Self::new(B::default())
-    }
-}
-
-impl<K, B: fmt::Debug> fmt::Debug for Only<K, B> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Only<{}>({:?})", core::any::type_name::<K>(), self.0)
-    }
-}
-
-impl<K, B> Effect for Only<K, B> {
-    type Key = K;
-}
-
-impl<K, B: Inspect<Q>, Q: Query + Effect<Key = K>> Inspect<Q> for Only<K, B> {
-    fn inspect(&self, query: Q) -> Q::Outcome {
-        self.0.inspect(query)
-    }
-}
-
-impl<K, B: Perform<O>, O: Operation + Effect<Key = K>> Perform<O> for Only<K, B> {
-    fn perform(&mut self, op: O) -> O::Outcome {
-        self.0.perform(op)
-    }
-}
-
-impl<K, B: AsyncInspect<Q>, Q: Query + Effect<Key = K>> AsyncInspect<Q> for Only<K, B> {
-    fn inspect_async(&self, query: Q) -> impl Future<Output = Q::Outcome> {
-        self.0.inspect_async(query)
-    }
-}
-
-impl<K, B: AsyncPerform<O>, O: Operation + Effect<Key = K>> AsyncPerform<O> for Only<K, B> {
-    fn perform_async(&mut self, op: O) -> impl Future<Output = O::Outcome> {
-        self.0.perform_async(op)
-    }
-}
-
-impl<K, B, Q> SendInspect<Q> for Only<K, B>
-where
-    B: SendInspect<Q> + 'static,
-    Q: Query + Effect<Key = K>,
-{
-    fn inspect_send(&self, query: Q) -> impl Future<Output = Q::Outcome> + Send {
-        self.0.inspect_send(query)
-    }
-}
-
-impl<K, B, O> SendPerform<O> for Only<K, B>
-where
-    B: SendPerform<O> + 'static,
-    O: Operation + Effect<Key = K>,
-{
-    fn perform_send(&mut self, op: O) -> impl Future<Output = O::Outcome> + Send {
-        self.0.perform_send(op)
-    }
-}
-
 /// The part of `A` that serves `O`.
 type PartOf<O, A> = <<O as Effect>::Key as Pick<A>>::Part;
 
@@ -418,21 +323,23 @@ where
 ///
 /// ```text
 /// seam::root![
-///     Std<fx::Args>,                 // a backend restricted to one effect: `Only<fx::Args, Std>`
-///     Pool<fx::Query>(4),            // built as `Pool(4)`
-///     Pool<fx::Exec> { size: 4 },    // built as `Pool { size: 4 }`
-///     Client<fx::Get> = connect()?,  // built by any expression
-///     mounts::Bind,                  // a handler of this crate, naming its key with `Effect`
-///     cache: Cache::new() => [Get, Put],  // and keyed parts, mixed in
+///     Std<fx::Args, fx::View>,                  // a backend, serving these effects
+///     Sim<fx::Now, fx::Sleep> = world,          // built by any expression
+///     Pool<fx::Query>(4),                       // built as `Pool(4)`
+///     Pool<fx::Exec> { size: 4 },               // built as `Pool { size: 4 }`
+///     mounts::Bind,                             // a handler of this crate, keyed by `Effect`
+///     cache: Cache::new() => [Get, Put],        // a part whose type is inferred
 /// ]
 /// ```
 ///
-/// A backend from another crate names its key in brackets, `Std<fx::Args>`:
-/// Rust cannot tell two keys apart when it would have to look them up in
-/// another crate's `Effect` impls, so the key has to be written where the
-/// macro can copy it. Inside `root!`, `Name<..>` therefore always means
-/// "restricted to this effect". A handler defined in the same crate as the
-/// root can be listed bare, and is then routed by its own `Effect` impl.
+/// The brackets name the effects a part serves, and the root grants only
+/// those, whatever else the part could do. A part from another crate names
+/// them there: Rust cannot tell two keys apart when it would have to look
+/// them up in another crate's `Effect` impls, so the keys have to be written
+/// where the macro can copy them. Inside `root!`, `Name<..>` therefore
+/// always lists effects. A handler defined in the same crate as the root can
+/// be listed bare, and is then routed by its own `Effect` impl. A part whose
+/// type is generic, or long, is given a name and a value instead.
 /// Handlers' types are written out, so a root with any is not `Clone` or
 /// `Debug`; one built only from keyed parts derives those.
 ///
@@ -495,27 +402,27 @@ macro_rules! root {
             [$($ps)*] $fs $($($rest)*)?)
     };
 
-    // `Backend<Key>`, in each construction form: the backend restricted to
-    // the effect `Key`, which is read from the brackets.
+    // `Backend<Keys>`, in each construction form: the backend, serving the
+    // effects listed in the brackets.
     (@munch $named:tt [$($handlers:tt)*] $ps:tt [$f:ident $($fs:ident)*]
-        $($seg:ident)::+ < $key:ty > ($($args:tt)*) $(, $($rest:tt)*)?) => {
-        $crate::root!(@munch $named [$($handlers)* ($f ($crate::Only<$key, $($seg)::+>)
-            ($crate::Only::new($($seg)::+($($args)*))) ($key))] $ps [$($fs)*] $($($rest)*)?)
+        $($seg:ident)::+ < $($key:ty),+ $(,)? > ($($args:tt)*) $(, $($rest:tt)*)?) => {
+        $crate::root!(@munch $named [$($handlers)* ($f ($($seg)::+)
+            ($($seg)::+($($args)*)) [$($key),+])] $ps [$($fs)*] $($($rest)*)?)
     };
     (@munch $named:tt [$($handlers:tt)*] $ps:tt [$f:ident $($fs:ident)*]
-        $($seg:ident)::+ < $key:ty > { $($fields:tt)* } $(, $($rest:tt)*)?) => {
-        $crate::root!(@munch $named [$($handlers)* ($f ($crate::Only<$key, $($seg)::+>)
-            ($crate::Only::new($($seg)::+ { $($fields)* })) ($key))] $ps [$($fs)*] $($($rest)*)?)
+        $($seg:ident)::+ < $($key:ty),+ $(,)? > { $($fields:tt)* } $(, $($rest:tt)*)?) => {
+        $crate::root!(@munch $named [$($handlers)* ($f ($($seg)::+)
+            ($($seg)::+ { $($fields)* }) [$($key),+])] $ps [$($fs)*] $($($rest)*)?)
     };
     (@munch $named:tt [$($handlers:tt)*] $ps:tt [$f:ident $($fs:ident)*]
-        $($seg:ident)::+ < $key:ty > = $value:expr $(, $($rest:tt)*)?) => {
-        $crate::root!(@munch $named [$($handlers)* ($f ($crate::Only<$key, $($seg)::+>)
-            ($crate::Only::new($value)) ($key))] $ps [$($fs)*] $($($rest)*)?)
+        $($seg:ident)::+ < $($key:ty),+ $(,)? > = $value:expr $(, $($rest:tt)*)?) => {
+        $crate::root!(@munch $named [$($handlers)* ($f ($($seg)::+) ($value) [$($key),+])]
+            $ps [$($fs)*] $($($rest)*)?)
     };
     (@munch $named:tt [$($handlers:tt)*] $ps:tt [$f:ident $($fs:ident)*]
-        $($seg:ident)::+ < $key:ty > $(, $($rest:tt)*)?) => {
-        $crate::root!(@munch $named [$($handlers)* ($f ($crate::Only<$key, $($seg)::+>)
-            ($crate::Only::new($($seg)::+)) ($key))] $ps [$($fs)*] $($($rest)*)?)
+        $($seg:ident)::+ < $($key:ty),+ $(,)? > $(, $($rest:tt)*)?) => {
+        $crate::root!(@munch $named [$($handlers)* ($f ($($seg)::+) ($($seg)::+) [$($key),+])]
+            $ps [$($fs)*] $($($rest)*)?)
     };
 
     // A handler of this crate, naming its effect through `Effect`, in each
@@ -524,22 +431,22 @@ macro_rules! root {
     (@munch $named:tt [$($handlers:tt)*] $ps:tt [$f:ident $($fs:ident)*]
         $($seg:ident)::+ ($($args:tt)*) $(, $($rest:tt)*)?) => {
         $crate::root!(@munch $named [$($handlers)* ($f ($($seg)::+) ($($seg)::+($($args)*))
-            (<$($seg)::+ as $crate::Effect>::Key))] $ps [$($fs)*] $($($rest)*)?)
+            [<$($seg)::+ as $crate::Effect>::Key])] $ps [$($fs)*] $($($rest)*)?)
     };
     (@munch $named:tt [$($handlers:tt)*] $ps:tt [$f:ident $($fs:ident)*]
         $($seg:ident)::+ { $($fields:tt)* } $(, $($rest:tt)*)?) => {
         $crate::root!(@munch $named [$($handlers)* ($f ($($seg)::+) ($($seg)::+ { $($fields)* })
-            (<$($seg)::+ as $crate::Effect>::Key))] $ps [$($fs)*] $($($rest)*)?)
+            [<$($seg)::+ as $crate::Effect>::Key])] $ps [$($fs)*] $($($rest)*)?)
     };
     (@munch $named:tt [$($handlers:tt)*] $ps:tt [$f:ident $($fs:ident)*]
         $($seg:ident)::+ = $value:expr $(, $($rest:tt)*)?) => {
         $crate::root!(@munch $named [$($handlers)* ($f ($($seg)::+) ($value)
-            (<$($seg)::+ as $crate::Effect>::Key))] $ps [$($fs)*] $($($rest)*)?)
+            [<$($seg)::+ as $crate::Effect>::Key])] $ps [$($fs)*] $($($rest)*)?)
     };
     (@munch $named:tt [$($handlers:tt)*] $ps:tt [$f:ident $($fs:ident)*]
         $($seg:ident)::+ $(, $($rest:tt)*)?) => {
         $crate::root!(@munch $named [$($handlers)* ($f ($($seg)::+) ($($seg)::+)
-            (<$($seg)::+ as $crate::Effect>::Key))] $ps [$($fs)*] $($($rest)*)?)
+            [<$($seg)::+ as $crate::Effect>::Key])] $ps [$($fs)*] $($($rest)*)?)
     };
 
     // Done, with only keyed parts: the struct derives what its parts allow.
@@ -553,13 +460,13 @@ macro_rules! root {
     }};
     // Done, with handlers: their types are concrete, so nothing is derived.
     (@munch [$(($field:ident $p:ident ($value:expr) [$($key:ty),+]))*]
-        [$(($f:ident ($h:ty) ($hv:expr) ($hk:ty)))+] $ps:tt $fs:tt) => {{
+        [$(($f:ident ($h:ty) ($hv:expr) [$($hk:ty),+]))+] $ps:tt $fs:tt) => {{
         struct Parts<$($p),*> {
             $($field: $p,)*
             $($f: $h,)+
         }
         $crate::root!(@picks [$($p),*] $($field $p [$($key),+])*);
-        $crate::root!(@handlers [$($p),*] $($f ($h) ($hk))+);
+        $crate::root!(@handlers [$($p),*] $($f ($h) [$($hk),+])+);
         $crate::Root::new(Parts { $($field: $value,)* $($f: $hv,)+ })
     }};
 
@@ -577,8 +484,8 @@ macro_rules! root {
             }
         }
     };
-    (@handlers $all:tt $($f:ident ($h:ty) ($hk:ty))+) => {
-        $($crate::root!(@handler $all $f ($h) ($hk));)+
+    (@handlers $all:tt $($f:ident ($h:ty) [$($hk:ty),+])+) => {
+        $($($crate::root!(@handler $all $f ($h) ($hk));)+)+
     };
     (@handler [$($all:ident),*] $f:ident ($h:ty) ($hk:ty)) => {
         impl<$($all),*> $crate::Pick<Parts<$($all),*>> for $hk {

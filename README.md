@@ -126,17 +126,18 @@ program's own effects, and grants the core exactly what it lists:
 use seam::effects as fx;
 
 let mut root = seam::root![
-    Std<fx::Var>, Std<fx::FillRandom>,      // a backend, restricted to one effect
-    Tokio<fx::Now>, Tokio<fx::Sleep>, Tokio<fx::View>, Tokio<fx::TcpBind>,
-    store: redis => [Get, Put],             // a part serving the program's own effects
+    Std<fx::Var, fx::FillRandom>,           // a backend, and the effects it serves
+    Tokio<fx::Now, fx::Sleep, fx::View, fx::TcpBind>,
+    Redis<Get, Put> = Redis::connect(url)?, // built by any expression
 ];
 serve(&mut root).await;                     // bounded as usual: SendPerform<Sleep>, ...
 ```
 
-`Std<fx::Var>` is std restricted to reading variables; a backend built with
-arguments is written with them (`Pool<fx::Query>(4)`, `Client<fx::Get> =
-connect()?`). A handler of the program's own names its effect with
-`Effect` and is listed bare.
+A part is built with its own construction syntax: a unit struct by its
+path, `Pool<fx::Query>(4)`, `Pool<fx::Query> { size: 4 }`, or
+`Type<Keys> = value`. A test lists the simulation the same way:
+`Sim<fx::Args, fx::View> = sim`. A handler of the program's own can name
+its effect with `Effect` and be listed bare.
 
 A core asking for an effect the root does not list fails to compile: "the
 root `Parts<..>` has no part for `fx::Open<WriteOnly>`". `Open` is keyed by

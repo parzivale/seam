@@ -1,5 +1,78 @@
 # Changelog
 
+## 0.5.0
+
+Every root part is built the way Rust builds its type, and a simulated
+world is shared by cloning it. All of these are breaking.
+
+### Building roots
+
+A part is written as Rust builds a value of its type, with the effects it
+serves in brackets after the type's name, and in no other way:
+
+| Form | Example |
+|---|---|
+| unit struct | `Std<fx::Args, fx::View>` |
+| tuple struct | `Pool<fx::Query>(4)` |
+| struct literal | `Pool<fx::Query> { size: 4 }` |
+| constructor, with or without `?` | `Sim<fx::Now>::from_world(W)?` |
+
+| Removed | Use |
+|---|---|
+| `Sim<fx::Now> = sim` | a constructor: `Sim<fx::Now>::clone(&sim)` |
+| `name: value => [keys]` | one of the four forms |
+| a bare part keyed by `Effect` (`mounts::Bind`) | its keys in brackets: `mounts::Bind<BindMount>` |
+
+The named form is `root! { struct App { clock: Clock<fx::Now> } }`.
+Anything else is a compile error naming the four forms.
+
+### Simulation
+
+- `Sim` is `Clone` (with std), and every clone is a handle to one world:
+  the clock, random numbers, environment, files, network, stdio, scripted
+  commands and Ctrl-C. A part built over the simulation is given a clone.
+  Without std, `Sim` holds its world itself and is not `Clone`.
+- `Sim::invocations` returns a `Vec<Invocation>`, since the log lives
+  behind the world's lock.
+- `Sim`'s world-file blocks are an ordinary `World` impl over public API
+  only, and a test compiles it outside the crate to keep it so.
+- New for every part: `world_file::load` and `world_file::check` set up
+  and check one part outside a root (`Sim::load_world` and
+  `Sim::check_world` are these). `Sim::script_command` is public.
+
+## 0.4.0
+
+Roots route each effect to the part that serves it, and every simulated
+part reads its own share of a world file. All of these are breaking.
+
+### Roots route per effect
+
+| Removed | Use |
+|---|---|
+| `kinds::Fs`, `kinds::Time`, ... | one key per effect, in `effects`: `effects::View`, `effects::Open<ReadOnly>`, `effects::Now`, ... |
+| `InKind { type Kind }` | `Effect { type Key }`; a program's own effect is usually its own key |
+
+A root lists the effects each part serves and grants a core exactly those.
+`Open` is keyed by its mode, so reading and writing are separate grants.
+`root!` no longer lets a part's name shadow a path in its keys.
+
+A root is a list of parts, each with the effects it serves:
+`root![Std<fx::Args, fx::View>, Sim<fx::Now> = sim, Pool<fx::Query>(4),
+mounts::Bind]`. Each part is built with its own construction syntax; a
+handler of the root's own crate can be listed bare, keyed by `Effect`. The
+`name: value => [keys]` form remains, for parts whose type is inferred.
+`root.part::<K>()` returns the part serving `K`. `Std` and `Tokio` are
+plain unit structs (no longer `non_exhaustive`), and `Copy`.
+
+### World files for every simulated part
+
+- `World`: a simulated part's share of a world file, the blocks it reads
+  and `load` and `check` for them. `Sim` implements it.
+- `load_world::<(K, ..), _>(&mut root, text)` and `check_world` set up and
+  check a whole root through the effects listed, up to 32.
+- `world_file::Node` and `Value` are public, with the checks `Sim`'s
+  loader uses, so other crates' parts can read their blocks.
+
 ## 0.3.0
 
 Every effect is now a primitive or built from primitives. A backend
@@ -45,33 +118,6 @@ so scopes work wherever operations do: the async forms and lifts, a `Root`
   refused (`InvalidInput`): open those with `Open`.
 - `ReadDir` is lent.
 
-### Roots route per effect
-
-| Removed | Use |
-|---|---|
-| `kinds::Fs`, `kinds::Time`, ... | one key per effect, in `effects`: `effects::View`, `effects::Open<ReadOnly>`, `effects::Now`, ... |
-| `InKind { type Kind }` | `Effect { type Key }`; a program's own effect is usually its own key |
-
-A root lists the effects each part serves and grants a core exactly those.
-`Open` is keyed by its mode, so reading and writing are separate grants.
-`root!` no longer lets a part's name shadow a path in its keys.
-
-A root is a list of parts, each with the effects it serves, built as
-Rust builds a value of its type: `root![Std<fx::Args, fx::View>,
-Pool<fx::Query>(4), Pool<fx::Exec> { size: 4 },
-Sim<fx::Now>::from_world(W)?]`. The named form is
-`root! { struct App { clock: Clock<fx::Now> } }`. `root.part::<K>()` returns the part serving `K`. `Std` and
-`Tokio` are plain unit structs (no longer `non_exhaustive`), and `Copy`.
-
-### World files for every simulated part
-
-- `World`: a simulated part's share of a world file, the blocks it reads
-  and `load` and `check` for them. `Sim` implements it.
-- `load_world::<(K, ..), _>(&mut root, text)` and `check_world` set up and
-  check a whole root through the effects listed, up to 32.
-- `world_file::Node` and `Value` are public, with the checks `Sim`'s
-  loader uses, so other crates' parts can read their blocks.
-
 ### New
 
 - Standard input, output and error are handles: `OpenStdin<H>`,
@@ -89,13 +135,6 @@ Sim<fx::Now>::from_world(W)?]`. The named form is
 
 ### Changed
 
-- `Sim` is `Clone` (with std), and every clone is a handle to one world:
-  a part built over the simulation is given a clone. `Sim::invocations`
-  returns a `Vec`, since the log lives behind the world's lock.
-- `Sim`'s world-file blocks are an ordinary `World` impl over public API
-  only, checked by compiling it outside the crate. New for every part:
-  `world_file::load` and `world_file::check` set up and check one part
-  outside a root, and `Sim::script_command` is public.
 - `Timeout` covers primitives only. Backends no longer time `ReadExact`,
   `ReadToEnd`, `WriteAll` or `ReadErrToEnd`.
 - `sync` turns on `time`, for `try_send` and `try_recv`.

@@ -1,7 +1,7 @@
 use core::future::Future;
 
 /// Runs `future` to completion on a new current-thread Tokio runtime.
-/// Build the root inside it, from `Tokio::new()` and any other parts.
+/// Build the root inside it, from `Tokio` and any other parts.
 ///
 /// # Panics
 ///

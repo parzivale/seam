@@ -194,7 +194,7 @@ fn say<F: AtomicWrite, D: Listing, O: Output>(
 }
 
 fn main() -> io::Result<()> {
-    run(&mut seam::stdlib::Std::new())
+    run(&mut seam::stdlib::Std)
 }
 
 #[cfg(test)]

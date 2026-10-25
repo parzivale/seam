@@ -8,8 +8,8 @@
 //! processes, signals, tasks and channels. Operations with nothing to do
 //! with Tokio, the environment (`Var`, `Args`, ...) and randomness, are not
 //! here: take them from `seam-std`'s `Std` in the same root, as
-//! `seam::root! { std: Std::new() => [fx::Var, fx::FillRandom], tokio:
-//! Tokio::new() => [fx::Now, fx::Sleep, fx::TcpBind] }`. Both are zero-sized, and
+//! `seam::root![Std<fx::Var, fx::FillRandom>, Tokio<fx::Now, fx::Sleep,
+//! fx::TcpBind>]`. Both are zero-sized, and
 //! so is the root.
 //!
 //! ```no_run
@@ -50,7 +50,7 @@
 //!
 //! fn main() -> seam_core::io::Result<()> {
 //!     seam_tokio::block_on(async {
-//!         let mut tokio = seam_tokio::Tokio::new();
+//!         let mut tokio = seam_tokio::Tokio;
 //!         heartbeat::<_, seam_tokio::net::TcpStream>(&mut tokio, "localhost").await
 //!     })
 //! }
@@ -59,7 +59,7 @@
 //!
 //! Every operation must run inside a Tokio runtime. With the `rt` feature,
 //! `seam_tokio::block_on` starts one and runs a future on it; create
-//! `Tokio::new()` (or a root with it as a part) inside, as inside any
+//! `Tokio` (or a root with it as a part) inside, as inside any
 //! runtime you already have.
 //!
 //! # Tasks

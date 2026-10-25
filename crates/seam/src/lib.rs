@@ -43,7 +43,7 @@
 //! }
 //!
 //! // In `main`, the real world:
-//! //     shout(&mut seam::stdlib::Std::new(), "notes.txt")
+//! //     shout(&mut seam::stdlib::Std, "notes.txt")
 //!
 //! // In a test, a simulated one:
 //! let mut sim = seam::test::Sim::new();
@@ -94,10 +94,13 @@
 //! use seam::ops::time::Now;
 //! use seam::prelude::*;
 //!
-//! let root = seam::root! {
-//!     std: seam::stdlib::Std::new() => [fx::Var],
-//!     clock: seam::test::Sim::new() => [fx::Now], // a simulated clock
-//! };
+//! use seam::stdlib::Std;
+//! use seam::test::Sim;
+//!
+//! let root = seam::root![
+//!     Std<fx::Var>,
+//!     Sim<fx::Now> = Sim::new(), // a simulated clock
+//! ];
 //! let _home = root.inspect(Var::new("HOME"));
 //! assert_eq!(root.inspect(Now).since_epoch().as_secs(), 0);
 //! # }

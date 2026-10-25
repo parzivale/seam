@@ -676,7 +676,7 @@ Not implemented yet:
   listing every variable.
 - **A lint for blocking under async.** A `dylint` lint, in its own crate,
   warning where a concrete backend meets an async bound for an operation it
-  does not mark as instant (`block_on(core(&mut Std::new()))` with a core
+  does not mark as instant (`block_on(core(&mut Std))` with a core
   that reads files). It needs a per-backend `Instant<O>` marker for the
   operations that never wait, and checks after monomorphization; users
   would run it with `cargo dylint`.

@@ -32,7 +32,7 @@
 //!
 //! /// The edge: the only place real effects are chosen.
 //! fn main() -> io::Result<()> {
-//!     count_lines(&mut Std::new())
+//!     count_lines(&mut Std)
 //! }
 //! # }
 //! ```

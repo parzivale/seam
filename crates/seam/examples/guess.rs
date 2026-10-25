@@ -68,7 +68,7 @@ where
 
 /// The edge: the one place that picks the real world.
 fn main() -> io::Result<()> {
-    play(&mut seam::stdlib::Std::new()).map(drop)
+    play(&mut seam::stdlib::Std).map(drop)
 }
 
 #[cfg(test)]

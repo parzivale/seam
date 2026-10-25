@@ -55,7 +55,7 @@
 //! # }
 //! ```
 //!
-//! The caller picks `F` by passing a backend: `save(&mut Std::new(), ..)`
+//! The caller picks `F` by passing a backend: `save(&mut Std, ..)`
 //! infers `seam_std::fs::File<WriteOnly>`.
 
 /// Implements `Operation` (and optionally `Query`) for a list of types.

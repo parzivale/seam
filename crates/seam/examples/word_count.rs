@@ -108,7 +108,7 @@ where
 fn main() -> io::Result<()> {
     use seam::stdlib::{Std, sync::Shared, task::TaskSet};
 
-    run::<_, Shared<_>, TaskSet<_>, _, _>(&mut Std::new())
+    run::<_, Shared<_>, TaskSet<_>, _, _>(&mut Std)
 }
 
 #[cfg(test)]

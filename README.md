@@ -227,10 +227,10 @@ impl Capability for Memory {}
 // ... the same two impls, on a map
 
 // 4. At the edge, put the real one in a root next to a backend.
-let mut root = seam::root! {
-    std: Std::new() => [fx::Var, fx::OpenStdout],
-    store: Redis::connect()? => [Get, Put],
-};
+let mut root = seam::root![
+    Std<fx::Var, fx::OpenStdout>,
+    Redis<Get, Put> = Redis::connect()?,
+];
 visit(&mut root, "home")?;
 ```
 

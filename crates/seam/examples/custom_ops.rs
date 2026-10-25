@@ -172,13 +172,14 @@ fn main() -> io::Result<()> {
     use seam::stdlib::Std;
     use seam::stdlib::fs::{AtomicFile, FileView};
 
-    let path = Std::new().inspect(TempDir).join("seam-custom-ops.tsv");
+    let path = Std.inspect(TempDir).join("seam-custom-ops.tsv");
     // The program's root: `Std` for the OS, the file store for the store's
-    // effects.
-    let mut root = seam::root! {
-        std: Std::new() => [seam::effects::Var],
-        store: FileStore::<_, AtomicFile, FileView>::new(Std::new(), path) => [Get, Put],
-    };
+    // effects. The store's type is generic, so it is a named part, whose
+    // type is inferred.
+    let mut root = seam::root![
+        Std<seam::effects::Var>,
+        store: FileStore::<_, AtomicFile, FileView>::new(Std, path) => [Get, Put],
+    ];
     let n = visit(&mut root, "home")?;
     // `main` is the edge, so it may print directly.
     println!(

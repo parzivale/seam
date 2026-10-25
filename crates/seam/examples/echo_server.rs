@@ -132,10 +132,14 @@ fn main() -> io::Result<()> {
     use seam::tokio::task::JoinHandle;
 
     seam::tokio::block_on_multi_thread(async {
-        let mut root = seam::root! {
-            std: seam::stdlib::Std::new() => [seam::effects::Args],
-            tokio: seam::tokio::Tokio::new() => [seam::effects::TcpBind, seam::effects::OpenStdout],
-        };
+        use seam::effects as fx;
+        use seam::stdlib::Std;
+        use seam::tokio::Tokio;
+
+        let mut root = seam::root![
+            Std<fx::Args>,
+            Tokio<fx::TcpBind, fx::OpenStdout>,
+        ];
         let addr = listen_addr(&root)?;
         serve::<_, seam::tokio::stdio::Stdout, TcpListener, TcpStream, JoinHandle<io::Result<()>>>(
             &mut root, addr,

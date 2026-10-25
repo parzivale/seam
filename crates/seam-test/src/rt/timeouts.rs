@@ -43,14 +43,14 @@ pub(crate) async fn within<F: Future>(
     after: Duration,
     fut: F,
 ) -> Option<F::Output> {
-    let deadline = shared.sim().clock.saturating_add(after);
+    let deadline = shared.sim().clock().saturating_add(after);
     let mut fut = pin!(fut);
     let mut timer = Timer { shared, key: None };
     poll_fn(|cx| {
         if let Poll::Ready(v) = fut.as_mut().poll(cx) {
             return Poll::Ready(Some(v));
         }
-        if shared.sim().clock >= deadline {
+        if shared.sim().clock() >= deadline {
             return Poll::Ready(None);
         }
         if timer.key.is_none() {

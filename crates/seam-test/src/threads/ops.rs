@@ -54,7 +54,7 @@ mod time {
                 self.shared.switch();
                 return;
             }
-            let deadline = self.shared.sim().clock + op.0;
+            let deadline = self.shared.sim().clock() + op.0;
             self.shared.sleep_until(deadline);
         }
     }
@@ -135,8 +135,7 @@ mod signal {
             self.shared.switch();
             self.shared.wait_until(|waker| {
                 let mut sim = self.shared.sim();
-                if sim.ctrl_c > 0 {
-                    sim.ctrl_c -= 1;
+                if sim.take_ctrl_c() {
                     return Some(Ok(()));
                 }
                 drop(sim);
@@ -158,8 +157,7 @@ mod signal {
             self.shared
                 .wait_within(op.after, |waker| {
                     let mut sim = self.shared.sim();
-                    if sim.ctrl_c > 0 {
-                        sim.ctrl_c -= 1;
+                    if sim.take_ctrl_c() {
                         return Some(Ok(()));
                     }
                     drop(sim);

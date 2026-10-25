@@ -66,6 +66,14 @@ pub(crate) struct Processes {
     rules: Rules,
 }
 
+impl core::fmt::Debug for Processes {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Processes")
+            .field("log", &self.log)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A fixed response to a program, with its arguments if they must match.
 struct Rule {
     program: OsString,
@@ -155,7 +163,8 @@ impl Sim {
         handler: impl FnMut(&Command, &[u8]) -> io::Result<Output> + Send + Sync + 'static,
     ) -> &mut Self {
         let program = program.into();
-        let mut handlers = self.process.handlers.lock();
+        let handlers = self.world.lock().process.handlers.clone();
+        let mut handlers = handlers.lock();
         handlers.retain(|(p, _)| *p != program);
         handlers.push((program, Box::new(handler)));
         drop(handlers);
@@ -173,7 +182,7 @@ impl Sim {
         args: Option<Vec<OsString>>,
         output: Output,
     ) {
-        let rules = Arc::clone(&self.process.rules);
+        let rules = Arc::clone(&self.world.lock().process.rules);
         rules
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -205,26 +214,28 @@ impl Sim {
     }
 
     /// Every command the core has run or spawned, in order.
-    pub fn invocations(&self) -> &[Invocation] {
-        &self.process.log
+    pub fn invocations(&self) -> Vec<Invocation> {
+        self.world.lock().process.log.clone()
     }
 
     /// Records `cmd`, failing with `NotFound` if no handler is scripted for
     /// it. Returns its index, and the cell for its input.
     fn record(&mut self, cmd: &Command) -> io::Result<(usize, Arc<OnceLock<Vec<u8>>>)> {
         let stdin = Arc::new(OnceLock::new());
-        self.process.log.push(Invocation {
+        let mut world = self.world.lock();
+        let process = &mut world.process;
+        process.log.push(Invocation {
             program: cmd.get_program().to_os_string(),
             args: cmd.get_args().map(|a| a.to_os_string()).collect(),
             stdin: Arc::clone(&stdin),
         });
-        if !self.process.handlers.has(cmd.get_program()) {
+        if !process.handlers.has(cmd.get_program()) {
             return Err(error(
                 ErrorKind::NotFound,
                 "no handler scripted for this program",
             ));
         }
-        Ok((self.process.log.len() - 1, stdin))
+        Ok((process.log.len() - 1, stdin))
     }
 }
 
@@ -233,7 +244,8 @@ impl Perform<RunCommand> for Sim {
         let cmd = op.0;
         let (_, stdin) = self.record(&cmd)?;
         let _ = stdin.set(Vec::new());
-        self.process.handlers.run(&cmd, &[])
+        let handlers = self.world.lock().process.handlers.clone();
+        handlers.run(&cmd, &[])
     }
 }
 
@@ -409,7 +421,7 @@ impl Perform<Opening<SpawnChild<Child>>> for Sim {
     fn perform(&mut self, Opening(op, _): Opening<SpawnChild<Child>>) -> io::Result<Child> {
         let (entry, given) = self.record(&op.command)?;
         let mut child = Child {
-            handlers: self.process.handlers.clone(),
+            handlers: self.world.lock().process.handlers.clone(),
             entry,
             given,
             command: op.command,

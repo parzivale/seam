@@ -371,8 +371,8 @@ impl Shared {
         #[cfg(feature = "time")]
         {
             let mut sim = self.sim();
-            if deadline > sim.clock {
-                let step = deadline - sim.clock;
+            if deadline > sim.clock() {
+                let step = deadline - sim.clock();
                 sim.advance(step);
             }
         }

@@ -256,6 +256,31 @@ fn every_construction_form() -> Result<(), seam::test::WorldError> {
     Ok(())
 }
 
+/// A part built over the simulation: `Disk` keeps the store in a file,
+/// through the `Sim` it holds.
+struct Disk(Sim);
+impl Capability for Disk {}
+impl Perform<Put> for Disk {
+    fn perform(&mut self, op: Put) {
+        seam::ops::fs::write_file(&mut self.0, &format!("/kv/{}", op.0), &op.1).unwrap();
+    }
+}
+
+/// Every clone of a `Sim` is the same world, so a part given a clone sees
+/// what the root's own `Sim` part sees.
+#[test]
+fn a_part_over_a_clone_of_the_sim() {
+    let mut sim = Sim::new();
+    sim.add_dir("/kv");
+    let mut root = seam::root![
+        Sim<fx::View>::clone(&sim),
+        Disk<Put>(sim.clone()),
+    ];
+    root.perform(Put("k".into(), "v".into()));
+    assert_eq!(seam::ops::fs::read_to_string(&root, "/kv/k").unwrap(), "v");
+    assert_eq!(sim.file("/kv/k").unwrap(), b"v");
+}
+
 /// A part listed with several effects serves them all from one value.
 #[test]
 fn one_value_serving_several_effects() {

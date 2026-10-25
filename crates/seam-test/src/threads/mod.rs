@@ -258,8 +258,8 @@ impl Shared {
             #[cfg(feature = "time")]
             {
                 let mut sim = self.sim();
-                if deadline > sim.clock {
-                    let step = deadline - sim.clock;
+                if deadline > sim.clock() {
+                    let step = deadline - sim.clock();
                     sim.advance(step);
                 }
             }
@@ -355,7 +355,7 @@ impl Shared {
     /// The point on the virtual clock `after` from now.
     #[cfg(feature = "time")]
     pub(crate) fn deadline_after(&self, after: Duration) -> Duration {
-        self.sim().clock.saturating_add(after)
+        self.sim().clock().saturating_add(after)
     }
 
     /// Blocks until `poll` returns `Some`, or until the clock reaches
@@ -383,7 +383,7 @@ impl Shared {
             if let Some(r) = poll(waker) {
                 return Some(Some(r));
             }
-            if self.sim().clock >= deadline {
+            if self.sim().clock() >= deadline {
                 return Some(None);
             }
             if timer.1.is_none() {

@@ -8,12 +8,19 @@ use crate::Sim;
 impl Sim {
     /// Moves both clocks forward, as if `d` passed outside the core.
     pub fn advance(&mut self, d: Duration) {
-        self.clock += d;
+        #[allow(unused_mut)] // a guard with std, a reference without
+        let mut world = self.state_mut();
+        world.clock += d;
         #[cfg(feature = "std")]
         {
-            let mut world = self.world.lock();
             world.wall += d;
         }
+    }
+
+    /// The monotonic clock, since `Instant::EPOCH`.
+    #[cfg(feature = "rt")]
+    pub(crate) fn clock(&self) -> Duration {
+        self.state().clock
     }
 
     /// Sets the wall clock. The monotonic clock is unaffected.
@@ -25,7 +32,7 @@ impl Sim {
 
 impl Inspect<Now> for Sim {
     fn inspect(&self, _: Now) -> Instant {
-        Instant::from_epoch(self.clock)
+        Instant::from_epoch(self.state().clock)
     }
 }
 

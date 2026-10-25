@@ -184,6 +184,6 @@ fn an_abandoned_child_records_its_input() {
         Err::<(), _>(io::Error::other("give up"))
     });
     assert!(result.is_err());
-    let log: &[seam_test::Invocation] = sim.invocations();
+    let log: Vec<seam_test::Invocation> = sim.invocations();
     assert_eq!(log[0].stdin(), b"half");
 }

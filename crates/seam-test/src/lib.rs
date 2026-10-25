@@ -156,12 +156,6 @@ pub mod threads;
 mod time;
 #[cfg(all(feature = "time", feature = "std"))]
 mod timeouts;
-#[cfg(any(
-    feature = "fs",
-    feature = "net",
-    feature = "io-std",
-    all(feature = "time", feature = "std")
-))]
 mod world;
 #[cfg(feature = "std")]
 pub mod world_file;
@@ -176,28 +170,27 @@ pub use world_file::{Failure, World, WorldError, WorldMismatch, check_world, loa
 /// Create one per test. Set up the world it starts in (files, variables,
 /// scripted commands, stdin), hand it to the core in place of a real
 /// backend, then assert on what the core left behind.
+///
+/// With std, a `Sim` is a handle: every clone is the same world, so a part
+/// of a root that works over the simulation (a store that keeps its data in
+/// a simulated file, say) is given a clone, and the test asserts through
+/// any of them. Without std, a `Sim` is the world itself, and is not
+/// `Clone`.
+///
+/// ```
+/// # #[cfg(feature = "fs")] {
+/// let sim = seam_test::Sim::new();
+/// let mut other = sim.clone();
+/// other.add_file("/tmp/a", "hi");
+/// assert_eq!(sim.file("/tmp/a").unwrap(), b"hi");
+/// # }
+/// ```
+#[cfg_attr(feature = "std", derive(Clone))]
 pub struct Sim {
-    #[cfg(feature = "time")]
-    clock: core::time::Duration,
-    #[cfg(feature = "random")]
-    rng: random::SplitMix64,
-    #[cfg(feature = "env")]
-    env: env::Env,
-    #[cfg(any(feature = "fs", feature = "env"))]
-    cwd: std::path::PathBuf,
-    #[cfg(any(
-        feature = "fs",
-        feature = "net",
-        feature = "io-std",
-        all(feature = "time", feature = "std")
-    ))]
+    #[cfg(feature = "std")]
     world: world::Shared,
-    #[cfg(feature = "process")]
-    process: process::Processes,
-    #[cfg(feature = "signal")]
-    ctrl_c: u32,
-    #[cfg(feature = "rt")]
-    parallelism: core::num::NonZeroUsize,
+    #[cfg(not(feature = "std"))]
+    world: world::World,
 }
 
 impl Sim {
@@ -212,35 +205,42 @@ impl Sim {
 
     /// A fresh world whose random numbers come from `seed`.
     pub fn with_seed(seed: u64) -> Self {
-        #[cfg(not(feature = "random"))]
-        let _ = seed;
         #[allow(unused_mut)]
         let mut sim = Self {
-            #[cfg(feature = "time")]
-            clock: core::time::Duration::ZERO,
-            #[cfg(feature = "random")]
-            rng: random::SplitMix64(seed),
-            #[cfg(feature = "env")]
-            env: env::Env::default(),
-            #[cfg(any(feature = "fs", feature = "env"))]
-            cwd: std::path::PathBuf::from("/"),
-            #[cfg(any(
-                feature = "fs",
-                feature = "net",
-                feature = "io-std",
-                all(feature = "time", feature = "std")
-            ))]
-            world: world::Shared::default(),
-            #[cfg(feature = "process")]
-            process: process::Processes::default(),
-            #[cfg(feature = "signal")]
-            ctrl_c: 0,
-            #[cfg(feature = "rt")]
-            parallelism: core::num::NonZeroUsize::MIN,
+            #[cfg(feature = "std")]
+            world: world::Shared::new(world::World::new(seed)),
+            #[cfg(not(feature = "std"))]
+            world: world::World::new(seed),
         };
         #[cfg(feature = "fs")]
         sim.add_dir("/tmp");
         sim
+    }
+
+    /// Reads the world.
+    #[cfg(feature = "std")]
+    #[allow(dead_code)]
+    fn state(&self) -> std::sync::MutexGuard<'_, world::World> {
+        self.world.lock()
+    }
+
+    /// Changes the world.
+    #[cfg(feature = "std")]
+    #[allow(dead_code)]
+    fn state_mut(&mut self) -> std::sync::MutexGuard<'_, world::World> {
+        self.world.lock()
+    }
+
+    #[cfg(not(feature = "std"))]
+    #[allow(dead_code)]
+    fn state(&self) -> &world::World {
+        &self.world
+    }
+
+    #[cfg(not(feature = "std"))]
+    #[allow(dead_code)]
+    fn state_mut(&mut self) -> &mut world::World {
+        &mut self.world
     }
 
     /// Runs `core` against this world and returns the world, for chaining
@@ -255,7 +255,7 @@ impl Sim {
 impl Sim {
     /// Sets what `AvailableParallelism` reports. The default is 1.
     pub fn set_parallelism(&mut self, n: core::num::NonZeroUsize) -> &mut Self {
-        self.parallelism = n;
+        self.world.lock().parallelism = n;
         self
     }
 }
@@ -263,7 +263,7 @@ impl Sim {
 #[cfg(feature = "rt")]
 impl seam_core::Inspect<seam_core::ops::task::AvailableParallelism> for Sim {
     fn inspect(&self, _: seam_core::ops::task::AvailableParallelism) -> core::num::NonZeroUsize {
-        self.parallelism
+        self.world.lock().parallelism
     }
 }
 

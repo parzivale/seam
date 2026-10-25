@@ -55,10 +55,10 @@ mod time {
     // Sleeping suspends until the clock reaches the deadline. When nothing
     // else can run, the runtime moves the clock there directly.
     async_op!([] AsyncSim, Sleep, |s, op| {
-        let deadline = s.shared.sim().clock + op.0;
+        let deadline = s.shared.sim().clock() + op.0;
         let mut registered = false;
         poll_fn(|cx| {
-            if s.shared.sim().clock >= deadline {
+            if s.shared.sim().clock() >= deadline {
                 return Poll::Ready(());
             }
             if !registered {
@@ -144,8 +144,7 @@ mod signal {
     async_op!([] AsyncSim, CtrlC, |s, _op| {
         poll_fn(|cx| {
             let mut sim = s.shared.sim();
-            if sim.ctrl_c > 0 {
-                sim.ctrl_c -= 1;
+            if sim.take_ctrl_c() {
                 return Poll::Ready(Ok(()));
             }
             drop(sim);

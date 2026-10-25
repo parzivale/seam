@@ -217,7 +217,7 @@ impl Sim {
         f: impl FnOnce(&mut World, Key) -> io::Result<R>,
     ) -> io::Result<R> {
         let mut world = self.world.lock();
-        let key = world.fs.resolve(&self.cwd, path)?;
+        let key = world.fs.resolve(&world.cwd, path)?;
         f(&mut world, key)
     }
 
@@ -352,7 +352,7 @@ impl Perform<RemoveDir<'_>> for Sim {
 impl Perform<Rename<'_>> for Sim {
     fn perform(&mut self, op: Rename<'_>) -> io::Result<()> {
         self.fs_op(op.from, |w, from| {
-            let to = w.fs.resolve(&self.cwd, op.to)?;
+            let to = w.fs.resolve(&w.cwd, op.to)?;
             let fs = &mut w.fs;
             let node = fs.node(&from)?;
             if from == to {
@@ -402,7 +402,7 @@ impl Perform<Rename<'_>> for Sim {
 impl Perform<CopyFile<'_>> for Sim {
     fn perform(&mut self, op: CopyFile<'_>) -> io::Result<u64> {
         self.fs_op(op.from, |w, from| {
-            let to = w.fs.resolve(&self.cwd, op.to)?;
+            let to = w.fs.resolve(&w.cwd, op.to)?;
             let bytes = w.fs.inodes[w.fs.file(&from)?].bytes.clone();
             let len = bytes.len() as u64;
             let now = w.wall;

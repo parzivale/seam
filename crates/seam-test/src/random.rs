@@ -21,15 +21,17 @@ impl Sim {
     /// Restarts the random numbers from `seed`, as if the world had been
     /// created with [`Sim::with_seed`].
     pub fn set_seed(&mut self, seed: u64) -> &mut Self {
-        self.rng = SplitMix64(seed);
+        self.state_mut().rng = SplitMix64(seed);
         self
     }
 }
 
 impl Perform<FillRandom<'_>> for Sim {
     fn perform(&mut self, op: FillRandom<'_>) {
+        #[allow(unused_mut)] // a guard with std, a reference without
+        let mut world = self.state_mut();
         for chunk in op.0.chunks_mut(8) {
-            let bytes = self.rng.next().to_le_bytes();
+            let bytes = world.rng.next().to_le_bytes();
             chunk.copy_from_slice(&bytes[..chunk.len()]);
         }
     }

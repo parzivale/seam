@@ -29,47 +29,51 @@ impl Default for Env {
 impl Sim {
     /// Sets an environment variable.
     pub fn set_var(&mut self, name: impl Into<OsString>, value: impl Into<OsString>) -> &mut Self {
-        self.env.vars.insert(name.into(), value.into());
+        self.world.lock().env.vars.insert(name.into(), value.into());
         self
     }
 
     /// Removes an environment variable.
     pub fn remove_var(&mut self, name: impl Into<OsString>) -> &mut Self {
-        self.env.vars.remove(&name.into());
+        self.world.lock().env.vars.remove(&name.into());
         self
     }
 
     /// Sets the command-line arguments, including the program name. The
     /// default is `["sim"]`.
     pub fn set_args<I: IntoIterator<Item = A>, A: Into<OsString>>(&mut self, args: I) -> &mut Self {
-        self.env.args = args.into_iter().map(Into::into).collect();
+        self.world.lock().env.args = args.into_iter().map(Into::into).collect();
         self
     }
 
     /// Sets the directory `TempDir` reports. The default is `/tmp`.
     pub fn set_temp_dir(&mut self, path: impl Into<PathBuf>) -> &mut Self {
-        self.env.temp = path.into();
+        self.world.lock().env.temp = path.into();
         self
     }
 
     /// Sets the current directory. Relative paths in filesystem operations
     /// are resolved against it.
     pub fn set_current_dir(&mut self, path: impl AsRef<Path>) -> &mut Self {
-        self.cwd = self.cwd.join(path);
+        let mut world = self.world.lock();
+        world.cwd = world.cwd.join(path);
+        drop(world);
         self
     }
 }
 
 impl Inspect<Var<'_>> for Sim {
     fn inspect(&self, op: Var<'_>) -> Option<OsString> {
-        self.env.vars.get(op.name).cloned()
+        self.world.lock().env.vars.get(op.name).cloned()
     }
 }
 
 impl Perform<SetVar<'_>> for Sim {
     fn perform(&mut self, op: SetVar<'_>) -> io::Result<()> {
         op.check()?;
-        self.env
+        self.world
+            .lock()
+            .env
             .vars
             .insert(OsString::from(op.name), OsString::from(op.value));
         Ok(())
@@ -79,25 +83,25 @@ impl Perform<SetVar<'_>> for Sim {
 impl Perform<RemoveVar<'_>> for Sim {
     fn perform(&mut self, op: RemoveVar<'_>) -> io::Result<()> {
         op.check()?;
-        self.env.vars.remove(op.name);
+        self.world.lock().env.vars.remove(op.name);
         Ok(())
     }
 }
 
 impl Inspect<Args> for Sim {
     fn inspect(&self, _: Args) -> Vec<OsString> {
-        self.env.args.clone()
+        self.world.lock().env.args.clone()
     }
 }
 
 impl Inspect<CurrentDir> for Sim {
     fn inspect(&self, _: CurrentDir) -> io::Result<PathBuf> {
-        Ok(self.cwd.clone())
+        Ok(self.world.lock().cwd.clone())
     }
 }
 
 impl Inspect<TempDir> for Sim {
     fn inspect(&self, _: TempDir) -> PathBuf {
-        self.env.temp.clone()
+        self.world.lock().env.temp.clone()
     }
 }

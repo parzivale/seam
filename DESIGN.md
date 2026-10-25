@@ -292,8 +292,14 @@ behave identically in both modes. Those that would wait are native async:
   remaining tasks are dropped.
 
 Handles outlive the borrow of the `Sim` that made them, so the world state
-they reach (filesystem, network, wall clock) is shared behind an
-`Arc<Mutex<_>>`. That, the runtimes' own bookkeeping, and the simulated
+they reach is shared behind an `Arc<Mutex<_>>`. All of it lives there (clock,
+random numbers, environment, files, network, stdio, scripted commands), and
+the `Sim` itself is only a handle, so `Sim: Clone` and every clone is the
+same world. A part that is built over the simulation (a store that keeps
+its data in a simulated file, say) is handed a clone, and sees what the
+root's own `Sim` part sees; no other mechanism for sharing parts is needed.
+Without std there is no mutex, so the `Sim` holds the clock and random
+numbers itself and is not `Clone`. That, the runtimes' own bookkeeping, and the simulated
 cells and channels are the crate's only shared state; it is linted with
 `templates/clippy.toml`, with an allow on each of those modules alone.
 

@@ -84,18 +84,19 @@
 //! traits.
 //!
 //! A [`Root`] combines backends, and a program's own effects, into one
-//! capability: each part serves some [`kinds`] of operation.
+//! capability: each part lists the effects it serves, by their keys in
+//! [`effects`], and the root grants a core exactly those.
 //!
 //! ```
 //! # #[cfg(all(feature = "std", feature = "test", feature = "env", feature = "time"))] {
-//! use seam::kinds;
+//! use seam::effects as fx;
 //! use seam::ops::env::Var;
 //! use seam::ops::time::Now;
 //! use seam::prelude::*;
 //!
 //! let root = seam::root! {
-//!     std: seam::stdlib::Std::new() => [kinds::Env],
-//!     clock: seam::test::Sim::new() => [kinds::Time], // a simulated clock
+//!     std: seam::stdlib::Std::new() => [fx::Var],
+//!     clock: seam::test::Sim::new() => [fx::Now], // a simulated clock
 //! };
 //! let _home = root.inspect(Var::new("HOME"));
 //! assert_eq!(root.inspect(Now).since_epoch().as_secs(), 0);

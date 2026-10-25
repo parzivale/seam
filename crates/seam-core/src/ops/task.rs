@@ -487,6 +487,9 @@ operations! {
     #[query] AvailableParallelism => core::num::NonZeroUsize;
 }
 
-crate::root::in_kind!(crate::kinds::Task:
-    [F, H] Spawn<F, H>, [S] SpawnSet<S>, [] YieldNow, [] AvailableParallelism,
+crate::root::keys!(
+    [F, H] Spawn<F, H> => Spawn,
+    [S] SpawnSet<S> => SpawnSet,
+    [] YieldNow => YieldNow,
+    [] AvailableParallelism => AvailableParallelism,
 );

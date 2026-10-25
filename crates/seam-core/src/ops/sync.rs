@@ -370,7 +370,10 @@ impl<T> crate::ops::time::TimesOut for RecvMsg<T> {
     }
 }
 
-crate::root::in_kind!(crate::kinds::Sync: [S, R] Channel<S, R>, [T, C] Share<T, C>);
+crate::root::keys!(
+    [S, R] Channel<S, R> => Channel,
+    [T, C] Share<T, C> => Share,
+);
 
 three_ways! {
     /// Sends `value` if there is room right now: [`SendMsg`] with a timeout

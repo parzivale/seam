@@ -133,8 +133,8 @@ fn main() -> io::Result<()> {
 
     seam::tokio::block_on_multi_thread(async {
         let mut root = seam::root! {
-            std: seam::stdlib::Std::new() => [seam::kinds::Env],
-            tokio: seam::tokio::Tokio::new() => [seam::kinds::Net, seam::kinds::Stdio],
+            std: seam::stdlib::Std::new() => [seam::effects::Args],
+            tokio: seam::tokio::Tokio::new() => [seam::effects::TcpBind, seam::effects::OpenStdout],
         };
         let addr = listen_addr(&root)?;
         serve::<_, seam::tokio::stdio::Stdout, TcpListener, TcpStream, JoinHandle<io::Result<()>>>(

@@ -97,7 +97,11 @@ streams! {
     OpenStderr;
 }
 
-crate::root::in_kind!(crate::kinds::Stdio: [H] OpenStdin<H>, [H] OpenStdout<H>, [H] OpenStderr<H>);
+crate::root::keys!(
+    [H] OpenStdin<H> => OpenStdin,
+    [H] OpenStdout<H> => OpenStdout,
+    [H] OpenStderr<H> => OpenStderr,
+);
 
 three_ways! {
     /// Writes `bytes` to standard output, and flushes it (closing the

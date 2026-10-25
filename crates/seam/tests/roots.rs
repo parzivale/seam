@@ -1,5 +1,5 @@
 //! Roots built from parts: real backends mixed, simulated parts, and a
-//! program's own kind of operation alongside seam's.
+//! program's own effects alongside seam's.
 #![cfg(all(feature = "std", feature = "tokio", feature = "test", feature = "full"))]
 
 use seam::io;
@@ -10,7 +10,7 @@ use seam::ops::random::random_u64;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use seam::kinds;
+use seam::effects as fx;
 use seam::ops::env::Var;
 use seam::ops::fs::CreateAtomic;
 use seam::ops::fs::{Open, WriteOnly};
@@ -23,26 +23,23 @@ use seam::stdlib::Std;
 use seam::test::Sim;
 use seam::tokio::Tokio;
 
-// ---- a program's own kind: a key-value store ----
-
-/// The kind: a marker type.
-struct Store;
+// ---- a program's own effects: a key-value store ----
 
 struct Get(String);
 impl Operation for Get {
     type Outcome = Option<String>;
 }
 impl Query for Get {}
-impl InKind for Get {
-    type Kind = Store;
+impl Effect for Get {
+    type Key = Get;
 }
 
 struct Put(String, String);
 impl Operation for Put {
     type Outcome = ();
 }
-impl InKind for Put {
-    type Kind = Store;
+impl Effect for Put {
+    type Key = Put;
 }
 
 #[derive(Default, Clone)]
@@ -102,8 +99,8 @@ where
 fn a_sync_root_with_a_simulated_world_and_an_own_part() {
     seam::root! {
         struct App {
-            sim: Sim => [kinds::Env, kinds::Time, kinds::Fs],
-            store: Memory => [Store],
+            sim: Sim => [fx::Var, fx::Now, fx::Sleep, fx::CreateAtomic],
+            store: Memory => [Get, Put],
         }
     }
     let mut sim = Sim::new();
@@ -130,8 +127,8 @@ fn a_sync_root_with_a_simulated_world_and_an_own_part() {
 async fn tokio_and_std_in_one_root() {
     seam::root! {
         struct App {
-            std: Std => [kinds::Env, kinds::Random],
-            tokio: Tokio => [kinds::Time, kinds::Fs],
+            std: Std => [fx::FillRandom],
+            tokio: Tokio => [fx::Now, fx::Sleep, fx::Open<WriteOnly>, fx::View],
         }
     }
     let mut root = Root::new(App {
@@ -162,8 +159,8 @@ fn a_root_on_simulated_threads() {
     seam::root! {
         #[derive(Clone)]
         struct App {
-            sim: ThreadSim => [kinds::Time, kinds::Task, kinds::Sync],
-            store: Memory => [Store],
+            sim: ThreadSim => [fx::Now, fx::Sleep, fx::Spawn, fx::Channel],
+            store: Memory => [Get, Put],
         }
     }
     let threads = Threads::new(Sim::new());
@@ -195,7 +192,7 @@ fn a_named_root() {
     seam::root! {
         #[derive(Default)]
         struct App {
-            store: Memory => [Store],
+            store: Memory => [Get, Put],
         }
     }
     struct Service {
@@ -211,8 +208,8 @@ fn a_named_root() {
 /// Two roots in one function do not clash.
 #[test]
 fn roots_side_by_side() {
-    let a = seam::root! { store: Memory::default() => [Store] };
-    let b = seam::root! { sim: Sim::new() => [kinds::Time], store: Memory::default() => [Store] };
+    let a = seam::root! { store: Memory::default() => [Get, Put] };
+    let b = seam::root! { sim: Sim::new() => [fx::Now], store: Memory::default() => [Get] };
     assert_eq!(a.inspect(Get("x".into())), None);
     assert_eq!(b.inspect(Now).since_epoch(), Duration::ZERO);
 }

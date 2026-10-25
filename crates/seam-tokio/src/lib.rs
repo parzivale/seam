@@ -8,8 +8,8 @@
 //! processes, signals, tasks and channels. Operations with nothing to do
 //! with Tokio, the environment (`Var`, `Args`, ...) and randomness, are not
 //! here: take them from `seam-std`'s `Std` in the same root, as
-//! `seam::root! { std: Std::new() => [kinds::Env, kinds::Random], tokio:
-//! Tokio::new() => [kinds::Time, kinds::Net] }`. Both are zero-sized, and
+//! `seam::root! { std: Std::new() => [fx::Var, fx::FillRandom], tokio:
+//! Tokio::new() => [fx::Now, fx::Sleep, fx::TcpBind] }`. Both are zero-sized, and
 //! so is the root.
 //!
 //! ```no_run

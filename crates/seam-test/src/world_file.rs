@@ -1,7 +1,7 @@
 //! World files: a [`Sim`]'s world described in [KDL](https://kdl.dev).
 //!
-//! A world file sets up the world a core starts in, in one block per kind
-//! of operation, matching the kinds a root is built from:
+//! A world file sets up the world a core starts in, in one block per area
+//! (the clock, the environment, the filesystem, ...):
 //!
 //! ```kdl
 //! seed 7

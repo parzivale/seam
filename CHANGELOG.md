@@ -45,6 +45,17 @@ so scopes work wherever operations do: the async forms and lifts, a `Root`
   refused (`InvalidInput`): open those with `Open`.
 - `ReadDir` is lent.
 
+### Roots route per effect
+
+| Removed | Use |
+|---|---|
+| `kinds::Fs`, `kinds::Time`, ... | one key per effect, in `effects`: `effects::View`, `effects::Open<ReadOnly>`, `effects::Now`, ... |
+| `InKind { type Kind }` | `Effect { type Key }`; a program's own effect is usually its own key |
+
+A root lists the effects each part serves and grants a core exactly those.
+`Open` is keyed by its mode, so reading and writing are separate grants.
+`root!` no longer lets a part's name shadow a path in its keys.
+
 ### New
 
 - Standard input, output and error are handles: `OpenStdin<H>`,

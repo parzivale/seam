@@ -117,39 +117,46 @@ networking and clocks and nothing else.
 ## Roots
 
 A program's edge can hand its core one capability built from parts: a
-`Root`. Each part serves one or more kinds of operation (`kinds::Fs`,
-`kinds::Time`, ...), so one root can mix backends, sync and async parts,
-simulated parts, and the program's own effects:
+`Root`. Each part lists the effects it serves, by their keys
+(`effects::Now`, `effects::View`, `effects::Open<WriteOnly>`, ...), so one
+root can mix backends, sync and async parts, simulated parts, and the
+program's own effects, and grants the core exactly what it lists:
 
 ```rust
+use seam::effects as fx;
+
 let mut root = seam::root! {
-    std: Std::new() => [kinds::Env, kinds::Random],
-    tokio: Tokio::new() => [kinds::Time, kinds::Fs, kinds::Net],
-    store: redis => [Store],                // the program's own kind
+    std: Std::new() => [fx::Var, fx::FillRandom],
+    tokio: Tokio::new() => [fx::Now, fx::Sleep, fx::View, fx::TcpBind],
+    store: redis => [Get, Put],             // the program's own effects
 };
 serve(&mut root).await;                     // bounded as usual: SendPerform<Sleep>, ...
 ```
 
+A core asking for an effect the root does not list fails to compile: "the
+root `Parts<..>` has no part for `fx::Open<WriteOnly>`". `Open` is keyed by
+its mode, so a part can be granted reading without writing.
+
 Each backend covers only what it is for: Tokio has no environment or
 randomness, so a Tokio program takes those from `Std`. `Std` and `Tokio`
 are zero-sized, and so is a root of them. `Std` only reads the
-environment; to change it (`SetVar`, `RemoveVar`), serve `kinds::Env` with
-`seam_std::env::WritableEnv` instead, which is `unsafe` to create, as
-`std::env::set_var` is to call.
+environment; to change it (`SetVar`, `RemoveVar`), serve `fx::SetVar` and
+`fx::RemoveVar` with `seam_std::env::WritableEnv`, which is `unsafe` to
+create, as `std::env::set_var` is to call.
 
-The root forwards each operation to the part serving its kind, in whichever
-form that part implements: sync parts through the sync traits, async parts
-through the async ones. Each kind is served once; listing two parts for one
-kind fails to compile. A program's own kind is a marker type, and each of
-its operations names it:
+The root forwards each operation to the part listed for its effect, in
+whichever form that part implements: sync parts through the sync traits,
+async parts through the async ones. Each effect is served once; listing two
+parts for one effect fails to compile. A scope routes by its acquisition
+(`fx::View` serves opening and closing a `View`). A program's own effect
+names its key, usually itself:
 
 ```rust
-struct Store;
-impl InKind for Get { type Kind = Store; }
+impl Effect for Get { type Key = Get; }
 ```
 
 `root!` evaluates to the root. It writes a struct of the parts and one
-`Pick` impl per kind; a named form (`root! { struct App { ... } }`) gives
+`Pick` impl per effect; a named form (`root! { struct App { ... } }`) gives
 the struct a name, for when the root's type must be written out.
 Capability types opt in to seam's lifts (an `Inspect` is also a `Perform`,
 a sync operation also works from async code) with
@@ -185,17 +192,16 @@ A program's own effects (a key-value store, a payment API, a queue) are
 operations like seam's. Four steps:
 
 ```rust
-// 1. The operations: a type each, with its outcome and its kind. A kind is
-//    a marker type, and groups operations one part serves.
-pub struct Store;
+// 1. The operations: a type each, with its outcome and its key, the marker
+//    a root routes it by. An effect of your own is usually its own key.
 pub struct Get(pub String);
 impl Operation for Get { type Outcome = io::Result<Option<String>>; }
 impl Query for Get {}                       // read-only: `Inspect`, `&self`
-impl InKind for Get { type Kind = Store; }
+impl Effect for Get { type Key = Get; }
 
 pub struct Put(pub String, pub String);
 impl Operation for Put { type Outcome = io::Result<()>; }
-impl InKind for Put { type Kind = Store; }
+impl Effect for Put { type Key = Put; }
 
 // 2. The core asks for them like any capability.
 fn visit<C: Inspect<Get> + Perform<Put>>(c: &mut C, page: &str) -> io::Result<u64> { ... }
@@ -214,8 +220,8 @@ impl Capability for Memory {}
 
 // 4. At the edge, put the real one in a root next to a backend.
 let mut root = seam::root! {
-    std: Std::new() => [kinds::Env, kinds::Stdio],
-    store: Redis::connect()? => [Store],
+    std: Std::new() => [fx::Var, fx::OpenStdout],
+    store: Redis::connect()? => [Get, Put],
 };
 visit(&mut root, "home")?;
 ```
@@ -229,9 +235,9 @@ visit(&mut root, "home")?;
   simulation included, and on the simulated runtime and threads its
   interleavings are explored like any other effects. See
   [`custom_ops`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/custom_ops.rs).
-- **Effects of a kind seam has** (another filesystem, say) use seam's
-  operations and kind (`kinds::Fs`), so they can stand in for a backend's
-  part in a root.
+- **Another implementation of seam's effects** (another filesystem, say)
+  implements seam's operations, so it is listed in a root under seam's keys
+  (`fx::View`, `fx::Open<ReadOnly>`, ...) in place of a backend.
 
 ## Testing a core
 

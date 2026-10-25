@@ -1,28 +1,28 @@
 //! Roots: one capability built from parts.
 //!
-//! A program's edge builds a [`Root`] out of parts, each serving one or
-//! more *kinds* of operation, and hands it to the core. Every operation
-//! names its kind ([`InKind`]): `Sleep` and `Now` are [`kinds::Time`],
-//! `Open` is [`kinds::Fs`], and so on. The root forwards each operation
-//! to the part that serves its kind, in whichever form (sync, async,
-//! `Send`) that part implements it. So one root can mix backends, sync and
-//! async parts, simulated parts and a program's own:
+//! A program's edge builds a [`Root`] out of parts, and lists, for each
+//! part, the effects it serves. Every operation names its effect by a
+//! marker type, its key ([`Effect`]). seam's keys are all in [`effects`]:
+//! `Now` routes by `effects::Now`, `Open` in mode `M` by `effects::Open<M>`,
+//! and so on. The root forwards each operation to the part listed for its
+//! effect, in whichever form (sync, async, `Send`) that part implements it.
+//! So one root can mix backends, sync and async parts, simulated parts and
+//! a program's own, and grants the core exactly the effects it lists:
 //!
 //! ```
 //! # #[cfg(feature = "time")] {
-//! use seam_core::kinds;
+//! use seam_core::effects;
 //! use seam_core::ops::time::{Instant, Now, Sleep};
-//! use seam_core::{Capability, InKind, Inspect, Operation, Perform, Query};
+//! use seam_core::{Capability, Effect, Inspect, Operation, Perform, Query};
 //!
-//! // A program's own kind of operation: a plain marker type.
-//! struct Greeting;
+//! // A program's own effect, which is its own key.
 //! struct Greet(&'static str);
 //! impl Operation for Greet {
 //!     type Outcome = String;
 //! }
 //! impl Query for Greet {}
-//! impl InKind for Greet {
-//!     type Kind = Greeting;
+//! impl Effect for Greet {
+//!     type Key = Greet;
 //! }
 //!
 //! // Two parts: a fake clock, and a greeter.
@@ -46,10 +46,10 @@
 //!     }
 //! }
 //!
-//! // The root: one field per part, each with the kinds it serves.
+//! // The root: one field per part, each with the effects it serves.
 //! let mut root = seam_core::root! {
-//!     clock: Clock(Instant::EPOCH) => [kinds::Time],
-//!     greeter: Polite => [Greeting],
+//!     clock: Clock(Instant::EPOCH) => [effects::Sleep],
+//!     greeter: Polite => [Greet],
 //! };
 //!
 //! /// The core asks for exactly what it uses, as always.
@@ -63,81 +63,112 @@
 //! # }
 //! ```
 //!
-//! A root lists each kind once: two parts for the same kind fail to
+//! The clock could also tell the time, but this root does not list
+//! `effects::Now`, so a core given it cannot ask: "the root `Parts<..>` has
+//! no part for `effects::Now`".
+//!
+//! ```compile_fail,E0277
+//! # #[cfg(feature = "time")] {
+//! # use seam_core::{effects, Capability, Inspect, Perform};
+//! # use seam_core::ops::time::{Instant, Now, Sleep};
+//! # struct Clock;
+//! # impl Capability for Clock {}
+//! # impl Inspect<Now> for Clock { fn inspect(&self, _: Now) -> Instant { Instant::EPOCH } }
+//! # impl Perform<Sleep> for Clock { fn perform(&mut self, _: Sleep) {} }
+//! let root = seam_core::root! { clock: Clock => [effects::Sleep] };
+//! root.inspect(Now); // error: the root has no part for `effects::Now`
+//! # }
+//! # #[cfg(not(feature = "time"))] compile_error!("E0277");
+//! ```
+//!
+//! A root lists each effect once: two parts for the same effect fail to
 //! compile, with "conflicting implementations of `Pick<App>`":
 //!
 //! ```compile_fail,E0119
 //! # #[cfg(feature = "time")] {
-//! # use seam_core::kinds;
+//! # use seam_core::effects;
 //! # struct A; struct B;
 //! let root = seam_core::root! {
-//!     a: A => [kinds::Time],
-//!     b: B => [kinds::Time], // error: `kinds::Time` is already served
+//!     a: A => [effects::Now],
+//!     b: B => [effects::Now], // error: `effects::Now` is already served
 //! };
 //! # }
 //! # #[cfg(not(feature = "time"))] compile_error!("E0119");
 //! ```
 //!
-//! An operation whose kind the root has no part for is a missing
-//! capability, like any other: "the root `App` has no part for
-//! `kinds::Fs`".
+//! A scope routes by its acquisition: listing `effects::View` serves
+//! `Opening<View<..>>` and `Closing<View<..>>`. A timed operation routes as
+//! the operation does.
 //!
 //! [`root!`](crate::root!) builds the root: a struct of the parts, with one
-//! [`Pick`] impl per kind saying which field serves it. It is only sugar;
+//! [`Pick`] impl per effect saying which field serves it. It is only sugar;
 //! a root is any struct with those impls, wrapped in [`Root::new`].
 //!
 //! Operations on handles (`Read` on a stream, `RecvMsg` on a channel,
-//! `Join` on a task) never go through the root, so they have no kind: the
+//! `Join` on a task) never go through the root, so they have no key: the
 //! handle a part hands out implements them itself.
 
 use crate::future::{AsyncInspect, AsyncPerform, SendInspect, SendPerform};
 use crate::{Inspect, Operation, Perform, Query};
 
-/// The kinds of seam's own operations. A program's own kinds are plain
-/// marker types too.
-pub mod kinds {
-    /// `Var`, `SetVar`, `RemoveVar`, `Args`, `CurrentDir`, `TempDir`.
+/// The keys of seam's own effects, one per operation (or acquisition) a
+/// root serves, named after it. List them in [`root!`](crate::root!):
+///
+/// ```text
+/// use seam::effects as fx;
+/// seam::root! { std: Std::new() => [fx::Args, fx::View, fx::OpenStdout] }
+/// ```
+///
+/// A program's own effect has its own key, usually the operation type
+/// itself.
+pub mod effects {
+    #[allow(unused_imports)]
+    use core::marker::PhantomData;
+
+    macro_rules! keys {
+        ($feature:literal: $($name:ident => $op:path),* $(,)?) => {$(
+            #[doc = concat!("Routes [`", stringify!($op), "`](crate::ops::", stringify!($op), ").")]
+            #[cfg(feature = $feature)]
+            #[derive(Debug, Clone, Copy)]
+            pub struct $name;
+        )*};
+    }
+
+    keys!("env": Var => env::Var, SetVar => env::SetVar, RemoveVar => env::RemoveVar, Args => env::Args, CurrentDir => env::CurrentDir, TempDir => env::TempDir);
+    keys!("fs": Metadata => fs::Metadata, CreateDir => fs::CreateDir, RemoveFile => fs::RemoveFile, RemoveDir => fs::RemoveDir, Rename => fs::Rename, CopyFile => fs::CopyFile, CreateAtomic => fs::CreateAtomic, View => fs::View, ReadDir => fs::ReadDir);
+    keys!("net": ResolveInto => net::ResolveInto, TcpConnect => net::TcpConnect, TcpBind => net::TcpBind, UdpBind => net::UdpBind);
+    keys!("process": RunCommand => process::RunCommand, SpawnChild => process::SpawnChild, Exit => process::Exit);
+    keys!("random": FillRandom => random::FillRandom);
+    keys!("signal": CtrlC => signal::CtrlC);
+    keys!("io-std": OpenStdin => stdio::OpenStdin, OpenStdout => stdio::OpenStdout, OpenStderr => stdio::OpenStderr);
+    keys!("time": Now => time::Now, Sleep => time::Sleep);
+    keys!("rt": Spawn => task::Spawn, SpawnSet => task::SpawnSet, YieldNow => task::YieldNow, AvailableParallelism => task::AvailableParallelism);
+    keys!("sync": Channel => sync::Channel, Share => sync::Share);
+
+    /// Routes [`time::WallClock`](crate::ops::time::WallClock).
+    #[cfg(all(feature = "time", feature = "std"))]
     #[derive(Debug, Clone, Copy)]
-    pub struct Env;
-    /// The filesystem operations: `Open`, `Metadata`, `ReadDir`, ...
+    pub struct WallClock;
+
+    /// Routes [`fs::Open`](crate::ops::fs::Open) in mode `M`: a part that
+    /// serves only `Open<ReadOnly>` cannot open a file to write it.
+    #[cfg(feature = "fs")]
     #[derive(Debug, Clone, Copy)]
-    pub struct Fs;
-    /// `ResolveInto`, `TcpConnect`, `TcpBind`, `UdpBind`.
-    #[derive(Debug, Clone, Copy)]
-    pub struct Net;
-    /// `RunCommand`, `SpawnChild`, `Exit`.
-    #[derive(Debug, Clone, Copy)]
-    pub struct Process;
-    /// `FillRandom`.
-    #[derive(Debug, Clone, Copy)]
-    pub struct Random;
-    /// `CtrlC`.
-    #[derive(Debug, Clone, Copy)]
-    pub struct Signal;
-    /// `OpenStdin`, `OpenStdout`, `OpenStderr`.
-    #[derive(Debug, Clone, Copy)]
-    pub struct Stdio;
-    /// `Now`, `WallClock`, `Sleep`.
-    #[derive(Debug, Clone, Copy)]
-    pub struct Time;
-    /// `Spawn`, `SpawnSet`, `YieldNow`, `AvailableParallelism`.
-    #[derive(Debug, Clone, Copy)]
-    pub struct Task;
-    /// `Channel`, `Share`. Named by path (`kinds::Sync`), since importing
-    /// it would shadow `core::marker::Sync`.
-    #[derive(Debug, Clone, Copy)]
-    pub struct Sync;
+    pub struct Open<M>(PhantomData<fn() -> M>);
 }
 
-/// Names the kind of operation (or acquisition) this is, which decides
-/// which part of a [`Root`] serves it.
-pub trait InKind {
-    /// The kind: a marker type, such as [`kinds::Fs`].
-    type Kind;
+/// Names the effect an operation (or acquisition) is, by a marker type,
+/// its key, which decides which part of a [`Root`] serves it.
+///
+/// A program's own effect is usually its own key:
+/// `impl Effect for Greet { type Key = Greet; }`.
+pub trait Effect {
+    /// The key: seam's are in [`effects`].
+    type Key;
 }
 
-/// Implemented on a kind, for a root's struct `A`: which part of `A` serves
-/// that kind. [`root!`](crate::root!) writes these.
+/// Implemented on an effect's key, for a root's struct `A`: which part of
+/// `A` serves that effect. [`root!`](crate::root!) writes these.
 #[diagnostic::on_unimplemented(
     message = "the root `{A}` has no part for `{Self}`",
     label = "no part serves `{Self}`",
@@ -154,8 +185,8 @@ pub trait Pick<A> {
     fn pick_mut(parts: &mut A) -> &mut Self::Part;
 }
 
-/// A capability built from parts: forwards each operation to the part that
-/// serves its kind. See the [module docs](mod@crate::root).
+/// A capability built from parts: forwards each operation to the part
+/// listed for its effect. See the [module docs](mod@crate::root).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Root<A>(A);
 
@@ -182,38 +213,38 @@ impl<A> Root<A> {
 }
 
 /// The part of `A` that serves `O`.
-type PartOf<O, A> = <<O as InKind>::Kind as Pick<A>>::Part;
+type PartOf<O, A> = <<O as Effect>::Key as Pick<A>>::Part;
 
 impl<A, Q> Inspect<Q> for Root<A>
 where
-    Q: Query + InKind,
-    Q::Kind: Pick<A>,
+    Q: Query + Effect,
+    Q::Key: Pick<A>,
     PartOf<Q, A>: Inspect<Q>,
 {
     fn inspect(&self, query: Q) -> Q::Outcome {
-        <Q::Kind as Pick<A>>::pick(&self.0).inspect(query)
+        <Q::Key as Pick<A>>::pick(&self.0).inspect(query)
     }
 }
 
 impl<A, O> Perform<O> for Root<A>
 where
-    O: Operation + InKind,
-    O::Kind: Pick<A>,
+    O: Operation + Effect,
+    O::Key: Pick<A>,
     PartOf<O, A>: Perform<O>,
 {
     fn perform(&mut self, op: O) -> O::Outcome {
-        <O::Kind as Pick<A>>::pick_mut(&mut self.0).perform(op)
+        <O::Key as Pick<A>>::pick_mut(&mut self.0).perform(op)
     }
 }
 
 impl<A, Q> AsyncInspect<Q> for Root<A>
 where
-    Q: Query + InKind,
-    Q::Kind: Pick<A>,
+    Q: Query + Effect,
+    Q::Key: Pick<A>,
     PartOf<Q, A>: AsyncInspect<Q>,
 {
     async fn inspect_async(&self, query: Q) -> Q::Outcome {
-        <Q::Kind as Pick<A>>::pick(&self.0)
+        <Q::Key as Pick<A>>::pick(&self.0)
             .inspect_async(query)
             .await
     }
@@ -221,12 +252,12 @@ where
 
 impl<A, O> AsyncPerform<O> for Root<A>
 where
-    O: Operation + InKind,
-    O::Kind: Pick<A>,
+    O: Operation + Effect,
+    O::Key: Pick<A>,
     PartOf<O, A>: AsyncPerform<O>,
 {
     async fn perform_async(&mut self, op: O) -> O::Outcome {
-        <O::Kind as Pick<A>>::pick_mut(&mut self.0)
+        <O::Key as Pick<A>>::pick_mut(&mut self.0)
             .perform_async(op)
             .await
     }
@@ -237,56 +268,56 @@ where
 
 impl<A, Q> SendInspect<Q> for Root<A>
 where
-    Q: Query + InKind,
-    Q::Kind: Pick<A>,
+    Q: Query + Effect,
+    Q::Key: Pick<A>,
     PartOf<Q, A>: SendInspect<Q> + 'static,
 {
     fn inspect_send(&self, query: Q) -> impl Future<Output = Q::Outcome> + Send {
-        <Q::Kind as Pick<A>>::pick(&self.0).inspect_send(query)
+        <Q::Key as Pick<A>>::pick(&self.0).inspect_send(query)
     }
 }
 
 impl<A, O> SendPerform<O> for Root<A>
 where
-    O: Operation + InKind,
-    O::Kind: Pick<A>,
+    O: Operation + Effect,
+    O::Key: Pick<A>,
     PartOf<O, A>: SendPerform<O> + 'static,
 {
     fn perform_send(&mut self, op: O) -> impl Future<Output = O::Outcome> + Send {
-        <O::Kind as Pick<A>>::pick_mut(&mut self.0).perform_send(op)
+        <O::Key as Pick<A>>::pick_mut(&mut self.0).perform_send(op)
     }
 }
 
-/// Builds a root from its parts: one field per part, each with the kinds
+/// Builds a root from its parts: one field per part, each with the effects
 /// it serves. It evaluates to the [`Root`], ready to hand to a core:
 ///
 /// ```
 /// # #[cfg(feature = "time")] {
-/// # use seam_core::{kinds, Capability, Inspect, Perform};
+/// # use seam_core::{effects, Capability, Inspect, Perform};
 /// # use seam_core::ops::time::{Instant, Now, Sleep};
 /// # #[derive(Clone, Default)] pub struct Clock;
 /// # impl Capability for Clock {}
 /// # impl Inspect<Now> for Clock { fn inspect(&self, _: Now) -> Instant { Instant::EPOCH } }
 /// # impl Perform<Sleep> for Clock { fn perform(&mut self, _: Sleep) {} }
 /// let mut root = seam_core::root! {
-///     clock: Clock => [kinds::Time],
+///     clock: Clock => [effects::Now, effects::Sleep],
 /// };
 /// root.perform(Sleep(core::time::Duration::from_secs(1)));
 /// let _clock: &Clock = &root.parts().clock;
 /// # }
 /// ```
 ///
-/// One part may serve several kinds (`std: Std::new() => [kinds::Env,
-/// kinds::Fs]`); each kind is served by one part. The root's struct is
-/// generated, and is `Clone`, `Copy`, `Debug` and `Default` whenever its
-/// parts are; its fields are named as given.
+/// One part may serve several effects; each effect is served by one part.
+/// The root's struct is generated, and is `Clone`, `Copy`, `Debug` and
+/// `Default` whenever its parts are; its fields are named as given. A root
+/// value has at most 16 parts.
 ///
 /// To name the root's type (to store it in a struct, say), define the
 /// struct instead, and wrap a value of it in [`Root::new`]:
 ///
 /// ```
 /// # #[cfg(feature = "time")] {
-/// # use seam_core::{kinds, Capability, Inspect, Perform};
+/// # use seam_core::{effects, Capability, Inspect, Perform};
 /// # use seam_core::ops::time::{Instant, Now, Sleep};
 /// # #[derive(Clone, Default)] pub struct Clock;
 /// # impl Capability for Clock {}
@@ -294,7 +325,7 @@ where
 /// seam_core::root! {
 ///     #[derive(Clone, Default)]
 ///     pub struct App {
-///         pub clock: Clock => [kinds::Time],
+///         pub clock: Clock => [effects::Now],
 ///     }
 /// }
 /// let root: seam_core::Root<App> = seam_core::Root::new(App::default());
@@ -307,7 +338,7 @@ macro_rules! root {
     (
         $(#[$meta:meta])*
         $vis:vis struct $name:ident {
-            $($fvis:vis $field:ident : $part:ty => [$($kind:path),+ $(,)?]),* $(,)?
+            $($fvis:vis $field:ident : $part:ty => [$($key:ty),+ $(,)?]),* $(,)?
         }
     ) => {
         $(#[$meta])*
@@ -316,7 +347,7 @@ macro_rules! root {
         }
 
         $($(
-            impl $crate::Pick<$name> for $kind {
+            impl $crate::Pick<$name> for $key {
                 type Part = $part;
                 fn pick(parts: &$name) -> &$part {
                     &parts.$field
@@ -329,41 +360,50 @@ macro_rules! root {
     };
 
     // A root value: the struct is generic over its parts' types, so they
-    // are inferred from the values.
-    ($($field:ident : $value:expr => [$($kind:path),+ $(,)?]),+ $(,)?) => {{
+    // are inferred from the values. The type parameters come from the list
+    // below, not from the field names, so a field never shadows a path.
+    ($($field:ident : $value:expr => [$($key:ty),+ $(,)?]),+ $(,)?) => {
+        $crate::root!(@params []
+            [P0 P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13 P14 P15]
+            $($field ($value) [$($key),+])+)
+    };
+    (@params [$($done:tt)*] [$p:ident $($ps:ident)*]
+        $field:ident ($value:expr) [$($key:ty),+] $($rest:tt)*) => {
+        $crate::root!(@params [$($done)* ($field $p ($value) [$($key),+])] [$($ps)*] $($rest)*)
+    };
+    (@params [$(($field:ident $p:ident ($value:expr) [$($key:ty),+]))+] [$($unused:ident)*]) => {{
         #[derive(Clone, Copy, Debug, Default)]
-        #[allow(non_camel_case_types)]
-        struct Parts<$($field),+> {
-            $($field: $field),+
+        struct Parts<$($p),+> {
+            $($field: $p),+
         }
-        $crate::root!(@picks [$($field),+] $($field [$($kind),+])+);
+        $crate::root!(@picks [$($p),+] $($field $p [$($key),+])+);
         $crate::Root::new(Parts { $($field: $value),+ })
     }};
-    (@picks $all:tt $($field:ident [$($kind:path),+])+) => {
-        $($($crate::root!(@pick $all $field $kind);)+)+
+    (@picks $all:tt $($field:ident $p:ident [$($key:ty),+])+) => {
+        $($($crate::root!(@pick $all $field $p $key);)+)+
     };
-    (@pick [$($all:ident),+] $field:ident $kind:path) => {
-        #[allow(non_camel_case_types)]
-        impl<$($all),+> $crate::Pick<Parts<$($all),+>> for $kind {
-            type Part = $field;
-            fn pick(parts: &Parts<$($all),+>) -> &$field {
+    (@pick [$($all:ident),+] $field:ident $p:ident $key:ty) => {
+        impl<$($all),+> $crate::Pick<Parts<$($all),+>> for $key {
+            type Part = $p;
+            fn pick(parts: &Parts<$($all),+>) -> &$p {
                 &parts.$field
             }
-            fn pick_mut(parts: &mut Parts<$($all),+>) -> &mut $field {
+            fn pick_mut(parts: &mut Parts<$($all),+>) -> &mut $p {
                 &mut parts.$field
             }
         }
     };
 }
 
-/// Implements [`InKind`] for operations.
+/// Implements [`Effect`] for operations: `keys!(['a] Var<'a> => Var, ...)`,
+/// the key named in [`effects`].
 #[allow(unused_macros)] // used by whichever ops modules are on
-macro_rules! in_kind {
-    ($kind:ty: $([$($gen:tt)*] $op:ty),* $(,)?) => {$(
-        impl<$($gen)*> $crate::InKind for $op {
-            type Kind = $kind;
+macro_rules! keys {
+    ($([$($gen:tt)*] $op:ty => $key:ident $(<$($kg:ty),*>)?),* $(,)?) => {$(
+        impl<$($gen)*> $crate::Effect for $op {
+            type Key = $crate::effects::$key $(<$($kg),*>)?;
         }
     )*};
 }
 #[allow(unused_imports)]
-pub(crate) use in_kind;
+pub(crate) use keys;

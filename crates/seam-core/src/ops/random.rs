@@ -40,7 +40,9 @@ operations! {
     FillRandom<'_> => ();
 }
 
-crate::root::in_kind!(crate::kinds::Random: ['a] FillRandom<'a>);
+crate::root::keys!(
+    ['a] FillRandom<'a> => FillRandom,
+);
 
 three_ways! {
     /// A random `u64`: eight random bytes, little-endian.

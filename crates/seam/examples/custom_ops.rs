@@ -13,9 +13,9 @@
 //!   goes through an atomic file in a scope, so a crash, an error or a
 //!   cancellation mid-write never leaves a half-written store.
 //!
-//! The store's operations are a kind of their own, `kv::Kv`, so `main` can
-//! put the store in a [`Root`](seam::Root) next to `Std`: one capability
-//! that serves both the program's own operations and seam's.
+//! The store's operations are effects of their own, each its own key, so
+//! `main` can put the store in a [`Root`](seam::Root) next to `Std`: one
+//! capability that serves both the program's own effects and seam's.
 //!
 //! ```text
 //! cargo run -p seam-rs --example custom_ops --features std,test,fs,env
@@ -36,14 +36,10 @@ use seam::prelude::*;
 mod kv {
     use seam::io;
 
-    use seam::{InKind, Operation};
+    use seam::{Effect, Operation, Query};
 
-    /// The kind of these operations, so a root can tell which part serves
-    /// them.
-    pub struct Kv;
-
-    /// Read a key. Not a query: a store kept in a file opens it to read
-    /// it, and opening a file is an acquisition, which takes `&mut`.
+    /// Read a key. A query: reading changes nothing, even for a store kept
+    /// in a file, which it reads through a lent `View`.
     pub struct Get(pub String);
 
     /// Set a key.
@@ -53,15 +49,18 @@ mod kv {
         type Outcome = io::Result<Option<String>>;
     }
 
+    impl Query for Get {}
+
     impl Operation for Put {
         type Outcome = io::Result<()>;
     }
 
-    impl InKind for Get {
-        type Kind = Kv;
+    // Each is its own key, so a root lists them as `[Get, Put]`.
+    impl Effect for Get {
+        type Key = Get;
     }
-    impl InKind for Put {
-        type Kind = Kv;
+    impl Effect for Put {
+        type Key = Put;
     }
 }
 use kv::{Get, Put};
@@ -88,8 +87,8 @@ fn visit<K: Perform<Get> + Perform<Put>>(store: &mut K, page: &str) -> io::Resul
 struct Memory(BTreeMap<String, String>);
 impl Capability for Memory {}
 
-impl Perform<Get> for Memory {
-    fn perform(&mut self, op: Get) -> io::Result<Option<String>> {
+impl Inspect<Get> for Memory {
+    fn inspect(&self, op: Get) -> io::Result<Option<String>> {
         Ok(self.0.get(&op.0).cloned())
     }
 }
@@ -139,12 +138,12 @@ where
     }
 }
 
-impl<C, F, R> Perform<Get> for FileStore<C, F, R>
+impl<C, F, R> Inspect<Get> for FileStore<C, F, R>
 where
     C: for<'a> Lend<View<'a, R>>,
     R: for<'a> Inspect<ReadAt<'a>>,
 {
-    fn perform(&mut self, op: Get) -> io::Result<Option<String>> {
+    fn inspect(&self, op: Get) -> io::Result<Option<String>> {
         Ok(self.load()?.remove(&op.0))
     }
 }
@@ -174,10 +173,11 @@ fn main() -> io::Result<()> {
     use seam::stdlib::fs::{AtomicFile, FileView};
 
     let path = Std::new().inspect(TempDir).join("seam-custom-ops.tsv");
-    // The program's root: `Std` for the OS, the file store for `Kv`.
+    // The program's root: `Std` for the OS, the file store for the store's
+    // effects.
     let mut root = seam::root! {
-        std: Std::new() => [seam::kinds::Env],
-        store: FileStore::<_, AtomicFile, FileView>::new(Std::new(), path) => [kv::Kv],
+        std: Std::new() => [seam::effects::Var],
+        store: FileStore::<_, AtomicFile, FileView>::new(Std::new(), path) => [Get, Put],
     };
     let n = visit(&mut root, "home")?;
     // `main` is the edge, so it may print directly.

@@ -254,11 +254,16 @@ operations! {
     #[query] WallClock => std::time::SystemTime;
 }
 
-crate::root::in_kind!(crate::kinds::Time: [] Sleep, [] Now);
+crate::root::keys!(
+    [] Sleep => Sleep,
+    [] Now => Now,
+);
 #[cfg(feature = "std")]
-crate::root::in_kind!(crate::kinds::Time: [] WallClock);
+crate::root::keys!(
+    [] WallClock => WallClock,
+);
 
 /// A timed operation is served by whatever serves the operation.
-impl<O: crate::InKind> crate::InKind for Timeout<O> {
-    type Kind = O::Kind;
+impl<O: crate::Effect> crate::Effect for Timeout<O> {
+    type Key = O::Key;
 }

@@ -125,4 +125,4 @@ pub use acquire::{
 pub use capability::{Capability, Inspect, Perform};
 pub use operation::{Operation, Query};
 pub use push::{Push, Rejected};
-pub use root::{InKind, Pick, Root, kinds};
+pub use root::{Effect, Pick, Root, effects};

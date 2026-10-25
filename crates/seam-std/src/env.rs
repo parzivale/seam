@@ -36,7 +36,7 @@ impl Inspect<TempDir> for Std {
 
 /// The environment, with the power to change it: [`SetVar`] and
 /// [`RemoveVar`], as well as everything [`Std`] reads. Put it in a root for
-/// `kinds::Env` in place of `Std`.
+/// `effects::SetVar` and `effects::RemoveVar`, next to `Std`.
 ///
 /// Changing the environment is unsafe in Rust (see `std::env::set_var`):
 /// on most platforms, a thread reading it while another changes it is

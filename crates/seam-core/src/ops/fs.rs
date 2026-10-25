@@ -590,11 +590,17 @@ operations! {
     CopyFile<'_> => io::Result<u64>;
 }
 
-crate::root::in_kind!(crate::kinds::Fs:
-    ['a] Metadata<'a>, ['a] CreateDir<'a>, ['a] RemoveFile<'a>, ['a] RemoveDir<'a>,
-    ['a] Rename<'a>, ['a] CopyFile<'a>,
-    ['a, M, F] Open<'a, M, F>, ['a, F] CreateAtomic<'a, F>, ['a, F] View<'a, F>,
-    ['a, D] ReadDir<'a, D>,
+crate::root::keys!(
+    ['a] Metadata<'a> => Metadata,
+    ['a] CreateDir<'a> => CreateDir,
+    ['a] RemoveFile<'a> => RemoveFile,
+    ['a] RemoveDir<'a> => RemoveDir,
+    ['a] Rename<'a> => Rename,
+    ['a] CopyFile<'a> => CopyFile,
+    ['a, M, F] Open<'a, M, F> => Open<M>,
+    ['a, F] CreateAtomic<'a, F> => CreateAtomic,
+    ['a, F] View<'a, F> => View,
+    ['a, D] ReadDir<'a, D> => ReadDir,
 );
 
 fn not_utf8() -> io::Error {

@@ -161,12 +161,12 @@ impl<A: Acquisition> Operation for Closing<A> {
 impl<A: Acquisition> Query for Opening<A> {}
 impl<A: Acquisition> Query for Closing<A> {}
 
-impl<A: crate::InKind> crate::InKind for Opening<A> {
-    type Kind = A::Kind;
+impl<A: crate::Effect> crate::Effect for Opening<A> {
+    type Key = A::Key;
 }
 
-impl<A: Acquisition + crate::InKind> crate::InKind for Closing<A> {
-    type Kind = A::Kind;
+impl<A: Acquisition + crate::Effect> crate::Effect for Closing<A> {
+    type Key = A::Key;
 }
 
 impl<A: fmt::Debug> fmt::Debug for Opening<A> {

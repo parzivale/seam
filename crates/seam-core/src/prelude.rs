@@ -15,6 +15,6 @@
 
 pub use crate::future::{AsyncInspect, AsyncPerform, SendInspect, SendPerform, block_on};
 pub use crate::{
-    Acquisition, AsyncLend, AsyncProvide, Capability, InKind, Inspect, Lend, Operation, Perform,
+    Acquisition, AsyncLend, AsyncProvide, Capability, Effect, Inspect, Lend, Operation, Perform,
     Provide, Push, Query, Rejected, Root, SendLend, SendProvide, SendScope,
 };

@@ -61,7 +61,7 @@
 //! meanwhile is undefined behaviour. `env::WritableEnv` performs `SetVar`
 //! and `RemoveVar` as well as every read; it is made with an `unsafe fn
 //! new()` that carries `set_var`'s contract, and cannot leave its thread.
-//! Put it in a root for `kinds::Env` in place of `Std`.
+//! Put it in a root for `effects::SetVar` and `effects::RemoveVar`.
 //!
 //! # Threads
 //!

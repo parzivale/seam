@@ -25,4 +25,6 @@ impl crate::ops::time::TimesOut for CtrlC {
     }
 }
 
-crate::root::in_kind!(crate::kinds::Signal: [] CtrlC);
+crate::root::keys!(
+    [] CtrlC => CtrlC,
+);

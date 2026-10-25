@@ -60,7 +60,7 @@ feature, so a core written against them runs on any backend. They are
   is `unsafe`. So `Std` does not change it: `seam_std::env::WritableEnv`
   does, made by an `unsafe fn new()` that carries `set_var`'s contract, and
   `!Send`, so it stays on the thread the promise was made for. It reads
-  the environment too, so it can serve `kinds::Env` in a root. It is the
+  the environment too, so it can serve the environment's effects in a root. It is the
   only `unsafe` in seam: the workspace denies `unsafe_code`, every crate
   but seam-std forbids it, and seam-std allows it on those items alone.
 - `process`: `RunCommand`, `Exit` (outcome `Infallible`), and `SpawnChild`,
@@ -545,22 +545,33 @@ check for exactly that.
 ## Roots
 
 A `Root<A>` is one capability made of parts: `A` is a struct of them, and
-each part serves one or more kinds of operation. Every operation that goes
-through a root names its kind (`InKind`); operations on handles (`Read`,
-`RecvMsg`, `Join`) never do, since the handle a part hands out implements
-them itself. A kind is a marker type, so a program's own kinds are as cheap
-to define as seam's (`kinds::Fs`, `kinds::Time`, ...).
+each part lists the effects it serves. Every operation that goes through a
+root names its effect by a marker type, its key (`Effect`): seam's keys are
+all in `seam_core::effects`, one per operation and named after it, and a
+program's own effect is usually its own key. Operations on handles (`Read`,
+`RecvMsg`, `Join`) have none, since the handle a part hands out implements
+them itself. A scope routes by its acquisition, and a timed operation as
+the operation does.
+
+Keys are per effect, not per group, so the root is a precise grant: a core
+given it can perform exactly the listed effects, whatever else a part could
+do. `Open` is keyed by its mode (`effects::Open<ReadOnly>`), since reading
+and writing a file are different grants; nothing else needed a parameter.
+A key is a separate type, rather than the operation itself, because most
+operations are generic (`Var<'a>`, `Open<'a, M, F>`) and a root needs one
+name for all their instances.
 
 The root implements each capability trait once, generically: find the part
-serving the operation's kind (`<O::Kind as Pick<A>>::Part`) and forward to
-it in the same form. Two things make that legal in Rust:
+serving the operation's key (`<O::Key as Pick<A>>::Part`) and forward to it
+in the same form. Two things make that legal in Rust:
 
-- **Routing by kind, through `Pick`.** Rust cannot express "forward to
+- **Routing by key, through `Pick`.** Rust cannot express "forward to
   whichever part implements this operation": two parts might, and
   coherence rejects the rule outright, not just the duplicate. `Pick<A>` is
-  implemented on a kind, per root, naming the field that serves it. A kind
+  implemented on a key, per root, naming the field that serves it. A key
   listed twice is then a plain "conflicting implementations" error, and a
-  missing one is "the root `App` has no part for `kinds::Fs`".
+  missing one is "the root `App` has no part for `effects::View`". The same
+  rule rules out a default part for whatever is not listed.
 - **Opt-in lifts.** seam's blanket impls (an `Inspect` is a `Perform`, a
   sync operation is an async one) would collide with the root's own
   forwarding impls: both would claim, say, `AsyncPerform<Sleep>` for the
@@ -571,23 +582,27 @@ it in the same form. Two things make that legal in Rust:
   capability type a program writes: `impl Capability for Memory {}`.
 
 The `Send` forms hand back the part's own future, so parts behind them are
-`'static`. A part can serve several kinds, which is how a whole backend
-(`Std`, `Tokio`, `Sim`, `ThreadSim`) is a part as it stands; nothing had to
-be split. `root!` is sugar: it evaluates to the root, defining a struct
+`'static`. A part can serve any number of effects, which is how a whole
+backend (`Std`, `Tokio`, `Sim`, `ThreadSim`) is a part as it stands; nothing
+had to be split. `root!` names its generated struct's type parameters
+itself, not after the fields, so a part's name never shadows a path in the
+keys. `root!` is sugar: it evaluates to the root, defining a struct
 generic over its parts' types (so they are inferred from the values) with
 its `Pick` impls; a named form defines a plain struct instead.
 
 Each backend covers only what it is for. `seam-tokio` has no environment
 or randomness, since Tokio has nothing to add to them; a Tokio program
-takes `kinds::Env` and `kinds::Random` from `Std` in the same root. A root
+takes `Var` and `FillRandom` from `Std` in the same root. A root
 has no singleton or lock: roots are built at the edge, and the clippy template
 is what keeps cores from reaching for effects directly.
 
-Alternatives explored and set aside are fixed per-domain slots
-(`Root<Env, Time, Fs, ...>`: no room for a program's own kinds), a tuple
-with type-level keys (two root types and bad errors), macro-generated roots
-that list every operation, and accessors (`c.part::<Fs>()`), which would
-lose plain `c.perform(op)` calls.
+Alternatives explored and set aside are kinds, a key per group of
+operations (`kinds::Fs`), which granted a part every effect in its group;
+fixed per-domain slots (`Root<Env, Time, Fs, ...>`: no room for a program's
+own effects); a tuple with type-level keys (two root types and bad errors);
+an `effect!` macro generating keys and handlers, which a key per effect in
+core made unnecessary; and accessors (`c.part::<Fs>()`), which would lose
+plain `c.perform(op)` calls.
 
 ## Prelude
 
@@ -643,8 +658,5 @@ Not implemented yet:
 - How capability requirements are bundled in signatures. Long `where`
   clauses get unwieldy; a single requirements trait with a blanket impl, plus
   `impl Trait`, is one option.
-- Whether a root's kinds should be finer than one per ops module. Today a
-  root cannot take `Now` from one part and `Sleep` from another (both are
-  `kinds::Time`) without a small part combining the two.
 - Whether to add per-resource identity for conflict detection, or leave
   ordering to the caller.

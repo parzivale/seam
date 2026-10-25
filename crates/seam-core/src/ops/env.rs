@@ -134,5 +134,11 @@ operations! {
     RemoveVar<'_> => io::Result<()>;
 }
 
-crate::root::in_kind!(crate::kinds::Env: ['a] Var<'a>, [] Args, [] CurrentDir, [] TempDir,
-    ['a] SetVar<'a>, ['a] RemoveVar<'a>);
+crate::root::keys!(
+    ['a] Var<'a> => Var,
+    [] Args => Args,
+    [] CurrentDir => CurrentDir,
+    [] TempDir => TempDir,
+    ['a] SetVar<'a> => SetVar,
+    ['a] RemoveVar<'a> => RemoveVar,
+);

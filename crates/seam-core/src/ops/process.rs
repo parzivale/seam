@@ -222,7 +222,11 @@ impl<C> crate::Acquisition for SpawnChild<C> {
     type Error = io::Error;
 }
 
-crate::root::in_kind!(crate::kinds::Process: [] RunCommand, [] Exit, [C] SpawnChild<C>);
+crate::root::keys!(
+    [] RunCommand => RunCommand,
+    [] Exit => Exit,
+    [C] SpawnChild<C> => SpawnChild,
+);
 
 /// Each gives up with `io::ErrorKind::TimedOut`.
 #[cfg(feature = "time")]

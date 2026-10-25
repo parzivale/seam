@@ -262,7 +262,12 @@ mod timeouts {
     }
 }
 
-crate::root::in_kind!(crate::kinds::Net: [S] TcpConnect<S>, [L] TcpBind<L>, [U] UdpBind<U>, ['a] ResolveInto<'a>);
+crate::root::keys!(
+    [S] TcpConnect<S> => TcpConnect,
+    [L] TcpBind<L> => TcpBind,
+    [U] UdpBind<U> => UdpBind,
+    ['a] ResolveInto<'a> => ResolveInto,
+);
 
 #[cfg(feature = "alloc")]
 three_ways! {

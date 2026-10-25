@@ -213,3 +213,103 @@ fn roots_side_by_side() {
     assert_eq!(a.inspect(Get("x".into())), None);
     assert_eq!(b.inspect(Now).since_epoch(), Duration::ZERO);
 }
+
+// ---- roots built from handlers, one per effect ----
+
+/// A handler of a program's own: a unit struct serving `Get`.
+#[derive(Default)]
+struct Fixed;
+impl Effect for Fixed {
+    type Key = Get;
+}
+impl Capability for Fixed {}
+impl Inspect<Get> for Fixed {
+    fn inspect(&self, op: Get) -> Option<String> {
+        Some(format!("fixed {}", op.0))
+    }
+}
+
+/// A tuple-struct handler, serving `Put` into a log.
+struct Log(Vec<String>);
+impl Effect for Log {
+    type Key = Put;
+}
+impl Capability for Log {}
+impl Perform<Put> for Log {
+    fn perform(&mut self, op: Put) {
+        self.0.push(format!("{}={}", op.0, op.1));
+    }
+}
+
+/// A struct-literal handler, serving `Now` at a fixed instant.
+struct Frozen {
+    at: seam::ops::time::Instant,
+}
+impl Effect for Frozen {
+    type Key = fx::Now;
+}
+impl Capability for Frozen {}
+impl Inspect<Now> for Frozen {
+    fn inspect(&self, _: Now) -> seam::ops::time::Instant {
+        self.at
+    }
+}
+
+#[test]
+fn a_root_of_handlers() {
+    let mut root = seam::root![
+        Std<fx::Var>, // a backend, restricted to one effect
+        Std<fx::Sleep>,
+        Fixed,           // a handler of this crate: a unit struct
+        Log(Vec::new()), // a tuple struct
+        Frozen {
+            at: seam::ops::time::Instant::EPOCH
+        }, // a struct literal
+    ];
+    // `visit` asks for Var, Now, Sleep, Get and Put: exactly what is listed.
+    assert_eq!(visit(&mut root), "welcome back, nobody");
+    assert_eq!(root.part::<Put>().0, ["nobody=seen"]);
+    assert_eq!(root.part::<fx::Now>().at, seam::ops::time::Instant::EPOCH);
+}
+
+#[test]
+fn handlers_and_keyed_parts_mix() {
+    let mut sim = Sim::new();
+    sim.set_var("SEAM_ROOT_TEST_USER", "ada");
+    let mut root = seam::root![
+        sim: sim => [fx::Var, fx::Now, fx::Sleep],
+        Fixed,
+        Memory = Memory::default(),                     // `Handler = value`
+    ];
+    assert_eq!(root.inspect(Get("k".into())).as_deref(), Some("fixed k"));
+    root.perform(Put("k".into(), "v".into()));
+    assert_eq!(root.part::<Put>().0["k"], "v");
+}
+
+impl Effect for Memory {
+    type Key = Put;
+}
+
+/// Tokio's handlers in a root serving a `Send` core on a multithreaded
+/// runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tokio_handlers_in_a_send_root() {
+    let mut root = seam::root![
+        Tokio<fx::Now>,
+        Tokio<fx::Sleep>,
+        Tokio<fx::Open<WriteOnly>>,
+        Tokio<fx::View>,
+        Std<fx::FillRandom>,
+    ];
+    let path = std::env::temp_dir().join(format!("seam-handlers-{}", std::process::id()));
+    let path = path.to_str().unwrap().to_owned();
+    let read = tokio::spawn(async move {
+        let out = save(&mut root, &path).await;
+        let _ = std::fs::remove_file(&path);
+        out
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(read, "saved");
+}

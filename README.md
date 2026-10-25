@@ -125,13 +125,18 @@ program's own effects, and grants the core exactly what it lists:
 ```rust
 use seam::effects as fx;
 
-let mut root = seam::root! {
-    std: Std::new() => [fx::Var, fx::FillRandom],
-    tokio: Tokio::new() => [fx::Now, fx::Sleep, fx::View, fx::TcpBind],
-    store: redis => [Get, Put],             // the program's own effects
-};
+let mut root = seam::root![
+    Std<fx::Var>, Std<fx::FillRandom>,      // a backend, restricted to one effect
+    Tokio<fx::Now>, Tokio<fx::Sleep>, Tokio<fx::View>, Tokio<fx::TcpBind>,
+    store: redis => [Get, Put],             // a part serving the program's own effects
+];
 serve(&mut root).await;                     // bounded as usual: SendPerform<Sleep>, ...
 ```
+
+`Std<fx::Var>` is std restricted to reading variables; a backend built with
+arguments is written with them (`Pool<fx::Query>(4)`, `Client<fx::Get> =
+connect()?`). A handler of the program's own names its effect with
+`Effect` and is listed bare.
 
 A core asking for an effect the root does not list fails to compile: "the
 root `Parts<..>` has no part for `fx::Open<WriteOnly>`". `Open` is keyed by
@@ -156,7 +161,9 @@ impl Effect for Get { type Key = Get; }
 ```
 
 `root!` evaluates to the root. It writes a struct of the parts and one
-`Pick` impl per effect; a named form (`root! { struct App { ... } }`) gives
+`Pick` impl per effect, which is why a backend from another crate names
+its key in brackets: Rust cannot tell apart keys it would have to look up in
+another crate. `root.part::<fx::Var>()` gives back a part; a named form (`root! { struct App { ... } }`) gives
 the struct a name, for when the root's type must be written out.
 Capability types opt in to seam's lifts (an `Inspect` is also a `Perform`,
 a sync operation also works from async code) with

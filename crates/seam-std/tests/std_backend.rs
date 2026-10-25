@@ -457,7 +457,7 @@ mod threads {
             TcpBind::new(any_port),
             |std, listener: &mut seam_std::net::TcpListener| {
                 let addr = listener.inspect(LocalAddr)?;
-                let mut client_std = std.clone();
+                let mut client_std = *std;
                 let client = Spawn::<_, JoinHandle<io::Result<Vec<u8>>>>::new(move || {
                     client_std.acquire(TcpConnect::<TcpStream>::new(addr), |_, s| {
                         write_all(s, b"hello")?;

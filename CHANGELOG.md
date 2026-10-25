@@ -56,6 +56,13 @@ A root lists the effects each part serves and grants a core exactly those.
 `Open` is keyed by its mode, so reading and writing are separate grants.
 `root!` no longer lets a part's name shadow a path in its keys.
 
+A root can be listed one effect at a time, as handlers:
+`root![Std<fx::Args>, Tokio<fx::Now>, Pool<fx::Query>(4), mounts::Bind]`.
+`Name<Key>` is the backend restricted to that effect (`Only<Key, Name>`),
+built with its own construction syntax; a handler of the root's own crate
+is listed bare. `root.part::<K>()` returns the part serving `K`. `Std` and
+`Tokio` are plain unit structs (no longer `non_exhaustive`), and `Copy`.
+
 ### New
 
 - Standard input, output and error are handles: `OpenStdin<H>`,

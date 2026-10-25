@@ -582,13 +582,30 @@ in the same form. Two things make that legal in Rust:
   capability type a program writes: `impl Capability for Memory {}`.
 
 The `Send` forms hand back the part's own future, so parts behind them are
-`'static`. A part can serve any number of effects, which is how a whole
+`'static`.
+
+**Handlers.** A root can also be listed one effect at a time:
+`root![Std<fx::Args>, Tokio<fx::Now>, mounts::Bind]`. `Std<fx::Args>` is
+`Only<fx::Args, Std>`, std forwarding only the operations keyed
+`fx::Args`, built with the backend's own construction syntax
+(`Pool<fx::Query>(4)`, `Client<fx::Get> = connect()?`). The key is in
+brackets because the `Pick` impls must name it: routing by
+`<H as Effect>::Key` works for a handler of the root's own crate, but Rust's
+overlap check does not resolve a projection through another crate's impls,
+so two upstream handlers' impls would "conflict". Generic lookups (a type
+list, an HList, a `Select<A, B, ..>` of any arity) fail too: their impls
+overlap unless key inequality could be stated, or they need an index
+parameter that only a method call could infer, and the root forwards
+through trait impls.
+
+A part can serve any number of effects, which is how a whole
 backend (`Std`, `Tokio`, `Sim`, `ThreadSim`) is a part as it stands; nothing
 had to be split. `root!` names its generated struct's type parameters
 itself, not after the fields, so a part's name never shadows a path in the
 keys. `root!` is sugar: it evaluates to the root, defining a struct
-generic over its parts' types (so they are inferred from the values) with
-its `Pick` impls; a named form defines a plain struct instead.
+generic over its keyed parts' types (so they are inferred from the
+values) with its `Pick` impls; a named form defines a plain struct
+instead.
 
 Each backend covers only what it is for. `seam-tokio` has no environment
 or randomness, since Tokio has nothing to add to them; a Tokio program

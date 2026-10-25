@@ -100,13 +100,13 @@
 ///
 /// It holds no state. Every operation it supports is a real effect. It is
 /// `Clone`, so a core can hand a copy to each thread or task it starts.
-#[derive(Debug, Default, Clone)]
-#[non_exhaustive]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Std;
 
 impl Std {
-    /// Creates it. Call this at the edge of the program.
-    pub fn new() -> Self {
+    /// Creates it. Call this at the edge of the program. The same as
+    /// writing `Std`, a unit struct.
+    pub const fn new() -> Self {
         Self
     }
 }

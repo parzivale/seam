@@ -99,13 +99,13 @@
 /// It holds no state. Every operation it supports is a real effect, and must
 /// run inside a Tokio runtime. It is `Clone`, so a core can hand a copy to
 /// each task it spawns.
-#[derive(Debug, Default, Clone)]
-#[non_exhaustive]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Tokio;
 
 impl Tokio {
-    /// Creates it. Call this at the edge of the program.
-    pub fn new() -> Self {
+    /// Creates it. Call this at the edge of the program. The same as
+    /// writing `Tokio`, a unit struct.
+    pub const fn new() -> Self {
         Self
     }
 }

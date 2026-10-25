@@ -74,7 +74,7 @@ async fn tasks_run_concurrently() {
 #[tokio::test]
 async fn boxed_async_blocks() {
     let mut tokio = Tokio::new();
-    let mut worker = tokio.clone();
+    let mut worker = tokio;
     let task = Spawn::<_, JoinHandle<u32>>::boxed(async move {
         for _ in 0..5 {
             worker.perform_send(YieldNow).await;

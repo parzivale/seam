@@ -160,6 +160,13 @@
 //! When a body's only error path is a `?`, Rust may not be able to infer its
 //! error type; end it with `io::Result::Ok(..)` (or your error type).
 //!
+//! # Guides
+//!
+//! With the `docs` feature (on docs.rs, always), the `_docs` module holds
+//! the long-form documentation: what seam is in effect-system terms, usage
+//! guides from a first core to simulated effects of your own, the world-file
+//! format, and how seam works inside.
+//!
 //! # Keeping a core honest
 //!
 //! Nothing in the type system stops a core from calling `std::fs::read`
@@ -232,6 +239,9 @@
 //! ```
 #![forbid(unsafe_code)]
 #![no_std]
+
+#[cfg(feature = "docs")]
+pub mod _docs;
 
 pub use seam_core::*;
 

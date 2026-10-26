@@ -25,6 +25,10 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time
 [features]
 default = []
 
+# The guides and background in `seam::_docs`: documentation only, off by
+# default so it costs nothing to build. docs.rs builds it (all features).
+docs = []
+
 # Backends. Nothing else turns these on: picking where effects really
 # happen is always the end user's choice.
 std = ["dep:seam-std"]

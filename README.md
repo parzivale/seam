@@ -468,6 +468,15 @@ cargo run  -p seam-rs --example guess --features full,std,tokio,rt,test
 cargo test -p seam-rs --examples --features full,std,tokio,rt,test
 ```
 
+## Guides
+
+The `seam` crate's `docs` feature adds a `_docs` module of long-form
+documentation, on [docs.rs](https://docs.rs/seam-rs/latest/seam/_docs/): what
+seam is in effect-system terms and how it compares to other approaches,
+usage guides (a first core, roots, resources, async and concurrency,
+effects of your own, testing), the full world-file format, and how seam
+works inside. Every example in it is a doctest.
+
 ## Design
 
 See [DESIGN.md](https://github.com/parzivale/seam/blob/main/DESIGN.md). API documentation: `cargo doc --open --all-features`.

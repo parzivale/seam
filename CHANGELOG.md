@@ -26,6 +26,12 @@ serves in brackets after the type's name, and in no other way:
 The named form is `root! { struct App { clock: Clock<fx::Now> } }`.
 Anything else is a compile error naming the four forms.
 
+### Documentation
+
+- A `docs` feature adds `seam::_docs`: what seam is, usage guides, the
+  world-file format and implementation notes. Off by default, so it costs
+  nothing to build; docs.rs builds it.
+
 ### Simulation
 
 - `Sim` is `Clone` (with std), and every clone is a handle to one world:

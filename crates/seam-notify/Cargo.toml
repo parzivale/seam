@@ -1,0 +1,33 @@
+[package]
+name = "seam-rs-notify"
+description = "File watching for seam: a watch scope that yields change events, from the OS (notify) or by rescanning through seam's filesystem."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+seam-core = { workspace = true, features = ["std", "fs", "time"] }
+notify = { workspace = true, optional = true }
+
+[dev-dependencies]
+seam-std = { workspace = true, features = ["fs", "time"] }
+seam-test = { workspace = true, features = ["std", "fs", "time"] }
+
+[features]
+default = ["notify"]
+# `Notify`: the operating system's own file events, through notify.
+notify = ["dep:notify"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
+name = "seam_notify"
+
+[lints]
+workspace = true

@@ -1,0 +1,29 @@
+[package]
+name = "seam-rs-uuid"
+description = "uuid for seam: random and time-ordered UUIDs from seam's randomness and clock."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+seam-core = { workspace = true, features = ["random", "time", "std"] }
+# No `v4` or `v7` features: those read the system's randomness and clock,
+# which this crate takes through seam instead.
+uuid = { workspace = true }
+
+[dev-dependencies]
+seam-test = { workspace = true, features = ["std", "random", "time"] }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
+name = "seam_uuid"
+
+[lints]
+workspace = true

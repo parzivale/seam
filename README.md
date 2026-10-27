@@ -56,6 +56,10 @@ in `Drop`, where a core cannot perform effects), recursive `RemoveDir`
 (platforms copy faster, and copy permissions) and `RunCommand` (collecting
 both outputs means reading two pipes at once).
 
+A stream or child can be split for the length of a scope (`Split`,
+`SplitChild`) into pieces that each keep exclusive access to their own
+direction, so a core reads and writes at once without sharing a handle.
+
 Files open in a mode named by a type, `Open<'a, ReadOnly, F>`,
 `Open<'a, WriteOnly, F>`, ..., and a backend's handle implements `Read` or
 `Write` only for modes that allow it. A core bounded on `ReadOnly` cannot

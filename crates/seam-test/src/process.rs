@@ -28,8 +28,8 @@ use std::vec::Vec;
 
 use seam_core::ops::io::{Flush, Read, Write};
 use seam_core::ops::process::{
-    ChildId, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, RunCommand, SpawnChild,
-    Wait,
+    ChildId, ChildPipes, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, RunCommand,
+    SpawnChild, SplitChild, Wait,
 };
 use seam_core::{Closing, Inspect, Opening, Perform};
 
@@ -288,7 +288,41 @@ impl Perform<RunCommand> for Sim {
 /// A simulated child process, acquired with [`SpawnChild`]: a filter whose
 /// scripted handler runs when its output is first needed. See the
 /// [module docs](self).
-pub struct Child {
+///
+/// [`SplitChild`] lends its pipes as [`ChildStdin`], [`ChildStdout`] and
+/// [`ChildStderr`], which share it: the handler still runs when output is
+/// first read, on the input written by then, so write and close the input
+/// before reading.
+pub struct Child(Arc<Mutex<ChildState>>);
+
+/// A [`SplitChild`]'s pipe to a simulated child's standard input.
+pub struct ChildStdin(Arc<Mutex<ChildState>>);
+
+/// A [`SplitChild`]'s pipe from a simulated child's standard output.
+pub struct ChildStdout(Arc<Mutex<ChildState>>);
+
+/// A [`SplitChild`]'s pipe from a simulated child's standard error.
+pub struct ChildStderr(Arc<Mutex<ChildState>>);
+
+/// Locks a child's state. A handler that panicked leaves it usable.
+fn lock(state: &Mutex<ChildState>) -> MutexGuard<'_, ChildState> {
+    state.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+macro_rules! debug_child {
+    ($($ty:ident),*) => {$(
+        impl core::fmt::Debug for $ty {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.debug_tuple(stringify!($ty)).field(&*lock(&self.0)).finish()
+            }
+        }
+    )*};
+}
+
+debug_child!(Child, ChildStdin, ChildStdout, ChildStderr);
+
+/// A child's state, shared by the child and its split pipes.
+struct ChildState {
     handlers: Handlers,
     entry: usize,
     /// The log's record of this child's input.
@@ -312,7 +346,7 @@ struct Ran {
     failed: Option<(ErrorKind, Option<io::Error>)>,
 }
 
-impl core::fmt::Debug for Child {
+impl core::fmt::Debug for ChildState {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Child")
             .field("command", &self.command)
@@ -338,7 +372,7 @@ fn not_piped(stream: &str) -> io::Error {
     )
 }
 
-impl Child {
+impl ChildState {
     /// Runs the handler, if it has not run: on the input so far.
     fn run(&mut self) -> &mut Ran {
         if self.ran.is_none() {
@@ -457,7 +491,7 @@ impl Perform<Opening<SpawnChild<Child>>> for Sim {
     fn perform(&mut self, Opening(op, _): Opening<SpawnChild<Child>>) -> io::Result<Child> {
         let states = &mut States::new(&self.shared);
         let (entry, given) = states.inner().record(&op.command)?;
-        let mut child = Child {
+        let mut child = ChildState {
             handlers: states.inner().process().handlers.clone(),
             entry,
             given,
@@ -476,14 +510,15 @@ impl Perform<Opening<SpawnChild<Child>>> for Sim {
             let inherited = child.take_inherited();
             states.inner().deliver(inherited);
         }
-        Ok(child)
+        Ok(Child(Arc::new(Mutex::new(child))))
     }
 }
 
 /// Runs the child if it has not run, and prints what it inherited.
 impl Perform<Closing<SpawnChild<Child>>> for Sim {
-    fn perform(&mut self, Closing(mut child, _): Closing<SpawnChild<Child>>) -> io::Result<()> {
+    fn perform(&mut self, Closing(child, _): Closing<SpawnChild<Child>>) -> io::Result<()> {
         let states = &mut States::new(&self.shared);
+        let mut child = lock(&child.0);
         child.run();
         let inherited = child.take_inherited();
         states.inner().deliver(inherited);
@@ -493,7 +528,7 @@ impl Perform<Closing<SpawnChild<Child>>> for Sim {
 
 impl Perform<Write<'_>> for Child {
     fn perform(&mut self, op: Write<'_>) -> io::Result<usize> {
-        self.write(op.0)
+        lock(&self.0).write(op.0)
     }
 }
 
@@ -506,25 +541,25 @@ impl Perform<Flush> for Child {
 /// Runs the child, if it has not run, on the input so far.
 impl Perform<Read<'_>> for Child {
     fn perform(&mut self, op: Read<'_>) -> io::Result<usize> {
-        self.read(STDOUT, op.0)
+        lock(&self.0).read(STDOUT, op.0)
     }
 }
 
 impl Perform<ReadErr<'_>> for Child {
     fn perform(&mut self, op: ReadErr<'_>) -> io::Result<usize> {
-        self.read(STDERR, op.0)
+        lock(&self.0).read(STDERR, op.0)
     }
 }
 
 impl Perform<CloseStdin> for Child {
     fn perform(&mut self, _: CloseStdin) {
-        self.stdin_open = false;
+        lock(&self.0).stdin_open = false;
     }
 }
 
 impl Perform<Wait> for Child {
     fn perform(&mut self, _: Wait) -> io::Result<ExitStatus> {
-        self.wait()
+        lock(&self.0).wait()
     }
 }
 
@@ -532,10 +567,11 @@ impl Perform<Wait> for Child {
 /// killed by a signal. One that has run has already exited.
 impl Perform<Kill> for Child {
     fn perform(&mut self, _: Kill) -> io::Result<()> {
-        if self.ran.is_none() {
-            self.stdin_open = false;
-            self.record_input();
-            self.ran = Some(Ran {
+        let mut child = lock(&self.0);
+        if child.ran.is_none() {
+            child.stdin_open = false;
+            child.record_input();
+            child.ran = Some(Ran {
                 stdout: VecDeque::new(),
                 stderr: VecDeque::new(),
                 inherited: (Vec::new(), Vec::new()),
@@ -547,9 +583,65 @@ impl Perform<Kill> for Child {
     }
 }
 
+/// The pipes share the child, so dropping them, even when the scope fails,
+/// changes nothing.
+impl Perform<Opening<SplitChild<ChildStdin, ChildStdout, ChildStderr>>> for Child {
+    fn perform(
+        &mut self,
+        Opening(_, _): Opening<SplitChild<ChildStdin, ChildStdout, ChildStderr>>,
+    ) -> io::Result<ChildPipes<ChildStdin, ChildStdout, ChildStderr>> {
+        Ok(ChildPipes {
+            stdin: ChildStdin(Arc::clone(&self.0)),
+            stdout: ChildStdout(Arc::clone(&self.0)),
+            stderr: ChildStderr(Arc::clone(&self.0)),
+        })
+    }
+}
+
+impl Perform<Closing<SplitChild<ChildStdin, ChildStdout, ChildStderr>>> for Child {
+    fn perform(
+        &mut self,
+        Closing(_, _): Closing<SplitChild<ChildStdin, ChildStdout, ChildStderr>>,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Perform<Write<'_>> for ChildStdin {
+    fn perform(&mut self, op: Write<'_>) -> io::Result<usize> {
+        lock(&self.0).write(op.0)
+    }
+}
+
+impl Perform<Flush> for ChildStdin {
+    fn perform(&mut self, _: Flush) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Perform<CloseStdin> for ChildStdin {
+    fn perform(&mut self, _: CloseStdin) {
+        lock(&self.0).stdin_open = false;
+    }
+}
+
+/// Runs the child, if it has not run, on the input so far.
+impl Perform<Read<'_>> for ChildStdout {
+    fn perform(&mut self, op: Read<'_>) -> io::Result<usize> {
+        lock(&self.0).read(STDOUT, op.0)
+    }
+}
+
+/// Runs the child, if it has not run, on the input so far.
+impl Perform<Read<'_>> for ChildStderr {
+    fn perform(&mut self, op: Read<'_>) -> io::Result<usize> {
+        lock(&self.0).read(STDERR, op.0)
+    }
+}
+
 /// A child dropped before it ran (its scope failed) leaves its input in the
 /// log all the same.
-impl Drop for Child {
+impl Drop for ChildState {
     fn drop(&mut self) {
         self.record_input();
     }
@@ -558,7 +650,8 @@ impl Drop for Child {
 /// A made-up process id, until the child has been waited for.
 impl Inspect<ChildId> for Child {
     fn inspect(&self, _: ChildId) -> Option<u32> {
-        (!self.waited).then(|| 1000 + u32::try_from(self.entry).unwrap_or(u32::MAX - 1000))
+        let child = lock(&self.0);
+        (!child.waited).then(|| 1000 + u32::try_from(child.entry).unwrap_or(u32::MAX - 1000))
     }
 }
 
@@ -570,8 +663,8 @@ mod timeouts {
     use super::*;
 
     macro_rules! untimed {
-        ($($op:ty => $out:ty;)*) => {$(
-            impl Perform<Timeout<$op>> for Child {
+        ($($ty:ty: $op:ty => $out:ty;)*) => {$(
+            impl Perform<Timeout<$op>> for $ty {
                 fn perform(&mut self, op: Timeout<$op>) -> $out {
                     self.perform(op.op)
                 }
@@ -580,14 +673,19 @@ mod timeouts {
     }
 
     untimed! {
-        Wait => io::Result<ExitStatus>;
-        Read<'_> => io::Result<usize>;
-        ReadErr<'_> => io::Result<usize>;
+        Child: Wait => io::Result<ExitStatus>;
+        Child: Read<'_> => io::Result<usize>;
+        Child: ReadErr<'_> => io::Result<usize>;
+        ChildStdout: Read<'_> => io::Result<usize>;
+        ChildStderr: Read<'_> => io::Result<usize>;
     }
 }
 
 // Every capability type opts in to seam's lifts.
 impl seam_core::Capability for Child {}
+impl seam_core::Capability for ChildStdin {}
+impl seam_core::Capability for ChildStdout {}
+impl seam_core::Capability for ChildStderr {}
 
 /// Unwinds with [`Exited`] instead of ending the process. The panic hook is
 /// not run, so nothing is printed.

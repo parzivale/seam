@@ -115,7 +115,19 @@ mod net {
 
     use super::*;
     use crate::rt::JoinHandle;
-    use crate::rt::net::{TcpListener, TcpStream, UdpSocket};
+    use crate::rt::net::{TcpListener, TcpReadHalf, TcpStream, TcpWriteHalf, UdpSocket};
+
+    async_op!(['a] TcpReadHalf, Timeout<Read<'a>>, |s, op| {
+        let shared = Arc::clone(&s.1);
+        within(&shared, op.after, s.perform_send(op.op)).await.unwrap_or_else(|| Err(timed_out()))
+    });
+
+    // Writing never waits in the simulation.
+    impl Perform<Timeout<Write<'_>>> for TcpWriteHalf {
+        fn perform(&mut self, op: Timeout<Write<'_>>) -> io::Result<usize> {
+            self.perform(op.op)
+        }
+    }
 
     async_op!(['a] TcpStream, Timeout<Read<'a>>, |s, op| {
         let shared = Arc::clone(&s.1);

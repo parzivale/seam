@@ -14,7 +14,7 @@ use std::string::String;
 use std::task::Waker;
 use std::vec::Vec;
 
-use seam_core::ops::io::{Flush, Read, Write};
+use seam_core::ops::io::{Flush, Halves, Read, Split, Write};
 use seam_core::ops::net::{
     Accept, LocalAddr, PeerAddr, RecvFrom, ResolveInto, SendTo, Shutdown, TcpBind, TcpConnect,
     UdpBind,
@@ -70,18 +70,32 @@ pub(crate) enum WaitKey {
     Recv(SocketAddr),
 }
 
+/// Whether a read of pipe `rx` would return now: data has arrived, or the
+/// stream has ended. If not, `waker` is woken when that changes.
+fn poll_readable(world: &Shared, rx: usize, waker: &Waker) -> bool {
+    let mut world = world.lock();
+    let pipe = &world.net().pipes[rx];
+    let ready = !pipe.bytes.is_empty() || pipe.writer_closed || pipe.reader_closed;
+    if !ready {
+        world.net().wait(WaitKey::Read(rx), waker);
+    }
+    ready
+}
+
 impl TcpStream {
     /// Whether a read would return now: data has arrived, or the stream
     /// has ended. If not, `waker` is woken when that changes.
     #[cfg_attr(not(feature = "rt"), allow(dead_code))]
     pub(crate) fn poll_readable(&self, waker: &Waker) -> bool {
-        let mut world = self.world.lock();
-        let pipe = &world.net().pipes[self.rx];
-        let ready = !pipe.bytes.is_empty() || pipe.writer_closed || pipe.reader_closed;
-        if !ready {
-            world.net().wait(WaitKey::Read(self.rx), waker);
-        }
-        ready
+        poll_readable(&self.world, self.rx, waker)
+    }
+}
+
+impl TcpReadHalf {
+    /// [`TcpStream::poll_readable`], for the half.
+    #[cfg_attr(not(feature = "rt"), allow(dead_code))]
+    pub(crate) fn poll_readable(&self, waker: &Waker) -> bool {
+        poll_readable(&self.world, self.rx, waker)
     }
 }
 
@@ -367,55 +381,96 @@ pub struct UdpSocket {
     pub(crate) addr: SocketAddr,
 }
 
-impl TcpStream {
-    fn read_with<R>(&mut self, f: impl FnOnce(&mut VecDeque<u8>) -> R) -> io::Result<R> {
-        let mut world = self.world.lock();
-        let pipe = &mut world.net().pipes[self.rx];
-        if pipe.bytes.is_empty() && !pipe.writer_closed && !pipe.reader_closed {
-            return Err(error(
-                ErrorKind::WouldBlock,
-                "no data yet, and nothing in the simulation waits",
-            ));
-        }
-        Ok(f(&mut pipe.bytes))
-    }
+/// The half of a [`Split`] [`TcpStream`] that reads.
+#[derive(Debug)]
+pub struct TcpReadHalf {
+    pub(crate) world: Shared,
+    rx: usize,
+    local: SocketAddr,
+    peer: SocketAddr,
+}
 
-    fn write_bytes(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut world = self.world.lock();
-        let pipe = &mut world.net().pipes[self.tx];
-        if pipe.writer_closed {
-            return Err(error(
-                ErrorKind::BrokenPipe,
-                "stream was shut down for writing",
-            ));
-        }
-        if pipe.reader_closed {
-            return Err(error(
-                ErrorKind::BrokenPipe,
-                "the peer closed the connection",
-            ));
-        }
-        pipe.bytes.extend(buf);
-        world.net().wake(WaitKey::Read(self.tx));
-        Ok(buf.len())
+/// The half of a [`Split`] [`TcpStream`] that writes.
+#[derive(Debug)]
+pub struct TcpWriteHalf {
+    world: Shared,
+    rx: usize,
+    tx: usize,
+    local: SocketAddr,
+    peer: SocketAddr,
+}
+
+/// Reads pipe `rx` with `f`, or fails with `WouldBlock` if nothing has
+/// arrived and the stream has not ended.
+fn read_with<R>(
+    world: &Shared,
+    rx: usize,
+    f: impl FnOnce(&mut VecDeque<u8>) -> R,
+) -> io::Result<R> {
+    let mut world = world.lock();
+    let pipe = &mut world.net().pipes[rx];
+    if pipe.bytes.is_empty() && !pipe.writer_closed && !pipe.reader_closed {
+        return Err(error(
+            ErrorKind::WouldBlock,
+            "no data yet, and nothing in the simulation waits",
+        ));
     }
+    Ok(f(&mut pipe.bytes))
+}
+
+fn read_into(world: &Shared, rx: usize, buf: &mut [u8]) -> io::Result<usize> {
+    read_with(world, rx, |bytes| {
+        let n = bytes.len().min(buf.len());
+        for (dst, src) in buf.iter_mut().zip(bytes.drain(..n)) {
+            *dst = src;
+        }
+        n
+    })
+}
+
+fn write_bytes(world: &Shared, tx: usize, buf: &[u8]) -> io::Result<usize> {
+    let mut world = world.lock();
+    let pipe = &mut world.net().pipes[tx];
+    if pipe.writer_closed {
+        return Err(error(
+            ErrorKind::BrokenPipe,
+            "stream was shut down for writing",
+        ));
+    }
+    if pipe.reader_closed {
+        return Err(error(
+            ErrorKind::BrokenPipe,
+            "the peer closed the connection",
+        ));
+    }
+    pipe.bytes.extend(buf);
+    world.net().wake(WaitKey::Read(tx));
+    Ok(buf.len())
+}
+
+fn shutdown(world: &Shared, rx: usize, tx: usize, how: How) {
+    let mut world = world.lock();
+    let pipes = &mut world.net().pipes;
+    if matches!(how, How::Read | How::Both) {
+        pipes[rx].reader_closed = true;
+        pipes[rx].bytes.clear();
+    }
+    if matches!(how, How::Write | How::Both) {
+        pipes[tx].writer_closed = true;
+    }
+    world.net().wake(WaitKey::Read(rx));
+    world.net().wake(WaitKey::Read(tx));
 }
 
 impl Perform<Read<'_>> for TcpStream {
     fn perform(&mut self, op: Read<'_>) -> io::Result<usize> {
-        self.read_with(|bytes| {
-            let n = bytes.len().min(op.0.len());
-            for (dst, src) in op.0.iter_mut().zip(bytes.drain(..n)) {
-                *dst = src;
-            }
-            n
-        })
+        read_into(&self.world, self.rx, op.0)
     }
 }
 
 impl Perform<Write<'_>> for TcpStream {
     fn perform(&mut self, op: Write<'_>) -> io::Result<usize> {
-        self.write_bytes(op.0)
+        write_bytes(&self.world, self.tx, op.0)
     }
 }
 
@@ -425,19 +480,69 @@ impl Perform<Flush> for TcpStream {
     }
 }
 
+/// The halves are views of the stream's pipes: dropping them changes
+/// nothing, so a failed split scope leaves the stream as it was.
+impl Perform<Opening<Split<TcpReadHalf, TcpWriteHalf>>> for TcpStream {
+    fn perform(
+        &mut self,
+        Opening(_, _): Opening<Split<TcpReadHalf, TcpWriteHalf>>,
+    ) -> io::Result<Halves<TcpReadHalf, TcpWriteHalf>> {
+        Ok(Halves {
+            read: TcpReadHalf {
+                world: self.world.clone(),
+                rx: self.rx,
+                local: self.local,
+                peer: self.peer,
+            },
+            write: TcpWriteHalf {
+                world: self.world.clone(),
+                rx: self.rx,
+                tx: self.tx,
+                local: self.local,
+                peer: self.peer,
+            },
+        })
+    }
+}
+
+impl Perform<Closing<Split<TcpReadHalf, TcpWriteHalf>>> for TcpStream {
+    fn perform(
+        &mut self,
+        Closing(_, _): Closing<Split<TcpReadHalf, TcpWriteHalf>>,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Perform<Read<'_>> for TcpReadHalf {
+    fn perform(&mut self, op: Read<'_>) -> io::Result<usize> {
+        read_into(&self.world, self.rx, op.0)
+    }
+}
+
+impl Perform<Write<'_>> for TcpWriteHalf {
+    fn perform(&mut self, op: Write<'_>) -> io::Result<usize> {
+        write_bytes(&self.world, self.tx, op.0)
+    }
+}
+
+impl Perform<Flush> for TcpWriteHalf {
+    fn perform(&mut self, _: Flush) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// As on the stream.
+impl Perform<Shutdown> for TcpWriteHalf {
+    fn perform(&mut self, op: Shutdown) -> io::Result<()> {
+        shutdown(&self.world, self.rx, self.tx, op.0);
+        Ok(())
+    }
+}
+
 impl Perform<Shutdown> for TcpStream {
     fn perform(&mut self, op: Shutdown) -> io::Result<()> {
-        let mut world = self.world.lock();
-        let pipes = &mut world.net().pipes;
-        if matches!(op.0, How::Read | How::Both) {
-            pipes[self.rx].reader_closed = true;
-            pipes[self.rx].bytes.clear();
-        }
-        if matches!(op.0, How::Write | How::Both) {
-            pipes[self.tx].writer_closed = true;
-        }
-        world.net().wake(WaitKey::Read(self.rx));
-        world.net().wake(WaitKey::Read(self.tx));
+        shutdown(&self.world, self.rx, self.tx, op.0);
         Ok(())
     }
 }
@@ -560,6 +665,30 @@ impl Inspect<PeerAddr> for TcpStream {
     }
 }
 
+impl Inspect<LocalAddr> for TcpReadHalf {
+    fn inspect(&self, _: LocalAddr) -> io::Result<SocketAddr> {
+        Ok(self.local)
+    }
+}
+
+impl Inspect<PeerAddr> for TcpReadHalf {
+    fn inspect(&self, _: PeerAddr) -> io::Result<SocketAddr> {
+        Ok(self.peer)
+    }
+}
+
+impl Inspect<LocalAddr> for TcpWriteHalf {
+    fn inspect(&self, _: LocalAddr) -> io::Result<SocketAddr> {
+        Ok(self.local)
+    }
+}
+
+impl Inspect<PeerAddr> for TcpWriteHalf {
+    fn inspect(&self, _: PeerAddr) -> io::Result<SocketAddr> {
+        Ok(self.peer)
+    }
+}
+
 impl Inspect<LocalAddr> for TcpListener {
     fn inspect(&self, _: LocalAddr) -> io::Result<SocketAddr> {
         Ok(self.addr)
@@ -629,4 +758,6 @@ impl World for Net {
 // Every capability type opts in to seam's lifts.
 impl seam_core::Capability for TcpListener {}
 impl seam_core::Capability for TcpStream {}
+impl seam_core::Capability for TcpReadHalf {}
+impl seam_core::Capability for TcpWriteHalf {}
 impl seam_core::Capability for UdpSocket {}

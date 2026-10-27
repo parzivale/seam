@@ -31,7 +31,7 @@ mod net {
 
     use super::*;
     use crate::Sim;
-    use crate::net::{TcpListener, TcpStream, UdpSocket};
+    use crate::net::{TcpListener, TcpReadHalf, TcpStream, TcpWriteHalf, UdpSocket};
     macro_rules! at_once {
         ($($ty:ty: $op:ty => $out:ty;)*) => {$(
             impl Perform<Timeout<$op>> for $ty {
@@ -45,6 +45,8 @@ mod net {
     at_once! {
         TcpStream: Read<'_> => io::Result<usize>;
         TcpStream: Write<'_> => io::Result<usize>;
+        TcpReadHalf: Read<'_> => io::Result<usize>;
+        TcpWriteHalf: Write<'_> => io::Result<usize>;
         UdpSocket: RecvFrom<'_> => io::Result<(usize, SocketAddr)>;
     }
 

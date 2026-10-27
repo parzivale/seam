@@ -446,3 +446,41 @@ fn files_through_threads() {
         ]
     );
 }
+
+/// A split stream between simulated threads: the client's read half blocks
+/// for the reply while its write half has already finished the request.
+#[test]
+fn a_split_stream_between_threads() {
+    use seam_core::ops::io::{Halves, Split};
+    use seam_core::ops::net::{How, Shutdown};
+
+    for seed in 0..8 {
+        let threads = Threads::with_seed(Sim::new(), seed);
+        let reply = threads.run(|mut sim| {
+            let addr: SocketAddr = "10.0.0.1:80".parse().unwrap();
+            sim.acquire(TcpBind::<TcpListener>::new(addr), |sim, listener| {
+                let mut client_sim: ThreadSim = sim.clone();
+                let client = Spawn::<_, JoinHandle<io::Result<Vec<u8>>>>::new(move || {
+                    client_sim.acquire(TcpConnect::<TcpStream>::new(addr), |_, s| {
+                        s.acquire(Split::new(), |_, Halves { read, write }| {
+                            write_all(write, b"ping")?;
+                            write.perform(Shutdown(How::Write))?;
+                            let mut reply = Vec::new();
+                            read_to_end(read, &mut reply)?;
+                            Ok(reply)
+                        })
+                    })
+                });
+                sim.acquire(client, |_, client| {
+                    listener.acquire(Accept::<TcpStream>::new(), |_, s| {
+                        let mut got = Vec::new();
+                        read_to_end(s, &mut got)?;
+                        write_all(s, &got.to_ascii_uppercase())
+                    })?;
+                    client.perform(Join::new()).map_err(io::Error::from)?
+                })
+            })
+        });
+        assert_eq!(reply.unwrap(), b"PING", "seed {seed}");
+    }
+}

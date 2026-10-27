@@ -8,6 +8,9 @@
 //! comes in three forms, for sync capabilities, async ones (`_async`) and
 //! async ones on a multithreaded runtime (`_send`).
 //!
+//! [`Split`] lends a stream as two halves, one to read and one to write,
+//! to use at the same time.
+//!
 //! The operations borrow their buffer, so bound them for every lifetime:
 //!
 //! ```
@@ -52,6 +55,87 @@ pub struct Flush;
 /// with `io::ErrorKind::InvalidInput`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Seek(pub SeekFrom);
+
+/// Split a stream into a half that reads and a half that writes, lent
+/// together to a scope, so both directions can be used at once: from two
+/// futures joined in one task, or from two scoped threads. Acquired from
+/// the stream itself, inside the stream's own scope:
+///
+/// ```
+/// use seam_core::io;
+/// use seam_core::{Perform, Provide};
+/// use seam_core::ops::io::{Halves, Read, Split, Write, write_all, read_exact};
+///
+/// /// Writes a request and reads a 4-byte reply, through the two halves.
+/// fn ask<S, R, W>(stream: &mut S, request: &[u8]) -> io::Result<[u8; 4]>
+/// where
+///     S: Provide<Split<R, W>>,
+///     R: for<'a> Perform<Read<'a>>,
+///     W: for<'a> Perform<Write<'a>>,
+/// {
+///     stream.acquire(Split::new(), |_, Halves { read, write }| {
+///         write_all(write, request)?;
+///         let mut reply = [0; 4];
+///         read_exact(read, &mut reply)?;
+///         Ok(reply)
+///     })
+/// }
+/// ```
+///
+/// Each half performs what the stream does in its direction: the read half
+/// `Read` (and its `Timeout`), the write half `Write`, `Flush`, `Shutdown`
+/// (and the `Timeout` of a write); both tell their `LocalAddr` and
+/// `PeerAddr`. Shutting down the write half tells the peer the request is
+/// complete while the read half goes on reading the reply. The stream itself should not be read or written
+/// while it is split. Closing the scope gives the halves back to the
+/// stream; a failed scope drops them, and with some backends (Tokio) that
+/// closes the stream, so give up on the stream after a failed split.
+pub struct Split<R, W> {
+    halves: core::marker::PhantomData<fn() -> (R, W)>,
+}
+
+/// The two halves of a [`Split`] stream.
+#[derive(Debug)]
+pub struct Halves<R, W> {
+    /// Reads what the peer sends.
+    pub read: R,
+    /// Writes to the peer.
+    pub write: W,
+}
+
+impl<R, W> Split<R, W> {
+    /// Describes splitting a stream.
+    pub const fn new() -> Self {
+        Self {
+            halves: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<R, W> Default for Split<R, W> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<R, W> Clone for Split<R, W> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<R, W> Copy for Split<R, W> {}
+
+impl<R, W> core::fmt::Debug for Split<R, W> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Split")
+    }
+}
+
+impl<R, W> crate::Acquisition for Split<R, W> {
+    type Resource = Halves<R, W>;
+    type Error = io::Error;
+}
 
 /// Where a [`Seek`] counts from: the same choices as `std::io::SeekFrom`,
 /// which converts into it.

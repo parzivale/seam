@@ -13,7 +13,7 @@ use core::task::Poll;
 use seam_core::io;
 use std::sync::Arc;
 
-use seam_core::ops::io::{Flush, Read, Write};
+use seam_core::ops::io::{Flush, Halves, Read, Split, Write};
 use seam_core::ops::net::{
     Accept, LocalAddr, PeerAddr, RecvFrom, SendTo, Shutdown, TcpBind, TcpConnect, UdpBind,
 };
@@ -61,6 +61,73 @@ pub struct UdpSocket(
     pub(crate) sim::UdpSocket,
     #[cfg_attr(not(feature = "time"), allow(dead_code))] pub(crate) Arc<Shared>,
 );
+
+/// The half of a [`Split`] [`TcpStream`] that reads. Reads wait for data
+/// or end of input.
+pub struct TcpReadHalf(
+    sim::TcpReadHalf,
+    #[cfg_attr(not(feature = "time"), allow(dead_code))] pub(crate) Arc<Shared>,
+);
+
+/// The half of a [`Split`] [`TcpStream`] that writes. Writes never wait.
+pub struct TcpWriteHalf(sim::TcpWriteHalf);
+
+impl core::fmt::Debug for TcpReadHalf {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("TcpReadHalf").field(&self.0).finish()
+    }
+}
+
+impl core::fmt::Debug for TcpWriteHalf {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("TcpWriteHalf").field(&self.0).finish()
+    }
+}
+
+impl Perform<Opening<Split<TcpReadHalf, TcpWriteHalf>>> for TcpStream {
+    fn perform(
+        &mut self,
+        Opening(_, token): Opening<Split<TcpReadHalf, TcpWriteHalf>>,
+    ) -> io::Result<Halves<TcpReadHalf, TcpWriteHalf>> {
+        let halves = self.0.perform(Opening(Split::new(), token))?;
+        Ok(Halves {
+            read: TcpReadHalf(halves.read, Arc::clone(&self.1)),
+            write: TcpWriteHalf(halves.write),
+        })
+    }
+}
+
+impl Perform<Closing<Split<TcpReadHalf, TcpWriteHalf>>> for TcpStream {
+    fn perform(
+        &mut self,
+        Closing(_, _): Closing<Split<TcpReadHalf, TcpWriteHalf>>,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+async_op!(['a] TcpReadHalf, Read<'a>, |s, op| {
+    poll_fn(|cx| if s.0.poll_readable(cx.waker()) { Poll::Ready(()) } else { Poll::Pending }).await;
+    s.0.perform(op)
+});
+
+impl Perform<Write<'_>> for TcpWriteHalf {
+    fn perform(&mut self, op: Write<'_>) -> io::Result<usize> {
+        self.0.perform(op)
+    }
+}
+
+impl Perform<Flush> for TcpWriteHalf {
+    fn perform(&mut self, op: Flush) -> io::Result<()> {
+        self.0.perform(op)
+    }
+}
+
+impl Perform<Shutdown> for TcpWriteHalf {
+    fn perform(&mut self, op: Shutdown) -> io::Result<()> {
+        self.0.perform(op)
+    }
+}
 
 impl TcpStream {
     pub(crate) async fn readable(&self) {
@@ -233,6 +300,8 @@ macro_rules! addr_queries {
 
 addr_queries! {
     TcpStream: LocalAddr, PeerAddr;
+    TcpReadHalf: LocalAddr, PeerAddr;
+    TcpWriteHalf: LocalAddr, PeerAddr;
     TcpListener: LocalAddr;
     UdpSocket: LocalAddr, PeerAddr;
 }
@@ -240,4 +309,6 @@ addr_queries! {
 // Every capability type opts in to seam's lifts.
 impl seam_core::Capability for TcpListener {}
 impl seam_core::Capability for TcpStream {}
+impl seam_core::Capability for TcpReadHalf {}
+impl seam_core::Capability for TcpWriteHalf {}
 impl seam_core::Capability for UdpSocket {}

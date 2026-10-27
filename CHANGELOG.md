@@ -42,6 +42,27 @@ existing primitives, so every backend (and `Sim`) runs them unchanged:
 | `process` | `run_checked` (fails unless the exit code is 0), `output_string` |
 | `net` | `connect_any`: resolve, connect to the first address that answers, run the body once |
 
+### Split handles
+
+Two new acquisitions lend a handle's directions separately, so they can
+be used at the same time (joined futures in one task, or scoped threads),
+each still behind its own `&mut`:
+
+- `io::Split<R, W>`, from a TCP stream: `Halves { read, write }`. The read
+  half reads (and times out); the write half writes, flushes, shuts down
+  (tell the peer the request is done while still reading the reply) and
+  times out. Both know their addresses.
+- `process::SplitChild<I, O, E>`, from a child: `ChildPipes { stdin,
+  stdout, stderr }`, to feed a child while draining both outputs. The body
+  still has the child, to `Wait` or `Kill`.
+
+Every backend implements both: std (`TcpReadHalf`, `TcpWriteHalf`,
+`ChildStdin`, `ChildStdout`, `ChildStderr`), Tokio, `Sim`, the simulated
+runtime and simulated threads. Closing the scope gives the pieces back. A
+failed scope drops them: std and the simulation lose nothing, Tokio closes
+the stream (it fails with `NotConnected` after). The simulated child still
+runs when its output is first read, on the input written by then.
+
 ### Documentation
 
 - A `docs` feature adds `seam::_docs`: what seam is, usage guides, the

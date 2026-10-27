@@ -54,6 +54,11 @@
 //! `SyncData` and `Stat`, and `ReadDir` lends an `fs::Dir` to step through
 //! with `NextEntry`.
 //!
+//! `Split` lends a stream as `net::TcpReadHalf` and `net::TcpWriteHalf`
+//! (duplicates of the socket, so a failed split loses nothing), and
+//! `SplitChild` lends a child's pipes as `process::ChildStdin`,
+//! `ChildStdout` and `ChildStderr`, to use from scoped threads at once.
+//!
 //! # Changing the environment
 //!
 //! `Std` reads the environment but does not change it, since

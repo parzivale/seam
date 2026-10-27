@@ -22,6 +22,8 @@
 //! On top of [`RunCommand`], [`run_checked`] fails when the command does,
 //! and [`output_string`] returns what it printed, as text.
 //!
+//! [`SplitChild`] lends the three pipes separately, to use at once.
+//!
 //! When the scope succeeds, the child's pipes are closed and the scope
 //! waits for it to exit, so no child outlives its scope. When the scope
 //! fails, panics or is cancelled, the child is killed.
@@ -160,6 +162,68 @@ impl<C> SpawnChild<C> {
         self.stderr = pipe;
         self
     }
+}
+
+/// Split a child into its three pipes, lent together to a scope, so they
+/// can be used at once: feed its input while draining both outputs, from
+/// futures joined in one task or from scoped threads. Acquired from the
+/// child, inside its own scope; the scope's body still has the child, to
+/// [`Wait`] for it or [`Kill`] it.
+///
+/// A pipe that is not [`Pipe::Piped`] is still lent, and fails as the child
+/// would: writes and reads with `io::ErrorKind::BrokenPipe`. Closing the
+/// scope gives the pipes back to the child; a failed scope drops them,
+/// which closes them.
+pub struct SplitChild<I, O, E> {
+    pipes: PhantomData<MakesPipes<I, O, E>>,
+}
+
+/// What a [`SplitChild`] lends, as a function type: `Send`, `Sync` and
+/// covariant whatever the pipes are.
+type MakesPipes<I, O, E> = fn() -> ChildPipes<I, O, E>;
+
+/// The pipes of a [`SplitChild`].
+#[derive(Debug)]
+pub struct ChildPipes<I, O, E> {
+    /// Writes to the child's standard input; [`CloseStdin`] on it ends
+    /// the input.
+    pub stdin: I,
+    /// Reads the child's standard output.
+    pub stdout: O,
+    /// Reads the child's standard error, with `Read` (not [`ReadErr`]).
+    pub stderr: E,
+}
+
+impl<I, O, E> SplitChild<I, O, E> {
+    /// Describes splitting a child.
+    pub const fn new() -> Self {
+        Self { pipes: PhantomData }
+    }
+}
+
+impl<I, O, E> Default for SplitChild<I, O, E> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<I, O, E> Clone for SplitChild<I, O, E> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<I, O, E> Copy for SplitChild<I, O, E> {}
+
+impl<I, O, E> core::fmt::Debug for SplitChild<I, O, E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SplitChild")
+    }
+}
+
+impl<I, O, E> crate::Acquisition for SplitChild<I, O, E> {
+    type Resource = ChildPipes<I, O, E>;
+    type Error = io::Error;
 }
 
 /// Where one of a child's standard streams is connected.

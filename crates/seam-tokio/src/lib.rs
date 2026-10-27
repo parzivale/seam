@@ -85,6 +85,12 @@
 //! and `Stat`. Tokio streams can only shut down their write half; `Shutdown`
 //! of the read half fails with `Unsupported`.
 //!
+//! `Split` lends a stream as Tokio's owned halves (`net::TcpReadHalf`,
+//! `net::TcpWriteHalf`), reunited when the scope succeeds; a failed split
+//! closes the stream. `SplitChild` lends a child's pipes as
+//! `process::ChildStdin`, `ChildStdout` and `ChildStderr`. Join futures on
+//! the pieces to use them at once.
+//!
 //! # Features
 //!
 //! Names follow Tokio's: `rt`, `rt-multi-thread`, `fs`, `net`, `time`,

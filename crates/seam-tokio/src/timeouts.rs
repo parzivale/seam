@@ -58,7 +58,7 @@ mod net {
 
     use super::*;
     use crate::Tokio;
-    use crate::net::{TcpListener, TcpStream, UdpSocket};
+    use crate::net::{TcpListener, TcpReadHalf, TcpStream, TcpWriteHalf, UdpSocket};
     #[cfg(feature = "rt")]
     use crate::task::JoinHandle;
 
@@ -67,10 +67,18 @@ mod net {
     }
 
     async_op!(perform ['a] TcpStream, Timeout<Read<'a>>, |s, op| {
-        timeout(op.after, s.0.read(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
+        timeout(op.after, s.get()?.read(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
     });
 
     async_op!(perform ['a] TcpStream, Timeout<Write<'a>>, |s, op| {
+        timeout(op.after, s.get()?.write(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
+    });
+
+    async_op!(perform ['a] TcpReadHalf, Timeout<Read<'a>>, |s, op| {
+        timeout(op.after, s.0.read(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
+    });
+
+    async_op!(perform ['a] TcpWriteHalf, Timeout<Write<'a>>, |s, op| {
         timeout(op.after, s.0.write(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
     });
 
@@ -83,7 +91,7 @@ mod net {
             timeout(op.after, tokio::net::TcpStream::connect(op.op.addr))
                 .await
                 .unwrap_or_else(|_| Err(timed_out()))
-                .map(TcpStream),
+                .map(TcpStream::new),
         )
     });
     async_op!(perform [] Tokio, Closing<Timeout<TcpConnect<TcpStream>>>, |_s, Closing(stream, _)| {
@@ -103,7 +111,7 @@ mod net {
     }
 
     async_op!(perform [] TcpListener, Opening<Timeout<Accept<TcpStream>>>, |s, Opening(op, _)| {
-        s.accept_within(op.after).await.map(TcpStream)
+        s.accept_within(op.after).await.map(TcpStream::new)
     });
     async_op!(
         perform [] TcpListener, Closing<Timeout<Accept<TcpStream>>>,
@@ -183,7 +191,7 @@ mod process {
     use tokio::io::AsyncReadExt;
 
     use super::*;
-    use crate::process::Child;
+    use crate::process::{Child, ChildStderr, ChildStdout, stderr, stdout};
 
     fn timed_out() -> io::Error {
         io::ErrorKind::TimedOut.into()
@@ -200,6 +208,14 @@ mod process {
     });
     async_op!(perform ['a] Child, Timeout<ReadErr<'a>>, |s, op| {
         let err = s.stderr_mut()?;
+        timeout(op.after, err.read(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
+    });
+    async_op!(perform ['a] ChildStdout, Timeout<Read<'a>>, |s, op| {
+        let out = stdout(&mut s.0)?;
+        timeout(op.after, out.read(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
+    });
+    async_op!(perform ['a] ChildStderr, Timeout<Read<'a>>, |s, op| {
+        let err = stderr(&mut s.0)?;
         timeout(op.after, err.read(op.op.0)).await.unwrap_or_else(|_| Err(timed_out()))
     });
 }

@@ -3,6 +3,7 @@
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
 
+use seam_core::ops::io::{Halves, Split};
 use seam_core::ops::net::{
     Accept, LocalAddr, PeerAddr, RecvFrom, ResolveInto, SendTo, Shutdown, TcpBind, TcpConnect,
     UdpBind,
@@ -35,6 +36,40 @@ pub struct UdpSocket(std::net::UdpSocket);
 
 crate::read_ops!([] TcpStream);
 crate::write_ops!([] TcpStream);
+
+/// The half of a [`Split`] [`TcpStream`] that reads.
+#[derive(Debug)]
+pub struct TcpReadHalf(std::net::TcpStream);
+
+/// The half of a [`Split`] [`TcpStream`] that writes.
+#[derive(Debug)]
+pub struct TcpWriteHalf(std::net::TcpStream);
+
+crate::read_ops!([] TcpReadHalf);
+crate::write_ops!([] TcpWriteHalf);
+
+/// Each half is a duplicate of the socket (`try_clone`), so dropping one,
+/// even when the scope fails, leaves the stream as it was.
+impl Perform<Opening<Split<TcpReadHalf, TcpWriteHalf>>> for TcpStream {
+    fn perform(
+        &mut self,
+        Opening(_, _): Opening<Split<TcpReadHalf, TcpWriteHalf>>,
+    ) -> seam_core::io::Result<Halves<TcpReadHalf, TcpWriteHalf>> {
+        Ok(Halves {
+            read: TcpReadHalf(self.0.try_clone()?),
+            write: TcpWriteHalf(self.0.try_clone()?),
+        })
+    }
+}
+
+impl Perform<Closing<Split<TcpReadHalf, TcpWriteHalf>>> for TcpStream {
+    fn perform(
+        &mut self,
+        Closing(halves, _): Closing<Split<TcpReadHalf, TcpWriteHalf>>,
+    ) -> seam_core::io::Result<()> {
+        crate::sio(io::Write::flush(&mut &halves.write.0))
+    }
+}
 
 impl TcpStream {
     /// Flushes and shuts down both directions. A peer that has already
@@ -175,6 +210,14 @@ impl Perform<Shutdown> for TcpStream {
     }
 }
 
+/// As on the stream: shutting down writing tells the peer the request is
+/// complete, while the read half goes on reading the reply.
+impl Perform<Shutdown> for TcpWriteHalf {
+    fn perform(&mut self, op: Shutdown) -> seam_core::io::Result<()> {
+        crate::sio(self.0.shutdown(op.0.into()))
+    }
+}
+
 impl Perform<SendTo<'_>> for UdpSocket {
     fn perform(&mut self, op: SendTo<'_>) -> seam_core::io::Result<usize> {
         crate::sio(self.0.send_to(op.buf, op.addr))
@@ -199,6 +242,8 @@ macro_rules! addr_queries {
 
 addr_queries! {
     TcpStream: LocalAddr => local_addr, PeerAddr => peer_addr;
+    TcpReadHalf: LocalAddr => local_addr, PeerAddr => peer_addr;
+    TcpWriteHalf: LocalAddr => local_addr, PeerAddr => peer_addr;
     TcpListener: LocalAddr => local_addr;
     UdpSocket: LocalAddr => local_addr, PeerAddr => peer_addr;
 }
@@ -314,6 +359,29 @@ mod timeouts {
         }
     }
 
+    // A timeout of zero makes `within` switch the socket to nonblocking,
+    // which the duplicate held by the other half would see too; the
+    // halves wait at least a microsecond instead.
+    fn at_least_a_tick(after: Duration) -> Duration {
+        after.max(Duration::from_micros(1))
+    }
+
+    impl Perform<Timeout<Read<'_>>> for TcpReadHalf {
+        fn perform(&mut self, op: Timeout<Read<'_>>) -> seam_core::io::Result<usize> {
+            let buf = op.op.0;
+            let after = at_least_a_tick(op.after);
+            within(&self.0, Dir::Read, Some(after), |mut s| s.read(buf))
+        }
+    }
+
+    impl Perform<Timeout<Write<'_>>> for TcpWriteHalf {
+        fn perform(&mut self, op: Timeout<Write<'_>>) -> seam_core::io::Result<usize> {
+            let buf = op.op.0;
+            let after = at_least_a_tick(op.after);
+            within(&self.0, Dir::Write, Some(after), |mut s| s.write(buf))
+        }
+    }
+
     impl Perform<Timeout<RecvFrom<'_>>> for UdpSocket {
         fn perform(
             &mut self,
@@ -418,6 +486,7 @@ mod timeouts {
         }
     }
 
+    #[cfg(feature = "rt")]
     impl<B, T, E>
         Perform<Closing<Timeout<SpawnWith<Accept<TcpStream>, B, JoinHandle<Result<T, E>>>>>>
         for TcpListener
@@ -460,4 +529,6 @@ where
 // Every capability type opts in to seam's lifts.
 impl seam_core::Capability for TcpListener {}
 impl seam_core::Capability for TcpStream {}
+impl seam_core::Capability for TcpReadHalf {}
+impl seam_core::Capability for TcpWriteHalf {}
 impl seam_core::Capability for UdpSocket {}

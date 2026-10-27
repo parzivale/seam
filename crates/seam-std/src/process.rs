@@ -2,12 +2,14 @@
 
 use std::convert::Infallible;
 use std::io::{Read as _, Write as _};
-use std::process::{ChildStderr, ChildStdin, ChildStdout, Stdio};
+use std::process::{
+    ChildStderr as RawStderr, ChildStdin as RawStdin, ChildStdout as RawStdout, Stdio,
+};
 
 use seam_core::ops::io::{Flush, Read, Write};
 use seam_core::ops::process::{
-    ChildId, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, RunCommand, SpawnChild,
-    Wait,
+    ChildId, ChildPipes, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, RunCommand,
+    SpawnChild, SplitChild, Wait,
 };
 use seam_core::{Closing, Inspect, Opening, Perform};
 
@@ -39,11 +41,24 @@ impl Perform<Exit> for Std {
 #[derive(Debug)]
 pub struct Child {
     inner: std::process::Child,
-    stdin: Option<ChildStdin>,
-    stdout: Option<ChildStdout>,
-    stderr: Option<ChildStderr>,
+    stdin: Option<RawStdin>,
+    stdout: Option<RawStdout>,
+    stderr: Option<RawStderr>,
     status: Option<ExitStatus>,
 }
+
+/// A [`SplitChild`]'s pipe to the child's standard input. `None` inside if
+/// it is not piped, or was closed.
+#[derive(Debug)]
+pub struct ChildStdin(Option<RawStdin>);
+
+/// A [`SplitChild`]'s pipe from the child's standard output.
+#[derive(Debug)]
+pub struct ChildStdout(Option<RawStdout>);
+
+/// A [`SplitChild`]'s pipe from the child's standard error.
+#[derive(Debug)]
+pub struct ChildStderr(Option<RawStderr>);
 
 fn stdio(pipe: Pipe) -> Stdio {
     match pipe {
@@ -58,27 +73,39 @@ fn not_piped(message: &'static str) -> seam_core::io::Error {
     seam_core::io::Error::new(seam_core::io::ErrorKind::BrokenPipe, message)
 }
 
+fn stdin(pipe: &mut Option<RawStdin>) -> seam_core::io::Result<&mut RawStdin> {
+    pipe.as_mut().ok_or_else(|| {
+        not_piped("the child's standard input is not piped to this scope, or is closed")
+    })
+}
+
+fn stdout(pipe: &mut Option<RawStdout>) -> seam_core::io::Result<&mut RawStdout> {
+    pipe.as_mut().ok_or_else(|| {
+        not_piped("the child's standard output is not piped to this scope, or is split")
+    })
+}
+
+fn stderr(pipe: &mut Option<RawStderr>) -> seam_core::io::Result<&mut RawStderr> {
+    pipe.as_mut().ok_or_else(|| {
+        not_piped("the child's standard error is not piped to this scope, or is split")
+    })
+}
+
 fn status(s: std::process::ExitStatus) -> ExitStatus {
     ExitStatus { code: s.code() }
 }
 
 impl Child {
-    fn stdin(&mut self) -> seam_core::io::Result<&mut ChildStdin> {
-        self.stdin.as_mut().ok_or_else(|| {
-            not_piped("the child's standard input is not piped to this scope, or is closed")
-        })
+    fn stdin(&mut self) -> seam_core::io::Result<&mut RawStdin> {
+        stdin(&mut self.stdin)
     }
 
-    fn stdout(&mut self) -> seam_core::io::Result<&mut ChildStdout> {
-        self.stdout
-            .as_mut()
-            .ok_or_else(|| not_piped("the child's standard output is not piped to this scope"))
+    fn stdout(&mut self) -> seam_core::io::Result<&mut RawStdout> {
+        stdout(&mut self.stdout)
     }
 
-    fn stderr(&mut self) -> seam_core::io::Result<&mut ChildStderr> {
-        self.stderr
-            .as_mut()
-            .ok_or_else(|| not_piped("the child's standard error is not piped to this scope"))
+    fn stderr(&mut self) -> seam_core::io::Result<&mut RawStderr> {
+        stderr(&mut self.stderr)
     }
 
     fn wait(&mut self) -> seam_core::io::Result<ExitStatus> {
@@ -136,6 +163,65 @@ impl Perform<Closing<SpawnChild<Child>>> for Std {
         Closing(child, _): Closing<SpawnChild<Child>>,
     ) -> seam_core::io::Result<()> {
         child.finish()
+    }
+}
+
+/// Takes the pipes out of the child; closing the scope puts them back.
+impl Perform<Opening<SplitChild<ChildStdin, ChildStdout, ChildStderr>>> for Child {
+    fn perform(
+        &mut self,
+        Opening(_, _): Opening<SplitChild<ChildStdin, ChildStdout, ChildStderr>>,
+    ) -> seam_core::io::Result<ChildPipes<ChildStdin, ChildStdout, ChildStderr>> {
+        Ok(ChildPipes {
+            stdin: ChildStdin(self.stdin.take()),
+            stdout: ChildStdout(self.stdout.take()),
+            stderr: ChildStderr(self.stderr.take()),
+        })
+    }
+}
+
+impl Perform<Closing<SplitChild<ChildStdin, ChildStdout, ChildStderr>>> for Child {
+    fn perform(
+        &mut self,
+        Closing(pipes, _): Closing<SplitChild<ChildStdin, ChildStdout, ChildStderr>>,
+    ) -> seam_core::io::Result<()> {
+        // A child already waited for has had its input closed.
+        if self.status.is_none() {
+            self.stdin = pipes.stdin.0;
+        }
+        self.stdout = pipes.stdout.0;
+        self.stderr = pipes.stderr.0;
+        Ok(())
+    }
+}
+
+impl Perform<Write<'_>> for ChildStdin {
+    fn perform(&mut self, op: Write<'_>) -> seam_core::io::Result<usize> {
+        crate::sio(stdin(&mut self.0)?.write(op.0))
+    }
+}
+
+impl Perform<Flush> for ChildStdin {
+    fn perform(&mut self, _: Flush) -> seam_core::io::Result<()> {
+        crate::sio(stdin(&mut self.0)?.flush())
+    }
+}
+
+impl Perform<CloseStdin> for ChildStdin {
+    fn perform(&mut self, _: CloseStdin) {
+        self.0 = None;
+    }
+}
+
+impl Perform<Read<'_>> for ChildStdout {
+    fn perform(&mut self, op: Read<'_>) -> seam_core::io::Result<usize> {
+        crate::sio(stdout(&mut self.0)?.read(op.0))
+    }
+}
+
+impl Perform<Read<'_>> for ChildStderr {
+    fn perform(&mut self, op: Read<'_>) -> seam_core::io::Result<usize> {
+        crate::sio(stderr(&mut self.0)?.read(op.0))
     }
 }
 
@@ -226,3 +312,6 @@ impl Perform<seam_core::ops::time::Timeout<Wait>> for Child {
 
 // Every capability type opts in to seam's lifts.
 impl seam_core::Capability for Child {}
+impl seam_core::Capability for ChildStdin {}
+impl seam_core::Capability for ChildStdout {}
+impl seam_core::Capability for ChildStderr {}

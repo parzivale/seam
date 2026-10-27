@@ -1,0 +1,39 @@
+[package]
+name = "seam-rs-reqwest"
+description = "HTTP for seam: a Fetch effect over http's types, performed with reqwest, or scripted in tests."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+seam-core = { workspace = true, features = ["std"] }
+http = { workspace = true, features = ["std"] }
+reqwest = { workspace = true, optional = true }
+seam-test = { workspace = true, optional = true, features = ["std"] }
+
+[dev-dependencies]
+seam-test = { workspace = true, features = ["std"] }
+seam-tokio = { workspace = true, features = ["rt"] }
+
+[features]
+default = ["reqwest", "rustls"]
+# `Reqwest`: real requests, with reqwest (which needs a Tokio runtime).
+reqwest = ["dep:reqwest"]
+# HTTPS for `Reqwest`, with rustls.
+rustls = ["reqwest", "reqwest?/rustls-tls"]
+# `World` for `Scripted`: an `http` block in world files.
+test = ["dep:seam-test"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
+name = "seam_reqwest"
+
+[lints]
+workspace = true

@@ -15,9 +15,12 @@
 //! only for readable modes and `Write` only for writable ones, so a core
 //! bounded on `Open<'a, ReadOnly, F>` cannot write, and its bounds say so.
 //!
-//! Whole-file work is built on those, as plain functions: [`read_file`],
-//! [`read_to_string`], [`write_file`], [`create_dir_all`] and
-//! [`sweep_atomic`], each in three forms (sync, `_async`, `_send`).
+//! Whole-file and whole-tree work is built on those, as plain functions,
+//! each in three forms (sync, `_async`, `_send`): [`read_file`],
+//! [`read_to_string`], [`read_lines`], [`write_file`], [`append_file`],
+//! [`write_file_atomic`], [`exists`], [`is_file`], [`is_dir`],
+//! [`create_dir_all`], [`copy_dir_all`], [`remove_dir_contents`] and
+//! [`sweep_atomic`].
 //!
 //! ```
 //! use seam_core::io;
@@ -726,6 +729,261 @@ three_ways! {
             }
         }
         Ok(())
+    }
+
+    /// Whether anything is at `path`, following symlinks: `Ok(false)` if
+    /// nothing is there, and an error only for another failure (a denied
+    /// permission, say).
+    pub fn exists, exists_async, exists_send
+    [C] (c: &C, path: &(impl AsRef<Path> + ?Sized)) -> io::Result<bool>
+    where
+        sync { C: for<'a> crate::Inspect<Metadata<'a>> }
+        async { C: for<'a> crate::future::AsyncInspect<Metadata<'a>> }
+        send { C: for<'a> crate::future::SendInspect<Metadata<'a>> + Sync }
+    {
+        match ask!(c, Metadata::new(path)) {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Whether `path` is a regular file, following symlinks: `Ok(false)` if
+    /// nothing is there.
+    pub fn is_file, is_file_async, is_file_send
+    [C] (c: &C, path: &(impl AsRef<Path> + ?Sized)) -> io::Result<bool>
+    where
+        sync { C: for<'a> crate::Inspect<Metadata<'a>> }
+        async { C: for<'a> crate::future::AsyncInspect<Metadata<'a>> }
+        send { C: for<'a> crate::future::SendInspect<Metadata<'a>> + Sync }
+    {
+        match ask!(c, Metadata::new(path)) {
+            Ok(info) => Ok(info.is_file()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Whether `path` is a directory, following symlinks: `Ok(false)` if
+    /// nothing is there.
+    pub fn is_dir, is_dir_async, is_dir_send
+    [C] (c: &C, path: &(impl AsRef<Path> + ?Sized)) -> io::Result<bool>
+    where
+        sync { C: for<'a> crate::Inspect<Metadata<'a>> }
+        async { C: for<'a> crate::future::AsyncInspect<Metadata<'a>> }
+        send { C: for<'a> crate::future::SendInspect<Metadata<'a>> + Sync }
+    {
+        match ask!(c, Metadata::new(path)) {
+            Ok(info) => Ok(info.is_dir()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Adds `contents` to the end of `path`, creating it if needed.
+    pub fn append_file, append_file_async, append_file_send
+    [C, F] (
+        c: &mut C,
+        path: &(impl AsRef<Path> + ?Sized),
+        contents: &(impl AsRef<[u8]> + ?Sized),
+    ) -> io::Result<()>
+    where
+        sync {
+            C: for<'a> crate::Provide<Open<'a, Append, F>>,
+            F: for<'a> crate::Perform<Write<'a>>,
+        }
+        async {
+            C: for<'a> crate::AsyncProvide<Open<'a, Append, F>>,
+            F: for<'a> crate::future::AsyncPerform<Write<'a>>,
+        }
+        send {
+            C: for<'a> crate::SendProvide<Open<'a, Append, F>> + Send,
+            F: for<'a> crate::future::SendPerform<Write<'a>> + Send,
+        }
+    {
+        let contents = contents.as_ref();
+        acquire!(c, Open::append(path), |_, file| {
+            call!(super::io::write_all, super::io::write_all_async, super::io::write_all_send; (file, contents))
+        })
+    }
+
+    /// Replaces `path` with `contents` all at once, through a
+    /// [`CreateAtomic`]: until it succeeds, readers see the old file, and if
+    /// it fails, the old file is left as it was.
+    pub fn write_file_atomic, write_file_atomic_async, write_file_atomic_send
+    [C, F] (
+        c: &mut C,
+        path: &(impl AsRef<Path> + ?Sized),
+        contents: &(impl AsRef<[u8]> + ?Sized),
+    ) -> io::Result<()>
+    where
+        sync {
+            C: for<'a> crate::Provide<CreateAtomic<'a, F>>,
+            F: for<'a> crate::Perform<Write<'a>>,
+        }
+        async {
+            C: for<'a> crate::AsyncProvide<CreateAtomic<'a, F>>,
+            F: for<'a> crate::future::AsyncPerform<Write<'a>>,
+        }
+        send {
+            C: for<'a> crate::SendProvide<CreateAtomic<'a, F>> + Send,
+            F: for<'a> crate::future::SendPerform<Write<'a>> + Send,
+        }
+    {
+        let contents = contents.as_ref();
+        acquire!(c, CreateAtomic::new(path), |_, file| {
+            call!(super::io::write_all, super::io::write_all_async, super::io::write_all_send; (file, contents))
+        })
+    }
+
+    /// Reads the regular file at `path` as UTF-8, as [`read_to_string`]
+    /// does, and splits it into lines, without their line endings.
+    pub fn read_lines, read_lines_async, read_lines_send
+    [C, F] (c: &C, path: &(impl AsRef<Path> + ?Sized)) -> io::Result<Vec<String>>
+    where
+        sync {
+            C: for<'a> crate::Lend<View<'a, F>>,
+            F: for<'a> crate::Inspect<ReadAt<'a>>,
+        }
+        async {
+            C: for<'a> crate::AsyncLend<View<'a, F>>,
+            F: for<'a> crate::future::AsyncInspect<ReadAt<'a>>,
+        }
+        send {
+            C: for<'a> crate::SendLend<View<'a, F>> + Sync,
+            F: for<'a> crate::future::SendInspect<ReadAt<'a>> + Sync,
+        }
+    {
+        let text = call!(read_to_string, read_to_string_async, read_to_string_send; (c, path))?;
+        Ok(text.lines().map(String::from).collect())
+    }
+
+    /// Removes everything inside the directory `dir`, leaving `dir` itself.
+    /// Returns how many entries were removed (a subdirectory counts once).
+    /// A symlink in `dir` is removed, not followed. Fails with
+    /// `io::ErrorKind::NotFound` if `dir` does not exist.
+    pub fn remove_dir_contents, remove_dir_contents_async, remove_dir_contents_send
+    [C, D] (c: &mut C, dir: &(impl AsRef<Path> + ?Sized)) -> io::Result<u64>
+    where
+        sync {
+            C: for<'a> crate::Provide<ReadDir<'a, D>>
+                + for<'a> crate::Inspect<Metadata<'a>>
+                + for<'a> crate::Perform<RemoveFile<'a>>
+                + for<'a> crate::Perform<RemoveDir<'a>>,
+            D: crate::Perform<NextEntry>,
+        }
+        async {
+            C: for<'a> crate::AsyncProvide<ReadDir<'a, D>>
+                + for<'a> crate::future::AsyncInspect<Metadata<'a>>
+                + for<'a> crate::future::AsyncPerform<RemoveFile<'a>>
+                + for<'a> crate::future::AsyncPerform<RemoveDir<'a>>,
+            D: crate::future::AsyncPerform<NextEntry>,
+        }
+        send {
+            C: for<'a> crate::SendProvide<ReadDir<'a, D>>
+                + for<'a> crate::future::SendInspect<Metadata<'a>>
+                + for<'a> crate::future::SendPerform<RemoveFile<'a>>
+                + for<'a> crate::future::SendPerform<RemoveDir<'a>>
+                + Send,
+            D: crate::future::SendPerform<NextEntry> + Send,
+        }
+    {
+        let entries = acquire!(c, ReadDir::new(dir.as_ref()), |_, entries| {
+            let mut paths = Vec::new();
+            while let Some(path) = run!(entries, NextEntry)? {
+                paths.push(path);
+            }
+            io::Result::Ok(paths)
+        })?;
+        let mut removed = 0;
+        for path in &entries {
+            let result = match ask!(c, Metadata::new(path)) {
+                // Recursive removal takes a symlink away rather than
+                // following it, so it is safe on either.
+                Ok(info) if info.is_dir() => run!(c, RemoveDir::all(path)),
+                Ok(_) => run!(c, RemoveFile::new(path)),
+                // A dangling symlink: remove the link itself.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => run!(c, RemoveFile::new(path)),
+                Err(e) => Err(e),
+            };
+            match result {
+                Ok(()) => removed += 1,
+                // Gone in the meantime.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Copies the directory `from`, and everything in it, to `to`, creating
+    /// `to` and its parents if needed and replacing files already there.
+    /// Returns how many files were copied. Symlinks are followed, so a
+    /// tree deeper than 256 levels (a symlink loop) fails with
+    /// `InvalidInput` rather than going on forever.
+    pub fn copy_dir_all, copy_dir_all_async, copy_dir_all_send
+    [C, D] (
+        c: &mut C,
+        from: &(impl AsRef<Path> + ?Sized),
+        to: &(impl AsRef<Path> + ?Sized),
+    ) -> io::Result<u64>
+    where
+        sync {
+            C: for<'a> crate::Provide<ReadDir<'a, D>>
+                + for<'a> crate::Inspect<Metadata<'a>>
+                + for<'a> crate::Perform<CreateDir<'a>>
+                + for<'a> crate::Perform<CopyFile<'a>>,
+            D: crate::Perform<NextEntry>,
+        }
+        async {
+            C: for<'a> crate::AsyncProvide<ReadDir<'a, D>>
+                + for<'a> crate::future::AsyncInspect<Metadata<'a>>
+                + for<'a> crate::future::AsyncPerform<CreateDir<'a>>
+                + for<'a> crate::future::AsyncPerform<CopyFile<'a>>,
+            D: crate::future::AsyncPerform<NextEntry>,
+        }
+        send {
+            C: for<'a> crate::SendProvide<ReadDir<'a, D>>
+                + for<'a> crate::future::SendInspect<Metadata<'a>>
+                + for<'a> crate::future::SendPerform<CreateDir<'a>>
+                + for<'a> crate::future::SendPerform<CopyFile<'a>>
+                + Send,
+            D: crate::future::SendPerform<NextEntry> + Send,
+        }
+    {
+        const MAX_DEPTH: usize = 256;
+        // Directories still to copy, with their depth: a stack rather than
+        // recursion, which async functions cannot do without boxing.
+        let mut pending: Vec<(PathBuf, PathBuf, usize)> =
+            Vec::from([(from.as_ref().to_path_buf(), to.as_ref().to_path_buf(), 0)]);
+        let mut copied = 0;
+        while let Some((src, dst, depth)) = pending.pop() {
+            if depth > MAX_DEPTH {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "the directory tree is too deep to copy (a symlink loop?)",
+                ));
+            }
+            call!(create_dir_all, create_dir_all_async, create_dir_all_send; (c, &dst))?;
+            let entries = acquire!(c, ReadDir::new(&src), |_, entries| {
+                let mut paths = Vec::new();
+                while let Some(path) = run!(entries, NextEntry)? {
+                    paths.push(path);
+                }
+                io::Result::Ok(paths)
+            })?;
+            for path in entries {
+                let Some(name) = path.file_name() else { continue };
+                let target = dst.join(name);
+                if ask!(c, Metadata::new(&path))?.is_dir() {
+                    pending.push((path, target, depth + 1));
+                } else {
+                    run!(c, CopyFile::new(&path, &target))?;
+                    copied += 1;
+                }
+            }
+        }
+        Ok(copied)
     }
 }
 

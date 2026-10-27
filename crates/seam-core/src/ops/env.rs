@@ -4,6 +4,9 @@
 //! which std provides only through `seam_std::env::WritableEnv`: changing
 //! the environment is unsafe while other threads may read it.
 //!
+//! Helpers: [`var_string`] reads a variable as UTF-8, and [`var_or`] falls
+//! back to a default when it is not set.
+//!
 //! ```
 //! use std::path::PathBuf;
 //! use seam_core::Inspect;
@@ -22,8 +25,11 @@
 //! ```
 
 use crate::io;
+use crate::three_ways::three_ways;
+use std::borrow::ToOwned;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
+use std::string::String;
 use std::vec::Vec;
 
 /// Read an environment variable.
@@ -142,3 +148,38 @@ crate::root::keys!(
     ['a] SetVar<'a> => SetVar,
     ['a] RemoveVar<'a> => RemoveVar,
 );
+
+three_ways! {
+    /// The variable `name` as a `String`, or `None` if it is not set. Fails
+    /// with `io::ErrorKind::InvalidData` if it is set but not UTF-8.
+    pub fn var_string, var_string_async, var_string_send
+    [C] (c: &C, name: &str) -> io::Result<Option<String>>
+    where
+        sync { C: for<'a> crate::Inspect<Var<'a>> }
+        async { C: for<'a> crate::future::AsyncInspect<Var<'a>> }
+        send { C: for<'a> crate::future::SendInspect<Var<'a>> + Sync }
+    {
+        match ask!(c, Var::new(name)) {
+            None => Ok(None),
+            Some(value) => value.into_string().map(Some).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "the environment variable is not valid UTF-8",
+                )
+            }),
+        }
+    }
+
+    /// The variable `name` as a `String`, or `default` if it is not set.
+    /// Fails with `io::ErrorKind::InvalidData` if it is set but not UTF-8.
+    pub fn var_or, var_or_async, var_or_send
+    [C] (c: &C, name: &str, default: &str) -> io::Result<String>
+    where
+        sync { C: for<'a> crate::Inspect<Var<'a>> }
+        async { C: for<'a> crate::future::AsyncInspect<Var<'a>> }
+        send { C: for<'a> crate::future::SendInspect<Var<'a>> + Sync }
+    {
+        let value = call!(var_string, var_string_async, var_string_send; (c, name))?;
+        Ok(value.unwrap_or_else(|| default.to_owned()))
+    }
+}

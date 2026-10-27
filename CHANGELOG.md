@@ -27,6 +27,21 @@ serves in brackets after the type's name, and in no other way:
 The named form is `root! { struct App { clock: Clock<fx::Now> } }`.
 Anything else is a compile error naming the four forms.
 
+### Helpers
+
+New helpers, each in sync, `_async` and `_send` forms, built only from
+existing primitives, so every backend (and `Sim`) runs them unchanged:
+
+| Module | Helpers |
+|---|---|
+| `fs` | `exists`, `is_file`, `is_dir`, `append_file`, `write_file_atomic`, `read_lines`, `remove_dir_contents`, `copy_dir_all` |
+| `time` | `sleep_until`, `elapsed`, and `tick` over an `Interval` (missed deadlines are skipped) |
+| `random` | `random_range` (unbiased), `random_bool`, `shuffle`, `choose` |
+| `env` | `var_string`, `var_or` |
+| `stdio` | `println`, `eprintln`, `read_line` (byte at a time, so it never reads past the line) |
+| `process` | `run_checked` (fails unless the exit code is 0), `output_string` |
+| `net` | `connect_any`: resolve, connect to the first address that answers, run the body once |
+
 ### Documentation
 
 - A `docs` feature adds `seam::_docs`: what seam is, usage guides, the

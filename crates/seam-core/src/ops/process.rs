@@ -19,6 +19,9 @@
 //! one while the core waits on the other, and a core cannot read two at
 //! once.
 //!
+//! On top of [`RunCommand`], [`run_checked`] fails when the command does,
+//! and [`output_string`] returns what it printed, as text.
+//!
 //! When the scope succeeds, the child's pipes are closed and the scope
 //! waits for it to exit, so no child outlives its scope. When the scope
 //! fails, panics or is cancelled, the child is killed.
@@ -73,6 +76,7 @@ use crate::three_ways::three_ways;
 use core::convert::Infallible;
 use core::marker::PhantomData;
 use std::process::Command;
+use std::string::String;
 use std::vec::Vec;
 
 /// Run a command to completion and collect its [`Output`].
@@ -271,4 +275,65 @@ three_ways! {
             }
         }
     }
+}
+
+three_ways! {
+    /// Runs `command` to completion, like [`RunCommand`], but fails with
+    /// `io::ErrorKind::Other` unless it exits with code 0. The error's
+    /// message holds the exit code and the start of its standard error.
+    pub fn run_checked, run_checked_async, run_checked_send
+    [C] (c: &mut C, command: Command) -> io::Result<Output>
+    where
+        sync { C: crate::Perform<RunCommand> }
+        async { C: crate::future::AsyncPerform<RunCommand> }
+        send { C: crate::future::SendPerform<RunCommand> + Send }
+    {
+        let output = run!(c, RunCommand(command))?;
+        if output.success() {
+            return Ok(output);
+        }
+        Err(failed(&output))
+    }
+
+    /// Runs `command` with [`run_checked`] and returns its standard output
+    /// as text, with trailing whitespace (the final newline) removed. Fails
+    /// with `io::ErrorKind::InvalidData` if the output is not UTF-8.
+    pub fn output_string, output_string_async, output_string_send
+    [C] (c: &mut C, command: Command) -> io::Result<String>
+    where
+        sync { C: crate::Perform<RunCommand> }
+        async { C: crate::future::AsyncPerform<RunCommand> }
+        send { C: crate::future::SendPerform<RunCommand> + Send }
+    {
+        let output = call!(run_checked, run_checked_async, run_checked_send; (c, command))?;
+        let mut text = String::from_utf8(output.stdout).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "the command's output is not valid UTF-8")
+        })?;
+        text.truncate(text.trim_end().len());
+        Ok(text)
+    }
+}
+
+/// The error for a command that did not succeed.
+fn failed(output: &Output) -> io::Error {
+    use core::fmt::Write as _;
+    let mut message = String::new();
+    match output.code {
+        Some(code) => {
+            let _ = write!(message, "the command exited with code {code}");
+        }
+        None => message.push_str("the command was killed by a signal"),
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        let end = stderr
+            .char_indices()
+            .nth(200)
+            .map_or(stderr.len(), |(i, _)| i);
+        let _ = write!(message, ": {}", &stderr[..end]);
+    }
+    // seam's own errors hold only static messages; this one is built at
+    // run time, so it travels as a `std::io::Error`.
+    io::Error::from(std::io::Error::other(message))
 }

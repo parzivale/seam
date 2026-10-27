@@ -5,6 +5,8 @@
 //! [`acquire`](crate::acquire)). Reading and writing a connected stream use
 //! [`io`](super::io). DNS is an effect too: resolve names with
 //! [`ResolveInto`], or with [`resolve`] (`alloc`) to get them all.
+//! [`connect_any`] resolves a name and connects to the first address that
+//! answers, which is what the example below does by hand.
 //!
 //! ```
 //! use seam_core::io;
@@ -292,4 +294,130 @@ three_ways! {
         all.truncate(n);
         Ok(all)
     }
+}
+
+/// How many resolved addresses [`connect_any`] tries.
+const CONNECT_ANY_ADDRS: usize = 8;
+
+const NO_ADDRESSES: io::Error = io::Error::new(
+    io::ErrorKind::NotFound,
+    "the host name resolved to no addresses",
+);
+
+const RAN_ONCE: &str = "connect_any runs its body once";
+
+/// Resolves `host` and connects to each of its addresses in turn (the
+/// first 8), until one connects; then lends that stream to `body`, once.
+/// Returns what `body` returns.
+///
+/// Fails with the last connection error if no address connects, and with
+/// `io::ErrorKind::NotFound` if the name has none. An error from `body`
+/// (or from closing the stream after it) is returned as is: the next
+/// address is tried only when connecting failed.
+///
+/// ```
+/// use seam_core::io;
+/// use seam_core::prelude::*;
+/// use seam_core::ops::io::{Write, write_all};
+/// use seam_core::ops::net::{ResolveInto, TcpConnect, connect_any};
+///
+/// fn notify<C, S>(c: &mut C, host: &str, port: u16, line: &str) -> io::Result<()>
+/// where
+///     C: for<'a> Inspect<ResolveInto<'a>> + Provide<TcpConnect<S>>,
+///     S: for<'a> Perform<Write<'a>>,
+/// {
+///     connect_any(c, host, port, |_c, s| write_all(s, line.as_bytes()))
+/// }
+/// ```
+pub fn connect_any<C, S, R>(
+    c: &mut C,
+    host: &str,
+    port: u16,
+    body: impl FnOnce(&mut C, &mut S) -> io::Result<R>,
+) -> io::Result<R>
+where
+    C: for<'a> crate::Inspect<ResolveInto<'a>> + crate::Provide<TcpConnect<S>>,
+{
+    let mut addrs = [SocketAddr::from(([0, 0, 0, 0], 0)); CONNECT_ANY_ADDRS];
+    let n = c.inspect(ResolveInto::new(host, port, &mut addrs))?;
+    let mut body = Some(body);
+    let mut last = NO_ADDRESSES;
+    for &addr in &addrs[..n.min(CONNECT_ANY_ADDRS)] {
+        let result = c.acquire(TcpConnect::new(addr), |c, s| {
+            body.take().expect(RAN_ONCE)(c, s)
+        });
+        match result {
+            Ok(value) => return Ok(value),
+            Err(e) if body.is_none() => return Err(e),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+/// [`connect_any`], for async capabilities.
+pub async fn connect_any_async<C, S, R>(
+    c: &mut C,
+    host: &str,
+    port: u16,
+    body: impl AsyncFnOnce(&mut C, &mut S) -> io::Result<R>,
+) -> io::Result<R>
+where
+    C: for<'a> crate::future::AsyncInspect<ResolveInto<'a>> + crate::AsyncProvide<TcpConnect<S>>,
+{
+    let mut addrs = [SocketAddr::from(([0, 0, 0, 0], 0)); CONNECT_ANY_ADDRS];
+    let n = c
+        .inspect_async(ResolveInto::new(host, port, &mut addrs))
+        .await?;
+    let mut body = Some(body);
+    let mut last = NO_ADDRESSES;
+    for &addr in &addrs[..n.min(CONNECT_ANY_ADDRS)] {
+        let result = c
+            .acquire_async(TcpConnect::new(addr), async |c, s| {
+                body.take().expect(RAN_ONCE)(c, s).await
+            })
+            .await;
+        match result {
+            Ok(value) => return Ok(value),
+            Err(e) if body.is_none() => return Err(e),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+/// [`connect_any`], for async capabilities, with a `Send` future: for
+/// multithreaded runtimes.
+pub async fn connect_any_send<C, S, R>(
+    c: &mut C,
+    host: &str,
+    port: u16,
+    body: impl AsyncFnOnce(&mut C, &mut S) -> io::Result<R>,
+) -> io::Result<R>
+where
+    C: for<'a> crate::future::SendInspect<ResolveInto<'a>>
+        + crate::SendProvide<TcpConnect<S>>
+        + Send
+        + Sync,
+{
+    use crate::SendScope;
+    let mut addrs = [SocketAddr::from(([0, 0, 0, 0], 0)); CONNECT_ANY_ADDRS];
+    let n = c
+        .inspect_send(ResolveInto::new(host, port, &mut addrs))
+        .await?;
+    let mut body = Some(body);
+    let mut last = NO_ADDRESSES;
+    for &addr in &addrs[..n.min(CONNECT_ANY_ADDRS)] {
+        let result = c
+            .acquire_send(TcpConnect::new(addr), async |c, s| {
+                body.take().expect(RAN_ONCE)(c, s).await
+            })
+            .await;
+        match result {
+            Ok(value) => return Ok(value),
+            Err(e) if body.is_none() => return Err(e),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
 }

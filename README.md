@@ -37,9 +37,11 @@ The operations are **primitives**: the smallest effects a backend must
 provide, such as `Read` and `Write` on a handle, `Open` a file, `FillRandom`.
 Everything that can be built from them is, in seam-core, as plain functions
 next to the operations: `read_exact`, `write_all`, `read_file`,
-`write_file`, `create_dir_all`, `resolve`, `random_u64`, `print`,
-`try_send`, and `BufReader` for lines (or any delimited record) from any
-handle. A backend implements only the primitives, and every helper then
+`write_file`, `append_file`, `create_dir_all`, `copy_dir_all`, `exists`,
+`resolve`, `connect_any`, `random_u64`, `random_range`, `shuffle`,
+`sleep_until`, `tick`, `var_or`, `print`, `println`, `read_line`,
+`run_checked`, `try_send`, and `BufReader` for lines (or any delimited
+record) from any handle. A backend implements only the primitives, and every helper then
 works on it, so lines come from stdin, a socket, a child or a file alike.
 
 Rust cannot be generic over sync and async, or over whether a future is

@@ -6,6 +6,10 @@
 //! [`Timeout`] wraps an operation that waits, such as a receive, a read or
 //! a join, to give up after a while.
 //!
+//! Built from `Now` and `Sleep`: [`sleep_until`] a deadline, [`elapsed`]
+//! since an instant, and [`tick`], which paces a loop by an [`Interval`]
+//! without drifting.
+//!
 //! A core that takes its clock as a capability can be tested without
 //! waiting:
 //!
@@ -266,4 +270,91 @@ crate::root::keys!(
 /// A timed operation is served by whatever serves the operation.
 impl<O: crate::Effect> crate::Effect for Timeout<O> {
     type Key = O::Key;
+}
+
+/// A deadline every `period`, from a start: what [`tick`] waits for. The
+/// deadlines are `start + n·period`, so a loop paced by it does not drift
+/// however long each turn takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Interval {
+    next: Instant,
+    period: Duration,
+}
+
+impl Interval {
+    /// Deadlines every `period`, the first at `start`. Pass `Now` for the
+    /// first tick to be at once.
+    ///
+    /// # Panics
+    ///
+    /// If `period` is zero.
+    pub fn new(start: Instant, period: Duration) -> Self {
+        assert!(!period.is_zero(), "an `Interval`'s period must not be zero");
+        Self {
+            next: start,
+            period,
+        }
+    }
+
+    /// The next deadline.
+    pub fn next(&self) -> Instant {
+        self.next
+    }
+
+    /// The time between deadlines.
+    pub fn period(&self) -> Duration {
+        self.period
+    }
+}
+
+crate::three_ways::three_ways! {
+    /// Sleeps until `deadline`, by the monotonic clock. Returns at once if it
+    /// has passed.
+    pub fn sleep_until, sleep_until_async, sleep_until_send
+    [C] (c: &mut C, deadline: Instant) -> ()
+    where
+        sync { C: crate::Inspect<Now> + crate::Perform<Sleep> }
+        async { C: crate::future::AsyncInspect<Now> + crate::future::AsyncPerform<Sleep> }
+        send { C: crate::future::SendInspect<Now> + crate::future::SendPerform<Sleep> + Send }
+    {
+        let now = ask!(c, Now);
+        if let Some(wait) = deadline.checked_duration_since(now).filter(|d| !d.is_zero()) {
+            run!(c, Sleep(wait));
+        }
+    }
+
+    /// How long it has been since `since`, by the monotonic clock: zero if
+    /// `since` is later.
+    pub fn elapsed, elapsed_async, elapsed_send
+    [C] (c: &C, since: Instant) -> Duration
+    where
+        sync { C: crate::Inspect<Now> }
+        async { C: crate::future::AsyncInspect<Now> }
+        send { C: crate::future::SendInspect<Now> + Sync }
+    {
+        ask!(c, Now).duration_since(since)
+    }
+
+    /// Waits for the interval's next deadline, and returns it. If deadlines
+    /// were missed (the loop ran long), they are skipped rather than run in
+    /// a burst: the next one is the first still to come.
+    pub fn tick, tick_async, tick_send
+    [C] (c: &mut C, interval: &mut Interval) -> Instant
+    where
+        sync { C: crate::Inspect<Now> + crate::Perform<Sleep> }
+        async { C: crate::future::AsyncInspect<Now> + crate::future::AsyncPerform<Sleep> }
+        send { C: crate::future::SendInspect<Now> + crate::future::SendPerform<Sleep> + Send }
+    {
+        let deadline = interval.next;
+        call!(sleep_until, sleep_until_async, sleep_until_send; (c, deadline));
+        let now = ask!(c, Now);
+        let mut next = deadline + interval.period;
+        if next <= now {
+            let behind = now.duration_since(next);
+            let skipped = behind.as_nanos() / interval.period.as_nanos() + 1;
+            next += interval.period * u32::try_from(skipped).unwrap_or(u32::MAX);
+        }
+        interval.next = next;
+        deadline
+    }
 }

@@ -1,10 +1,16 @@
 //! A pure test backend for seam.
 //!
-//! [`Sim`] is a simulated world. It implements the same operations as the
-//! real backends, but the clock is virtual, randomness is a seeded PRNG,
-//! the filesystem and network live in memory, commands are scripted and
-//! stdio is captured. Its only real effect is allocation. The crate is
-//! linted with seam's own `clippy.toml`, which bans the std effect APIs.
+//! A simulated `World` implements the same operations as the real
+//! backends, but the clock is virtual, randomness is a seeded PRNG, the
+//! filesystem and network live in memory, commands are scripted and stdio
+//! is captured. Its only real effect is allocation. The crate is linted
+//! with seam's own `clippy.toml`, which bans the std effect APIs.
+//!
+//! Every effect is simulated on its own key, against a state of the world
+//! (the clock, the filesystem, ...), the same way a program simulates its
+//! own effects: see the `sim` module. `world!` builds a world that grants
+//! exactly the effects it lists, and `Sim` is the world of every built-in
+//! one.
 //!
 //! Everything is deterministic: the same seed and the same calls give the
 //! same results, in the same order.
@@ -32,8 +38,9 @@
 //!
 //! # Setting up and checking the world
 //!
-//! `Sim` has plain methods, outside the capability system, for the test to
-//! arrange the world before the core runs and inspect it afterwards:
+//! Every world has plain methods, outside the capability system, for the
+//! test to arrange the world before the core runs and inspect it
+//! afterwards:
 //!
 //! | Group | Arrange | Assert |
 //! |---|---|---|
@@ -46,9 +53,9 @@
 //! | signal | `raise_ctrl_c` | |
 //!
 //! Each row needs its feature. The same setup can be written as a world
-//! file, in KDL, and loaded with `Sim::from_world`; `Sim::check_world`
-//! checks the world afterwards against expectations in the same format
-//! (files, output, variables, commands run, the clock). See the
+//! file, in KDL, and loaded with `Sim::from_world` or `load_world`;
+//! `check_world` checks the world afterwards against expectations in the
+//! same format, and `to_world` writes the whole world out in it. See the
 //! `world_file` module.
 //!
 //! ```
@@ -91,14 +98,15 @@
 //!
 //! # Async cores
 //!
-//! `Sim` is `Send + Sync`, and its operations are synchronous, so async cores
-//! (including ones with `Send` bounds, written for Tokio) run in it through
-//! seam's blanket impls and [`block_on`](seam_core::future::block_on). Every
-//! future is ready on its first poll.
+//! A world is `Send + Sync`, and implements the async and `Send` forms of
+//! its operations, so async cores (including ones with `Send` bounds,
+//! written for Tokio) run in it through
+//! [`block_on`](seam_core::future::block_on). Every future is ready on its
+//! first poll.
 //!
 //! # Blocking operations
 //!
-//! Used directly, nothing in `Sim` waits. An operation that would block on
+//! Used directly, nothing in a world waits. An operation that would block on
 //! a real system (reading an empty socket, accepting with no pending
 //! connection, waiting for Ctrl-C that was never raised) fails with
 //! `io::ErrorKind::WouldBlock` instead, and `Sleep` advances the virtual
@@ -120,18 +128,16 @@
 //!
 //! # Features
 //!
-//! `time` and `random` work without std. `fs`, `net`, `env`, `process`,
-//! `io-std`, `signal` and `sync` need std's types, but still make no system
-//! calls of their own. `rt` adds the deterministic runtime and threads.
-//! `full` turns on everything.
+//! Worlds need std. Without it, `time` and `random` give a small `Sim` of
+//! a virtual clock and seeded random numbers, with no allocation. `fs`,
+//! `net`, `env`, `process`, `io-std`, `signal` and `sync` need std's types,
+//! but still make no system calls of their own. `rt` adds the
+//! deterministic runtime and threads. `full` turns on everything.
 #![forbid(unsafe_code)]
 #![no_std]
 
 #[cfg(feature = "std")]
 extern crate std;
-// So that `sim_world` names this crate as an outside crate would.
-#[cfg(feature = "std")]
-extern crate self as seam_test;
 
 #[cfg(feature = "env")]
 mod env;
@@ -151,103 +157,57 @@ pub mod rt;
 mod signal;
 #[cfg(feature = "std")]
 pub mod sim;
-#[cfg(feature = "std")]
-mod sim_world;
 #[cfg(feature = "io-std")]
 pub mod stdio;
 #[cfg(feature = "sync")]
 pub mod sync;
 #[cfg(feature = "rt")]
+mod tasks;
+#[cfg(feature = "rt")]
 pub mod threads;
-#[cfg(feature = "time")]
+#[cfg(any(feature = "time", feature = "fs"))]
 mod time;
 #[cfg(all(feature = "time", feature = "std"))]
 mod timeouts;
-mod world;
 #[cfg(feature = "std")]
 pub mod world_file;
 
 #[cfg(feature = "process")]
 pub use process::{Exited, Invocation, catch_exit};
 #[cfg(feature = "std")]
-pub use world_file::{Failure, World, WorldError, WorldMismatch, check_world, load_world};
+pub use sim::{Sim, World};
+#[cfg(feature = "std")]
+pub use world_file::{Failure, WorldError, WorldMismatch};
 
-/// A simulated world: the test backend's capability.
-///
-/// Create one per test. Set up the world it starts in (files, variables,
-/// scripted commands, stdin), hand it to the core in place of a real
-/// backend, then assert on what the core left behind.
-///
-/// With std, a `Sim` is a handle: every clone is the same world, so a part
-/// of a root that works over the simulation (a store that keeps its data in
-/// a simulated file, say) is given a clone, and the test asserts through
-/// any of them. Without std, a `Sim` is the world itself, and is not
-/// `Clone`.
-///
-/// ```
-/// # #[cfg(feature = "fs")] {
-/// let sim = seam_test::Sim::new();
-/// let mut other = sim.clone();
-/// other.add_file("/tmp/a", "hi");
-/// assert_eq!(sim.file("/tmp/a").unwrap(), b"hi");
-/// # }
-/// ```
-#[cfg_attr(feature = "std", derive(Clone))]
+/// A simulated world without std: a virtual clock and seeded random
+/// numbers. With std, `Sim` is the world of every built-in
+/// effect.
+#[cfg(not(feature = "std"))]
+#[derive(Debug, Default)]
 pub struct Sim {
-    #[cfg(feature = "std")]
-    world: world::Shared,
-    #[cfg(not(feature = "std"))]
-    world: world::World,
+    #[cfg(feature = "time")]
+    clock: core::time::Duration,
+    #[cfg(feature = "random")]
+    rng: random::SplitMix64,
 }
 
+#[cfg(not(feature = "std"))]
 impl Sim {
-    /// A fresh world with seed 0.
-    ///
-    /// The clock reads `Instant::EPOCH`,
-    /// the wall clock reads the Unix epoch, the current directory is `/`, and
-    /// the filesystem holds an empty `/` and `/tmp`.
+    /// A fresh world with seed 0. The clock reads `Instant::EPOCH`.
     pub fn new() -> Self {
         Self::with_seed(0)
     }
 
     /// A fresh world whose random numbers come from `seed`.
     pub fn with_seed(seed: u64) -> Self {
-        #[allow(unused_mut)]
-        let mut sim = Self {
-            #[cfg(feature = "std")]
-            world: world::Shared::new(world::World::new(seed)),
-            #[cfg(not(feature = "std"))]
-            world: world::World::new(seed),
-        };
-        #[cfg(feature = "fs")]
-        sim.add_dir("/tmp");
-        sim
-    }
-
-    /// Reads the world.
-    #[cfg(feature = "std")]
-    #[allow(dead_code)]
-    fn state(&self) -> std::sync::MutexGuard<'_, world::World> {
-        self.world.lock()
-    }
-
-    /// Changes the world.
-    #[cfg(feature = "std")]
-    #[allow(dead_code)]
-    fn state_mut(&mut self) -> std::sync::MutexGuard<'_, world::World> {
-        self.world.lock()
-    }
-
-    #[cfg(not(feature = "std"))]
-    #[allow(dead_code)]
-    fn state(&self) -> &world::World {
-        &self.world
-    }
-
-    #[cfg(not(feature = "std"))]
-    #[allow(dead_code)]
-    fn state_mut(&mut self) -> &mut world::World {
-        &mut self.world
+        #[cfg(not(feature = "random"))]
+        let _ = seed;
+        Self {
+            #[cfg(feature = "time")]
+            clock: core::time::Duration::ZERO,
+            #[cfg(feature = "random")]
+            rng: random::SplitMix64(seed),
+        }
     }
 
     /// Runs `core` against this world and returns the world, for chaining
@@ -258,33 +218,10 @@ impl Sim {
     }
 }
 
-#[cfg(feature = "rt")]
-impl Sim {
-    /// Sets what `AvailableParallelism` reports. The default is 1.
-    pub fn set_parallelism(&mut self, n: core::num::NonZeroUsize) -> &mut Self {
-        self.world.lock().parallelism = n;
-        self
-    }
-}
-
-#[cfg(feature = "rt")]
-impl seam_core::Inspect<seam_core::ops::task::AvailableParallelism> for Sim {
-    fn inspect(&self, _: seam_core::ops::task::AvailableParallelism) -> core::num::NonZeroUsize {
-        self.world.lock().parallelism
-    }
-}
-
-impl Default for Sim {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl core::fmt::Debug for Sim {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Sim").finish_non_exhaustive()
-    }
-}
+// Without std, `Sim` implements its operations itself, and opts in to
+// seam's lifts.
+#[cfg(not(feature = "std"))]
+impl seam_core::Capability for Sim {}
 
 /// Builds an `io::Error` with a message that names the simulation.
 #[cfg(any(
@@ -296,6 +233,3 @@ impl core::fmt::Debug for Sim {
 fn error(kind: seam_core::io::ErrorKind, msg: &'static str) -> seam_core::io::Error {
     seam_core::io::Error::new(kind, msg)
 }
-
-// Every capability type opts in to seam's lifts.
-impl seam_core::Capability for Sim {}

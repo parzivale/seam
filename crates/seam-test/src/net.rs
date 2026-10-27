@@ -1,6 +1,6 @@
 //! The in-memory network, and the socket handles.
 //!
-//! Sockets bound in one [`Sim`] can reach each other. TCP connections are
+//! Sockets bound in one [`World`] can reach each other. TCP connections are
 //! pairs of byte pipes, and UDP datagrams to an address nobody has bound are
 //! dropped, as on a real network. Nothing blocks: reading an empty stream,
 //! or accepting with no connection pending, fails with `WouldBlock`.
@@ -21,8 +21,11 @@ use seam_core::ops::net::{
 };
 use seam_core::{Closing, Inspect, Opening, Perform};
 
-use crate::world::Shared;
-use crate::{Sim, error};
+use seam_core::effects as fx;
+
+use crate::error;
+use crate::sim::{Inner, Shared, SimState, Simulate, Simulated, States, World};
+use crate::world_file::{self, Node};
 
 /// One direction of a TCP connection.
 #[derive(Debug, Default)]
@@ -42,8 +45,11 @@ struct Pending {
     peer: SocketAddr,
 }
 
+/// The simulated network: a hosts table, and the sockets bound in it.
+///
+/// Its block is `net { host NAME IP }`. Written out, it lists the hosts.
 #[derive(Debug)]
-pub(crate) struct Net {
+pub struct Net {
     hosts: BTreeMap<String, Vec<IpAddr>>,
     next_port: u16,
     listeners: BTreeMap<SocketAddr, VecDeque<Pending>>,
@@ -71,10 +77,10 @@ impl TcpStream {
     #[cfg_attr(not(feature = "rt"), allow(dead_code))]
     pub(crate) fn poll_readable(&self, waker: &Waker) -> bool {
         let mut world = self.world.lock();
-        let pipe = &world.net.pipes[self.rx];
+        let pipe = &world.net().pipes[self.rx];
         let ready = !pipe.bytes.is_empty() || pipe.writer_closed || pipe.reader_closed;
         if !ready {
-            world.net.wait(WaitKey::Read(self.rx), waker);
+            world.net().wait(WaitKey::Read(self.rx), waker);
         }
         ready
     }
@@ -87,12 +93,12 @@ impl TcpListener {
     pub(crate) fn poll_acceptable(&self, waker: &Waker) -> bool {
         let mut world = self.world.lock();
         let ready = world
-            .net
+            .net()
             .listeners
             .get(&self.addr)
             .is_some_and(|b| !b.is_empty());
         if !ready {
-            world.net.wait(WaitKey::Accept(self.addr), waker);
+            world.net().wait(WaitKey::Accept(self.addr), waker);
         }
         ready
     }
@@ -104,9 +110,13 @@ impl UdpSocket {
     #[cfg_attr(not(feature = "rt"), allow(dead_code))]
     pub(crate) fn poll_receivable(&self, waker: &Waker) -> bool {
         let mut world = self.world.lock();
-        let ready = world.net.udp.get(&self.addr).is_some_and(|q| !q.is_empty());
+        let ready = world
+            .net()
+            .udp
+            .get(&self.addr)
+            .is_some_and(|q| !q.is_empty());
         if !ready {
-            world.net.wait(WaitKey::Recv(self.addr), waker);
+            world.net().wait(WaitKey::Recv(self.addr), waker);
         }
         ready
     }
@@ -188,13 +198,12 @@ impl Net {
     }
 }
 
-impl Sim {
+impl<G> World<G> {
     /// Makes `name` resolve to `ip`, in addition to any addresses it
     /// already has. `localhost` resolves to 127.0.0.1 by default.
     pub fn add_host(&mut self, name: impl Into<String>, ip: impl Into<IpAddr>) -> &mut Self {
-        self.world
-            .lock()
-            .net
+        self.lock()
+            .net()
             .hosts
             .entry(name.into())
             .or_default()
@@ -203,16 +212,25 @@ impl Sim {
     }
 }
 
-impl Sim {
+impl Inner {
+    /// The network.
+    pub(crate) fn net(&mut self) -> &mut Net {
+        self.state::<Net>()
+    }
+
     /// Calls `each` with every address `host` resolves to.
-    fn resolve(&self, host: &str, port: u16, mut each: impl FnMut(SocketAddr)) -> io::Result<()> {
+    fn resolve(
+        &mut self,
+        host: &str,
+        port: u16,
+        mut each: impl FnMut(SocketAddr),
+    ) -> io::Result<()> {
         if let Ok(ip) = host.parse::<IpAddr>() {
             each(SocketAddr::new(ip, port));
             return Ok(());
         }
-        let world = self.world.lock();
-        let ips = world
-            .net
+        let ips = self
+            .net()
             .hosts
             .get(host)
             .ok_or_else(|| error(ErrorKind::NotFound, "unknown host"))?;
@@ -221,10 +239,10 @@ impl Sim {
     }
 }
 
-impl Inspect<ResolveInto<'_>> for Sim {
-    fn inspect(&self, op: ResolveInto<'_>) -> io::Result<usize> {
+impl Simulate<ResolveInto<'_>> for fx::ResolveInto {
+    fn run(states: &mut States<'_>, op: ResolveInto<'_>) -> io::Result<usize> {
         let mut n = 0;
-        self.resolve(op.host, op.port, |a| {
+        states.inner().resolve(op.host, op.port, |a| {
             if let Some(slot) = op.out.get_mut(n) {
                 *slot = a;
             }
@@ -234,33 +252,36 @@ impl Inspect<ResolveInto<'_>> for Sim {
     }
 }
 
-impl Perform<Opening<TcpBind<TcpListener>>> for Sim {
-    fn perform(
-        &mut self,
+impl Simulate<Opening<TcpBind<TcpListener>>> for fx::TcpBind {
+    fn run(
+        states: &mut States,
         Opening(op, _): Opening<TcpBind<TcpListener>>,
     ) -> io::Result<TcpListener> {
-        let mut world = self.world.lock();
-        let net = &mut world.net;
+        let shared = states.shared();
+        let net = states.inner().net();
         let addr = net.assign(op.addr, Net::tcp_taken)?;
         net.tcp_ports.insert(addr, ());
         net.listeners.insert(addr, VecDeque::new());
         Ok(TcpListener {
-            world: self.world.clone(),
+            world: shared,
             addr,
         })
     }
 }
 
-impl Perform<Closing<TcpBind<TcpListener>>> for Sim {
-    fn perform(&mut self, Closing(_, _): Closing<TcpBind<TcpListener>>) -> io::Result<()> {
+impl Simulate<Closing<TcpBind<TcpListener>>> for fx::TcpBind {
+    fn run(_: &mut States<'_>, Closing(_, _): Closing<TcpBind<TcpListener>>) -> io::Result<()> {
         Ok(())
     }
 }
 
-impl Perform<Opening<TcpConnect<TcpStream>>> for Sim {
-    fn perform(&mut self, Opening(op, _): Opening<TcpConnect<TcpStream>>) -> io::Result<TcpStream> {
-        let mut world = self.world.lock();
-        let net = &mut world.net;
+impl Simulate<Opening<TcpConnect<TcpStream>>> for fx::TcpConnect {
+    fn run(
+        states: &mut States,
+        Opening(op, _): Opening<TcpConnect<TcpStream>>,
+    ) -> io::Result<TcpStream> {
+        let shared = states.shared();
+        let net = states.inner().net();
         let Some(&listener) = net.listeners.keys().find(|&&b| reaches(b, op.addr)) else {
             return Err(error(ErrorKind::ConnectionRefused, "connection refused"));
         };
@@ -283,7 +304,7 @@ impl Perform<Opening<TcpConnect<TcpStream>>> for Sim {
         });
         net.wake(WaitKey::Accept(listener));
         Ok(TcpStream {
-            world: self.world.clone(),
+            world: shared,
             rx: down,
             tx: up,
             local,
@@ -293,26 +314,32 @@ impl Perform<Opening<TcpConnect<TcpStream>>> for Sim {
     }
 }
 
-impl Perform<Closing<TcpConnect<TcpStream>>> for Sim {
-    fn perform(&mut self, Closing(stream, _): Closing<TcpConnect<TcpStream>>) -> io::Result<()> {
+impl Simulate<Closing<TcpConnect<TcpStream>>> for fx::TcpConnect {
+    fn run(
+        _: &mut States<'_>,
+        Closing(stream, _): Closing<TcpConnect<TcpStream>>,
+    ) -> io::Result<()> {
         stream.commit()
     }
 }
 
-impl Perform<Opening<UdpBind<UdpSocket>>> for Sim {
-    fn perform(&mut self, Opening(op, _): Opening<UdpBind<UdpSocket>>) -> io::Result<UdpSocket> {
-        let mut world = self.world.lock();
-        let addr = world.net.assign(op.addr, Net::udp_taken)?;
-        world.net.udp.insert(addr, VecDeque::new());
+impl Simulate<Opening<UdpBind<UdpSocket>>> for fx::UdpBind {
+    fn run(
+        states: &mut States,
+        Opening(op, _): Opening<UdpBind<UdpSocket>>,
+    ) -> io::Result<UdpSocket> {
+        let net = states.inner().net();
+        let addr = net.assign(op.addr, Net::udp_taken)?;
+        net.udp.insert(addr, VecDeque::new());
         Ok(UdpSocket {
-            world: self.world.clone(),
+            world: states.shared(),
             addr,
         })
     }
 }
 
-impl Perform<Closing<UdpBind<UdpSocket>>> for Sim {
-    fn perform(&mut self, Closing(_, _): Closing<UdpBind<UdpSocket>>) -> io::Result<()> {
+impl Simulate<Closing<UdpBind<UdpSocket>>> for fx::UdpBind {
+    fn run(_: &mut States<'_>, Closing(_, _): Closing<UdpBind<UdpSocket>>) -> io::Result<()> {
         Ok(())
     }
 }
@@ -349,7 +376,7 @@ pub struct UdpSocket {
 impl TcpStream {
     fn read_with<R>(&mut self, f: impl FnOnce(&mut VecDeque<u8>) -> R) -> io::Result<R> {
         let mut world = self.world.lock();
-        let pipe = &mut world.net.pipes[self.rx];
+        let pipe = &mut world.net().pipes[self.rx];
         if pipe.bytes.is_empty() && !pipe.writer_closed && !pipe.reader_closed {
             return Err(error(
                 ErrorKind::WouldBlock,
@@ -361,7 +388,7 @@ impl TcpStream {
 
     fn write_bytes(&mut self, buf: &[u8]) -> io::Result<usize> {
         let mut world = self.world.lock();
-        let pipe = &mut world.net.pipes[self.tx];
+        let pipe = &mut world.net().pipes[self.tx];
         if pipe.writer_closed {
             return Err(error(
                 ErrorKind::BrokenPipe,
@@ -375,7 +402,7 @@ impl TcpStream {
             ));
         }
         pipe.bytes.extend(buf);
-        world.net.wake(WaitKey::Read(self.tx));
+        world.net().wake(WaitKey::Read(self.tx));
         Ok(buf.len())
     }
 }
@@ -407,7 +434,7 @@ impl Perform<Flush> for TcpStream {
 impl Perform<Shutdown> for TcpStream {
     fn perform(&mut self, op: Shutdown) -> io::Result<()> {
         let mut world = self.world.lock();
-        let pipes = &mut world.net.pipes;
+        let pipes = &mut world.net().pipes;
         if matches!(op.0, How::Read | How::Both) {
             pipes[self.rx].reader_closed = true;
             pipes[self.rx].bytes.clear();
@@ -415,8 +442,8 @@ impl Perform<Shutdown> for TcpStream {
         if matches!(op.0, How::Write | How::Both) {
             pipes[self.tx].writer_closed = true;
         }
-        world.net.wake(WaitKey::Read(self.rx));
-        world.net.wake(WaitKey::Read(self.tx));
+        world.net().wake(WaitKey::Read(self.rx));
+        world.net().wake(WaitKey::Read(self.tx));
         Ok(())
     }
 }
@@ -424,7 +451,7 @@ impl Perform<Shutdown> for TcpStream {
 impl Drop for TcpStream {
     fn drop(&mut self) {
         let mut world = self.world.lock();
-        let net = &mut world.net;
+        let net = world.net();
         net.pipes[self.rx].reader_closed = true;
         net.pipes[self.rx].bytes.clear();
         net.pipes[self.tx].writer_closed = true;
@@ -440,7 +467,7 @@ impl Perform<Opening<Accept<TcpStream>>> for TcpListener {
     fn perform(&mut self, Opening(_, _): Opening<Accept<TcpStream>>) -> io::Result<TcpStream> {
         let mut world = self.world.lock();
         let backlog = world
-            .net
+            .net()
             .listeners
             .get_mut(&self.addr)
             .expect("listener is registered while it lives");
@@ -471,7 +498,7 @@ impl Perform<Closing<Accept<TcpStream>>> for TcpListener {
 impl Drop for TcpListener {
     fn drop(&mut self) {
         let mut world = self.world.lock();
-        let net = &mut world.net;
+        let net = world.net();
         net.tcp_ports.remove(&self.addr);
         // Connections nobody accepted are reset.
         for p in net.listeners.remove(&self.addr).into_iter().flatten() {
@@ -488,13 +515,13 @@ impl Perform<SendTo<'_>> for UdpSocket {
     fn perform(&mut self, op: SendTo<'_>) -> io::Result<usize> {
         let mut world = self.world.lock();
         if let Some((&bound, queue)) = world
-            .net
+            .net()
             .udp
             .iter_mut()
             .find(|(b, _)| reaches(**b, op.addr))
         {
             queue.push_back((op.buf.to_vec(), self.addr));
-            world.net.wake(WaitKey::Recv(bound));
+            world.net().wake(WaitKey::Recv(bound));
         }
         Ok(op.buf.len())
     }
@@ -505,7 +532,7 @@ impl Perform<RecvFrom<'_>> for UdpSocket {
     fn perform(&mut self, op: RecvFrom<'_>) -> io::Result<(usize, SocketAddr)> {
         let mut world = self.world.lock();
         let queue = world
-            .net
+            .net()
             .udp
             .get_mut(&self.addr)
             .expect("socket is registered while it lives");
@@ -523,7 +550,7 @@ impl Perform<RecvFrom<'_>> for UdpSocket {
 
 impl Drop for UdpSocket {
     fn drop(&mut self) {
-        self.world.lock().net.udp.remove(&self.addr);
+        self.world.lock().net().udp.remove(&self.addr);
     }
 }
 
@@ -562,6 +589,55 @@ impl TcpStream {
     /// Shuts down the write half, so the peer sees end of input.
     pub(crate) fn commit(mut self) -> io::Result<()> {
         self.perform(Shutdown(How::Write))
+    }
+}
+
+macro_rules! net_keys {
+    ($($key:ident),*) => {$(
+        impl Simulated for fx::$key {
+            type State = Net;
+        }
+    )*};
+}
+net_keys!(ResolveInto, TcpBind, TcpConnect, UdpBind);
+
+impl SimState for Net {
+    const BLOCKS: &'static [&'static str] = &["net"];
+
+    /// `host NAME IP` adds an address `NAME` resolves to.
+    fn load(&mut self, block: &Node) -> world_file::Result<()> {
+        for child in block.block()? {
+            if child.name() != "host" {
+                return Err(child.unknown("`net`", &["host"]));
+            }
+            child.no_children()?;
+            child.props_only(&[])?;
+            child.arity(2, Some(2), "a host name and an IP address")?;
+            let name = child.args()[0].string("the host name")?;
+            let ip = child.args()[1].string("the IP address")?;
+            let ip: IpAddr = ip
+                .parse()
+                .map_err(|_| child.args()[1].error(std::format!("`{ip}` is not an IP address")))?;
+            let ips = self.hosts.entry(name.into()).or_default();
+            if !ips.contains(&ip) {
+                ips.push(ip);
+            }
+        }
+        Ok(())
+    }
+
+    fn to_world(&self) -> Vec<Node> {
+        let mut block = Node::new("net");
+        for (name, ips) in &self.hosts {
+            for ip in ips {
+                block = block.with_child(
+                    Node::new("host")
+                        .with_arg(name)
+                        .with_arg(std::string::ToString::to_string(ip)),
+                );
+            }
+        }
+        std::vec![block]
     }
 }
 

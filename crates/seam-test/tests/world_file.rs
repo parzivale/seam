@@ -287,16 +287,32 @@ fn every_failure_is_reported_with_its_line() {
     }
 }
 
+/// Every block can be checked, as a subset of the world: the network's
+/// hosts too.
+#[cfg(feature = "net")]
+#[test]
+fn network_expectations_are_a_subset() {
+    let mut sim = Sim::new();
+    sim.add_host("example.com", std::net::IpAddr::from([93, 184, 216, 34]));
+    sim.check_world(r#"net { host example.com "93.184.216.34" }"#)
+        .unwrap();
+    let mismatch = sim
+        .check_world(r#"net { host example.com "1.2.3.4" }"#)
+        .unwrap_err();
+    assert_eq!(
+        mismatch.failures[0].message,
+        r#"expected `host example.com "1.2.3.4"`, found `host example.com "93.184.216.34"`"#
+    );
+}
+
 #[test]
 fn invalid_expectations_are_reported_too() {
     let sim = Sim::new();
-    let mismatch = sim
-        .check_world("net { host example.com \"1.2.3.4\" }")
-        .unwrap_err();
+    let mismatch = sim.check_world("env { set USER ada }").unwrap_err();
     assert!(
         mismatch
             .to_string()
-            .contains("does not change during a run"),
+            .contains("invalid expectations (column 7): unknown `set` in `env` expectations"),
         "{mismatch}"
     );
     let mismatch = sim.check_world("fs { fiel \"/a\" \"x\" }").unwrap_err();
@@ -378,10 +394,11 @@ fn env_expectations_check_what_a_core_changed() {
     );
 }
 
-// ---- a root's parts, each reading its own blocks ----
+// ---- states of a program's own, each reading its own blocks ----
 
 use seam_core::{Effect, Operation, effects as fx};
-use seam_test::world_file::{Failure, Node, World, WorldError};
+use seam_test::sim::{SimState, Simulate, Simulated, States};
+use seam_test::world_file::{Node, WorldError};
 
 struct Bind(String, String);
 impl Operation for Bind {
@@ -394,12 +411,6 @@ impl Effect for Bind {
 /// A fake mount table, with a `mounts` block of its own.
 #[derive(Default)]
 struct Mounts(Vec<(String, String)>);
-impl seam_core::Capability for Mounts {}
-impl Perform<Bind> for Mounts {
-    fn perform(&mut self, op: Bind) {
-        self.0.push((op.0, op.1));
-    }
-}
 
 fn pair(node: &Node) -> Result<(String, String), WorldError> {
     node.arity(2, Some(2), "a source and a target")?;
@@ -409,7 +420,7 @@ fn pair(node: &Node) -> Result<(String, String), WorldError> {
     ))
 }
 
-impl World for Mounts {
+impl SimState for Mounts {
     const BLOCKS: &'static [&'static str] = &["mounts"];
 
     fn load(&mut self, block: &Node) -> Result<(), WorldError> {
@@ -422,88 +433,107 @@ impl World for Mounts {
         Ok(())
     }
 
-    fn check(&self, block: &Node, failures: &mut Vec<Failure>) -> Result<(), WorldError> {
-        for node in block.block()? {
-            let want = pair(node)?;
-            if !self.0.contains(&want) {
-                failures.push(node.failure(format!("{} is not bound to {}", want.1, want.0)));
-            }
+    fn to_world(&self) -> Vec<Node> {
+        let mut block = Node::new("mounts");
+        for (from, to) in &self.0 {
+            block = block.with_child(Node::new("bind").with_arg(from).with_arg(to));
         }
-        Ok(())
+        vec![block]
+    }
+}
+
+impl Simulated for Bind {
+    type State = Mounts;
+}
+impl Simulate<Bind> for Bind {
+    fn run(states: &mut States, op: Bind) {
+        states.state::<Mounts>().0.push((op.0, op.1));
     }
 }
 
 #[cfg(all(feature = "fs", feature = "env", feature = "io-std"))]
 #[test]
-fn one_world_file_sets_up_and_checks_every_part() {
-    let mut root = seam_core::root![
-        Sim < fx::Var,
-        fx::View,
-        fx::OpenStdout > ::new(),
-        Mounts<Bind>::default(),
-    ];
-    seam_test::load_world::<(fx::Var, fx::View, fx::OpenStdout, Bind), _>(
-        &mut root,
-        r#"
-        env { var USER ada }
-        fs { file "/etc/binds" "x" }
-        mounts { bind "/srv/a" "/mnt/a" }
-        "#,
-    )
-    .unwrap();
-    // Set up once, though the `Sim` serves three of the keys.
-    assert_eq!(root.part::<fx::View>().file("/etc/binds").unwrap(), b"x");
-    assert_eq!(root.part::<Bind>().0.len(), 1);
+fn one_world_file_sets_up_and_checks_every_state() {
+    let mut world = seam_test::world![fx::Var, fx::View, fx::OpenStdout, Bind];
+    world
+        .load_world(
+            r#"
+            env { var USER ada }
+            fs { file "/etc/binds" "x" }
+            mounts { bind "/srv/a" "/mnt/a" }
+            "#,
+        )
+        .unwrap();
+    assert_eq!(world.file("/etc/binds").unwrap(), b"x");
+    world.state(|m: &mut Mounts| assert_eq!(m.0.len(), 1));
 
-    root.perform(Bind("/srv/b".into(), "/mnt/b".into()));
-    seam_test::check_world::<(fx::View, Bind), _>(
-        &root,
-        r#"
-        fs { file "/etc/binds" "x" }
-        mounts { bind "/srv/a" "/mnt/a"; bind "/srv/b" "/mnt/b" }
-        "#,
-    )
-    .unwrap();
+    world.perform(Bind("/srv/b".into(), "/mnt/b".into()));
+    world
+        .check_world(
+            r#"
+            fs { file "/etc/binds" "x" }
+            mounts { bind "/srv/a" "/mnt/a"; bind "/srv/b" "/mnt/b" }
+            "#,
+        )
+        .unwrap();
 
-    let mismatch = seam_test::check_world::<(fx::View, Bind), _>(
-        &root,
-        "mounts { bind \"/srv/c\" \"/mnt/c\" }",
-    )
-    .unwrap_err();
+    // `Mounts` has no `check` of its own: the default is a subset of its
+    // `to_world`.
+    let mismatch = world
+        .check_world("mounts { bind \"/srv/c\" \"/mnt/c\" }")
+        .unwrap_err();
     assert_eq!(
         mismatch.failures[0].message,
-        "/mnt/c is not bound to /srv/c"
+        "expected `bind \"/srv/c\" \"/mnt/c\"`, found nothing"
     );
 }
 
 #[cfg(feature = "fs")]
 #[test]
-fn a_block_no_listed_part_reads_is_an_error() {
-    let mut root = seam_core::root![Sim<fx::View>::new(), Mounts<Bind>::default(),];
-    // `Bind` is not listed, so nothing reads `mounts`.
-    let err = seam_test::load_world::<(fx::View,), _>(&mut root, "mounts { }").unwrap_err();
-    assert!(
-        err.message
-            .starts_with("no part of the root reads `mounts`"),
-        "{err}"
+fn a_block_no_state_reads_is_an_error() {
+    let mut world = seam_test::world![fx::View];
+    let err = world.load_world("mounts { }").unwrap_err();
+    assert_eq!(
+        err.message,
+        "unknown `mounts` in the world (expected one of: `fs`)"
     );
-    let err = seam_test::load_world::<(fx::View, Bind), _>(&mut root, "mount { }").unwrap_err();
+    let mut world = seam_test::world![fx::View, Bind];
+    let err = world.load_world("mount { }").unwrap_err();
     assert!(err.message.contains("did you mean `mounts`?"), "{err}");
 }
 
-#[cfg(feature = "fs")]
-#[test]
-fn two_parts_reading_one_block_is_an_error() {
-    let mut root = seam_core::root![Sim<fx::View>::new(), Sim<fx::Metadata>::new(),];
-    let err =
-        seam_test::load_world::<(fx::View, fx::Metadata), _>(&mut root, "fs { }").unwrap_err();
-    assert!(
-        err.message.contains("two parts of the root read `fs`"),
-        "{err}"
-    );
+/// Another state that reads `mounts`.
+#[derive(Default)]
+struct Rival;
+impl SimState for Rival {
+    const BLOCKS: &'static [&'static str] = &["mounts"];
+    fn load(&mut self, _: &Node) -> Result<(), WorldError> {
+        Ok(())
+    }
+    fn to_world(&self) -> Vec<Node> {
+        Vec::new()
+    }
 }
 
-/// Up to 32 effects can be listed.
+struct Contest;
+impl Operation for Contest {
+    type Outcome = ();
+}
+impl Effect for Contest {
+    type Key = Contest;
+}
+impl Simulated for Contest {
+    type State = Rival;
+}
+
+#[test]
+fn two_states_reading_one_block_is_an_error() {
+    let mut world = seam_test::world![Bind, Contest];
+    let err = world.load_world("mounts { }").unwrap_err();
+    assert_eq!(err.message, "two parts of the world read `mounts`");
+}
+
+/// The whole simulated world, written out, loads back to the same world.
 #[cfg(all(
     feature = "fs",
     feature = "env",
@@ -513,54 +543,33 @@ fn two_parts_reading_one_block_is_an_error() {
     feature = "signal",
     feature = "io-std",
     feature = "time",
-    feature = "sync"
+    feature = "rt"
 ))]
 #[test]
-fn thirty_two_effects() {
-    type All = (
-        fx::Var,
-        fx::SetVar,
-        fx::RemoveVar,
-        fx::Args,
-        fx::CurrentDir,
-        fx::TempDir,
-        fx::Metadata,
-        fx::CreateDir,
-        fx::RemoveFile,
-        fx::RemoveDir,
-        fx::Rename,
-        fx::CopyFile,
-        fx::CreateAtomic,
-        fx::View,
-        fx::ReadDir,
-        fx::ResolveInto,
-        fx::TcpConnect,
-        fx::TcpBind,
-        fx::UdpBind,
-        fx::RunCommand,
-        fx::SpawnChild,
-        fx::Exit,
-        fx::FillRandom,
-        fx::CtrlC,
-        fx::OpenStdin,
-        fx::OpenStdout,
-        fx::OpenStderr,
-        fx::Now,
-        fx::Sleep,
-        fx::WallClock,
-        fx::Channel,
-        fx::Share,
-    );
-    let mut root = seam_core::root![
-        Sim<
-            fx::Var, fx::SetVar, fx::RemoveVar, fx::Args, fx::CurrentDir, fx::TempDir,
-            fx::Metadata, fx::CreateDir, fx::RemoveFile, fx::RemoveDir, fx::Rename, fx::CopyFile,
-            fx::CreateAtomic, fx::View, fx::ReadDir, fx::ResolveInto, fx::TcpConnect, fx::TcpBind,
-            fx::UdpBind, fx::RunCommand, fx::SpawnChild, fx::Exit, fx::FillRandom, fx::CtrlC,
-            fx::OpenStdin, fx::OpenStdout, fx::OpenStderr, fx::Now, fx::Sleep, fx::WallClock,
-            fx::Channel, fx::Share,
-        >::new(),
-    ];
-    seam_test::load_world::<All, _>(&mut root, "env { var USER ada }").unwrap();
-    seam_test::check_world::<All, _>(&root, "env { var USER ada }").unwrap();
+fn a_sim_round_trips_through_to_world() {
+    let mut sim = Sim::from_world(
+        r#"
+        seed 7
+        parallelism 4
+        clock now=3 wall=1000
+        env { var USER ada; args app "-v"; cwd "/home/ada" }
+        fs { dir "/home/ada" { file notes.txt "buy milk" }; file "/bin.dat" hex="00ff" }
+        net { host example.com "93.184.216.34" }
+        process { command git status exit=0 stdout="clean\n" }
+        stdio { stdin "y\n" }
+        signal { ctrl-c 2 }
+        "#,
+    )
+    .unwrap();
+    sim.perform(seam_core::ops::process::RunCommand({
+        let mut cmd = std::process::Command::new("git");
+        cmd.arg("status");
+        cmd
+    }))
+    .unwrap();
+    let text = sim.to_world();
+    let mut copy = Sim::new();
+    copy.load_world(&text).unwrap();
+    assert_eq!(copy.to_world(), text);
+    copy.check_world(r#"process { ran git status }"#).unwrap();
 }

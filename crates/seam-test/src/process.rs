@@ -1,7 +1,7 @@
 //! Scripted commands, child processes, and exiting.
 //!
-//! Commands are scripted per program with [`Sim::on_command`] (or
-//! [`Sim::on_command_with_stdin`]): a handler sees the command, and the
+//! Commands are scripted per program with [`World::on_command`](crate::World::on_command) (or
+//! [`World::on_command_with_stdin`](crate::World::on_command_with_stdin)): a handler sees the command, and the
 //! input written to it, and returns what the program printed and its exit
 //! code. Both [`RunCommand`] and [`SpawnChild`] use them.
 //!
@@ -20,7 +20,9 @@ use std::boxed::Box;
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::ffi::OsString;
+use std::format;
 use std::process::Command;
+use std::string::String;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::vec::Vec;
 
@@ -31,7 +33,11 @@ use seam_core::ops::process::{
 };
 use seam_core::{Closing, Inspect, Opening, Perform};
 
-use crate::{Sim, error};
+use seam_core::effects as fx;
+
+use crate::error;
+use crate::sim::{Inner, SimState, Simulate, Simulated, States, World};
+use crate::world_file::{self, Failure, Node, show};
 
 type Handler = Box<dyn FnMut(&Command, &[u8]) -> io::Result<Output> + Send + Sync>;
 
@@ -58,8 +64,15 @@ impl Handlers {
     }
 }
 
+/// The simulated processes: the scripts that answer commands, and the log
+/// of every command run or spawned.
+///
+/// Its block is `process { command PROGRAM [ARGS..] exit=N stdout=".."
+/// stderr=".." }`: a fixed response. Written out, it lists the fixed
+/// responses, and the log as `ran PROGRAM [ARGS..] stdin=".."` lines. As
+/// expectations, the `ran` lines must be every command, in order.
 #[derive(Default)]
-pub(crate) struct Processes {
+pub struct Processes {
     handlers: Handlers,
     log: Vec<Invocation>,
     /// Fixed responses from world files, shared with their handlers.
@@ -116,7 +129,7 @@ impl Eq for Invocation {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Exited(pub i32);
 
-impl Sim {
+impl<G> World<G> {
     /// Scripts what running `program` does. The handler sees the full
     /// command and returns its output. A program with no handler fails to
     /// start with `NotFound`. A later handler for the same program replaces
@@ -162,12 +175,9 @@ impl Sim {
         program: impl Into<OsString>,
         handler: impl FnMut(&Command, &[u8]) -> io::Result<Output> + Send + Sync + 'static,
     ) -> &mut Self {
-        let program = program.into();
-        let handlers = self.world.lock().process.handlers.clone();
-        let mut handlers = handlers.lock();
-        handlers.retain(|(p, _)| *p != program);
-        handlers.push((program, Box::new(handler)));
-        drop(handlers);
+        self.lock()
+            .process()
+            .on_command(program.into(), Box::new(handler));
         self
     }
 
@@ -181,8 +191,28 @@ impl Sim {
         program: OsString,
         args: Option<Vec<OsString>>,
         output: Output,
-    ) {
-        let rules = Arc::clone(&self.world.lock().process.rules);
+    ) -> &mut Self {
+        self.lock().process().script(program, args, output);
+        self
+    }
+
+    /// Every command the core has run or spawned, in order.
+    pub fn invocations(&self) -> Vec<Invocation> {
+        self.lock().process().log.clone()
+    }
+}
+
+impl Processes {
+    /// Scripts `program` with `handler`, replacing any earlier one.
+    fn on_command(&mut self, program: OsString, handler: Handler) {
+        let mut handlers = self.handlers.lock();
+        handlers.retain(|(p, _)| *p != program);
+        handlers.push((program, handler));
+    }
+
+    /// Scripts a fixed response; see [`World::script_command`].
+    fn script(&mut self, program: OsString, args: Option<Vec<OsString>>, output: Output) {
+        let rules = Arc::clone(&self.rules);
         rules
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -191,39 +221,43 @@ impl Sim {
                 args,
                 output,
             });
-        self.on_command(program, move |cmd: &Command| {
-            let rules = rules.lock().unwrap_or_else(PoisonError::into_inner);
-            let args: Vec<OsString> = cmd.get_args().map(|a| a.to_os_string()).collect();
-            let for_program = || {
-                rules
-                    .iter()
-                    .rev()
-                    .filter(|r| r.program == cmd.get_program())
-            };
-            for_program()
-                .find(|r| r.args.as_ref() == Some(&args))
-                .or_else(|| for_program().find(|r| r.args.is_none()))
-                .map(|r| r.output.clone())
-                .ok_or_else(|| {
-                    error(
-                        ErrorKind::NotFound,
-                        "the world file scripts this program, but not with these arguments",
-                    )
-                })
-        });
+        self.on_command(
+            program,
+            Box::new(move |cmd: &Command, _: &[u8]| {
+                let rules = rules.lock().unwrap_or_else(PoisonError::into_inner);
+                let args: Vec<OsString> = cmd.get_args().map(|a| a.to_os_string()).collect();
+                let for_program = || {
+                    rules
+                        .iter()
+                        .rev()
+                        .filter(|r| r.program == cmd.get_program())
+                };
+                for_program()
+                    .find(|r| r.args.as_ref() == Some(&args))
+                    .or_else(|| for_program().find(|r| r.args.is_none()))
+                    .map(|r| r.output.clone())
+                    .ok_or_else(|| {
+                        error(
+                            ErrorKind::NotFound,
+                            "the world file scripts this program, but not with these arguments",
+                        )
+                    })
+            }),
+        );
     }
+}
 
-    /// Every command the core has run or spawned, in order.
-    pub fn invocations(&self) -> Vec<Invocation> {
-        self.world.lock().process.log.clone()
+impl Inner {
+    /// The processes.
+    pub(crate) fn process(&mut self) -> &mut Processes {
+        self.state::<Processes>()
     }
 
     /// Records `cmd`, failing with `NotFound` if no handler is scripted for
     /// it. Returns its index, and the cell for its input.
     fn record(&mut self, cmd: &Command) -> io::Result<(usize, Arc<OnceLock<Vec<u8>>>)> {
         let stdin = Arc::new(OnceLock::new());
-        let mut world = self.world.lock();
-        let process = &mut world.process;
+        let process = self.process();
         process.log.push(Invocation {
             program: cmd.get_program().to_os_string(),
             args: cmd.get_args().map(|a| a.to_os_string()).collect(),
@@ -239,12 +273,14 @@ impl Sim {
     }
 }
 
-impl Perform<RunCommand> for Sim {
-    fn perform(&mut self, op: RunCommand) -> io::Result<Output> {
+impl Simulate<RunCommand> for fx::RunCommand {
+    fn run(states: &mut States<'_>, op: RunCommand) -> io::Result<Output> {
         let cmd = op.0;
-        let (_, stdin) = self.record(&cmd)?;
+        let (_, stdin) = states.inner().record(&cmd)?;
         let _ = stdin.set(Vec::new());
-        let handlers = self.world.lock().process.handlers.clone();
+        let handlers = states.inner().process().handlers.clone();
+        // The handler is the test's own code: it may use the world.
+        states.unlock();
         handlers.run(&cmd, &[])
     }
 }
@@ -409,7 +445,7 @@ impl Child {
     }
 }
 
-impl Sim {
+impl Inner {
     #[allow(unused_variables)]
     fn deliver(&mut self, (out, err): (Vec<u8>, Vec<u8>)) {
         #[cfg(feature = "io-std")]
@@ -417,11 +453,14 @@ impl Sim {
     }
 }
 
-impl Perform<Opening<SpawnChild<Child>>> for Sim {
-    fn perform(&mut self, Opening(op, _): Opening<SpawnChild<Child>>) -> io::Result<Child> {
-        let (entry, given) = self.record(&op.command)?;
+impl Simulate<Opening<SpawnChild<Child>>> for fx::SpawnChild {
+    fn run(
+        states: &mut States<'_>,
+        Opening(op, _): Opening<SpawnChild<Child>>,
+    ) -> io::Result<Child> {
+        let (entry, given) = states.inner().record(&op.command)?;
         let mut child = Child {
-            handlers: self.world.lock().process.handlers.clone(),
+            handlers: states.inner().process().handlers.clone(),
             entry,
             given,
             command: op.command,
@@ -432,21 +471,26 @@ impl Perform<Opening<SpawnChild<Child>>> for Sim {
             waited: false,
         };
         if op.stdin != Pipe::Piped {
-            // No input will come: it runs now.
+            // No input will come: it runs now. The handler is the test's
+            // own code: it may use the world.
+            states.unlock();
             child.run();
             let inherited = child.take_inherited();
-            self.deliver(inherited);
+            states.inner().deliver(inherited);
         }
         Ok(child)
     }
 }
 
 /// Runs the child if it has not run, and prints what it inherited.
-impl Perform<Closing<SpawnChild<Child>>> for Sim {
-    fn perform(&mut self, Closing(mut child, _): Closing<SpawnChild<Child>>) -> io::Result<()> {
+impl Simulate<Closing<SpawnChild<Child>>> for fx::SpawnChild {
+    fn run(
+        states: &mut States,
+        Closing(mut child, _): Closing<SpawnChild<Child>>,
+    ) -> io::Result<()> {
         child.run();
         let inherited = child.take_inherited();
-        self.deliver(inherited);
+        states.inner().deliver(inherited);
         Ok(())
     }
 }
@@ -551,9 +595,201 @@ impl seam_core::Capability for Child {}
 
 /// Unwinds with [`Exited`] instead of ending the process. The panic hook is
 /// not run, so nothing is printed.
-impl Perform<Exit> for Sim {
-    fn perform(&mut self, op: Exit) -> Infallible {
+impl Simulate<Exit> for fx::Exit {
+    fn run(_: &mut States<'_>, op: Exit) -> Infallible {
         std::panic::resume_unwind(Box::new(Exited(op.0)))
+    }
+}
+
+macro_rules! process_keys {
+    ($($key:ident),*) => {$(
+        impl Simulated for fx::$key {
+            type State = Processes;
+        }
+    )*};
+}
+process_keys!(RunCommand, SpawnChild, Exit);
+
+/// One `command PROGRAM [ARGS..] exit=N stdout=".." stderr=".."` line.
+fn command(node: &Node) -> world_file::Result<(OsString, Option<Vec<OsString>>, Output)> {
+    node.no_children()?;
+    node.props_only(&["exit", "stdout", "stderr"])?;
+    node.arity(1, None, "a program, then any arguments it must be run with")?;
+    let program = OsString::from(node.args()[0].string("the program")?);
+    let args = node.args()[1..]
+        .iter()
+        .map(|a| a.string("an argument").map(OsString::from))
+        .collect::<world_file::Result<Vec<_>>>()?;
+    let code = match node.prop("exit") {
+        Some(v) => Some(v.uint::<i32>("`exit`")?),
+        None => Some(0),
+    };
+    let bytes = |key: &str| -> world_file::Result<Vec<u8>> {
+        Ok(match node.prop(key) {
+            Some(v) => v.string(key)?.as_bytes().to_vec(),
+            None => Vec::new(),
+        })
+    };
+    let output = Output {
+        code,
+        stdout: bytes("stdout")?,
+        stderr: bytes("stderr")?,
+    };
+    Ok((program, (!args.is_empty()).then_some(args), output))
+}
+
+/// One `ran PROGRAM [ARGS..] [stdin=".."]` line: the words, and the input.
+fn ran(node: &Node) -> world_file::Result<(Vec<OsString>, Option<Vec<u8>>)> {
+    node.no_children()?;
+    node.props_only(&["stdin"])?;
+    node.arity(1, None, "a program, then its arguments")?;
+    let words = node
+        .args()
+        .iter()
+        .map(|a| a.string("an argument").map(OsString::from))
+        .collect::<world_file::Result<Vec<_>>>()?;
+    let stdin = match node.prop("stdin") {
+        Some(v) => Some(v.string("`stdin`")?.as_bytes().to_vec()),
+        None => None,
+    };
+    Ok((words, stdin))
+}
+
+impl SimState for Processes {
+    const BLOCKS: &'static [&'static str] = &["process"];
+
+    /// `command ..` scripts a fixed response; `ran ..` adds to the log, as
+    /// if the command had run.
+    fn load(&mut self, block: &Node) -> world_file::Result<()> {
+        for child in block.block()? {
+            match child.name() {
+                "command" => {
+                    let (program, args, output) = command(child)?;
+                    self.script(program, args, output);
+                }
+                "ran" => {
+                    let (mut words, stdin) = ran(child)?;
+                    let program = words.remove(0);
+                    self.log.push(Invocation {
+                        program,
+                        args: words,
+                        stdin: Arc::new(OnceLock::from(stdin.unwrap_or_default())),
+                    });
+                }
+                _ => return Err(child.unknown("`process`", &["command", "ran"])),
+            }
+        }
+        Ok(())
+    }
+
+    fn to_world(&self) -> Vec<Node> {
+        let mut block = Node::new("process");
+        for rule in self
+            .rules
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+        {
+            let mut node =
+                Node::new("command").with_arg(rule.program.to_string_lossy().into_owned());
+            for arg in rule.args.iter().flatten() {
+                node = node.with_arg(arg.to_string_lossy().into_owned());
+            }
+            if let Some(code) = rule.output.code {
+                node = node.with_prop("exit", code);
+            }
+            for (key, bytes) in [
+                ("stdout", &rule.output.stdout),
+                ("stderr", &rule.output.stderr),
+            ] {
+                if !bytes.is_empty() {
+                    node = node.with_prop(key, String::from_utf8_lossy(bytes).into_owned());
+                }
+            }
+            block = block.with_child(node);
+        }
+        for invocation in &self.log {
+            let mut node =
+                Node::new("ran").with_arg(invocation.program.to_string_lossy().into_owned());
+            for arg in &invocation.args {
+                node = node.with_arg(arg.to_string_lossy().into_owned());
+            }
+            if !invocation.stdin().is_empty() {
+                node = node.with_prop(
+                    "stdin",
+                    String::from_utf8_lossy(invocation.stdin()).into_owned(),
+                );
+            }
+            block = block.with_child(node);
+        }
+        std::vec![block]
+    }
+
+    /// The `ran` lines must be every command run or spawned, in order; a
+    /// `stdin=` also checks what a child was given.
+    fn check(&self, block: &Node, failures: &mut Vec<Failure>) -> world_file::Result<()> {
+        let mut want = Vec::new();
+        for child in block.block()? {
+            if child.name() != "ran" {
+                return Err(child.unknown("`process` expectations", &["ran"]));
+            }
+            let (words, stdin) = ran(child)?;
+            want.push((child, words, stdin));
+        }
+        let got: Vec<Vec<OsString>> = self
+            .log
+            .iter()
+            .map(|i| {
+                core::iter::once(i.program.clone())
+                    .chain(i.args.iter().cloned())
+                    .collect()
+            })
+            .collect();
+        let line = |words: &[OsString]| {
+            words
+                .iter()
+                .map(|w| w.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        for (n, (node, words, stdin)) in want.iter().enumerate() {
+            match got.get(n) {
+                Some(g) if g == words => {
+                    let given = self.log[n].stdin();
+                    if let Some(stdin) = stdin.as_ref().filter(|s| *s != given) {
+                        failures.push(node.failure(format!(
+                            "command {}: expected stdin {}, but it was given {}",
+                            n + 1,
+                            show(stdin),
+                            show(given)
+                        )));
+                    }
+                }
+                Some(g) => failures.push(node.failure(format!(
+                    "command {}: expected `{}`, but it ran `{}`",
+                    n + 1,
+                    line(words),
+                    line(g)
+                ))),
+                None => failures.push(node.failure(format!(
+                    "command {}: expected `{}`, but only {} ran",
+                    n + 1,
+                    line(words),
+                    got.len()
+                ))),
+            }
+        }
+        if got.len() > want.len() {
+            let extra: Vec<String> = got[want.len()..]
+                .iter()
+                .map(|g| format!("`{}`", line(g)))
+                .collect();
+            failures.push(block.failure(format!(
+                "more commands ran than expected: {}",
+                extra.join(", ")
+            )));
+        }
+        Ok(())
     }
 }
 

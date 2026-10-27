@@ -22,8 +22,11 @@ use seam_core::ops::fs::{
 use seam_core::ops::io::{Flush, Read, Seek, SeekFrom, Write};
 use seam_core::{Closing, Inspect, Opening, Perform};
 
-use crate::world::{Shared, World};
-use crate::{Sim, error};
+use seam_core::effects as fx;
+
+use crate::error;
+use crate::sim::{Inner, Shared, SimState, Simulate, Simulated, States, World};
+use crate::world_file::{self, Failure, Node as WorldNode, show};
 
 /// A resolved path: its normal components from the root.
 type Key = Vec<OsString>;
@@ -40,21 +43,24 @@ struct Inode {
     modified: SystemTime,
 }
 
+/// The simulated filesystem: an in-memory tree of directories and files.
+/// See the [module docs](self).
 #[derive(Debug)]
-pub(crate) struct Fs {
+pub struct Files {
     nodes: BTreeMap<Key, Node>,
     inodes: Vec<Inode>,
     /// Numbers temporary files, so their names are deterministic.
     next_temp: u64,
 }
 
-impl Default for Fs {
+/// A fresh filesystem holds an empty `/` and `/tmp`.
+impl Default for Files {
     fn default() -> Self {
-        let root = Node::Dir {
+        let dir = Node::Dir {
             modified: std::time::UNIX_EPOCH,
         };
         Self {
-            nodes: BTreeMap::from([(Key::new(), root)]),
+            nodes: BTreeMap::from([(Key::new(), dir), (Key::from([OsString::from("tmp")]), dir)]),
             inodes: Vec::new(),
             next_temp: 0,
         }
@@ -65,7 +71,7 @@ fn parent(key: &Key) -> &[OsString] {
     &key[..key.len().saturating_sub(1)]
 }
 
-impl Fs {
+impl Files {
     /// Resolves `path` against `cwd` to its components from the root.
     fn resolve(&self, cwd: &Path, path: &Path) -> io::Result<Key> {
         let mut key = Key::new();
@@ -210,17 +216,34 @@ impl Fs {
     }
 }
 
-impl Sim {
-    fn fs_op<R>(
-        &self,
-        path: &Path,
-        f: impl FnOnce(&mut World, Key) -> io::Result<R>,
-    ) -> io::Result<R> {
-        let mut world = self.world.lock();
-        let key = world.fs.resolve(&world.cwd, path)?;
-        f(&mut world, key)
-    }
+/// Resolves `path` against the current directory, and runs `f` on the
+/// states with it.
+fn fs_op<R>(
+    states: &mut Inner,
+    path: &Path,
+    f: impl FnOnce(&mut Inner, Key) -> io::Result<R>,
+) -> io::Result<R> {
+    let cwd = states.cwd();
+    let key = states.fs().resolve(&cwd, path)?;
+    f(states, key)
+}
 
+impl Inner {
+    /// The filesystem.
+    pub(crate) fn fs(&mut self) -> &mut Files {
+        self.state::<Files>()
+    }
+}
+
+#[cfg(not(feature = "env"))]
+impl Inner {
+    /// Without `env`, the current directory is always `/`.
+    pub(crate) fn cwd(&mut self) -> PathBuf {
+        PathBuf::from("/")
+    }
+}
+
+impl<G> World<G> {
     /// Creates a file with `contents`, and any missing parent directories.
     /// For setting up a test; replaces an existing file.
     ///
@@ -229,10 +252,10 @@ impl Sim {
     /// If a parent is a file, or the path is a directory.
     pub fn add_file(&mut self, path: impl AsRef<Path>, contents: impl Into<Vec<u8>>) -> &mut Self {
         let path = path.as_ref();
-        self.fs_op(path, |w, key| {
-            let now = w.wall;
-            w.fs.create_dir(&parent(&key).to_vec(), true, now)?;
-            w.fs.write(&key, contents.into(), now)
+        fs_op(&mut self.lock(), path, |w, key| {
+            let now = w.wall();
+            w.fs().create_dir(&parent(&key).to_vec(), true, now)?;
+            w.fs().write(&key, contents.into(), now)
         })
         .unwrap_or_else(|e| panic!("seam-test: cannot add file {}: {e}", path.display()));
         self
@@ -245,9 +268,9 @@ impl Sim {
     /// If a component is a file.
     pub fn add_dir(&mut self, path: impl AsRef<Path>) -> &mut Self {
         let path = path.as_ref();
-        self.fs_op(path, |w, key| {
-            let now = w.wall;
-            w.fs.create_dir(&key, true, now)
+        fs_op(&mut self.lock(), path, |w, key| {
+            let now = w.wall();
+            w.fs().create_dir(&key, true, now)
         })
         .unwrap_or_else(|e| panic!("seam-test: cannot add dir {}: {e}", path.display()));
         self
@@ -255,22 +278,25 @@ impl Sim {
 
     /// The contents of the file at `path`, if it is one. For assertions.
     pub fn file(&self, path: impl AsRef<Path>) -> Option<Vec<u8>> {
-        self.fs_op(path.as_ref(), |w, key| {
-            Ok(w.fs.inodes[w.fs.file(&key)?].bytes.clone())
+        fs_op(&mut self.lock(), path.as_ref(), |w, key| {
+            let fs = w.fs();
+            Ok(fs.inodes[fs.file(&key)?].bytes.clone())
         })
         .ok()
     }
 
     /// Whether anything exists at `path`. For assertions.
     pub fn exists(&self, path: impl AsRef<Path>) -> bool {
-        self.fs_op(path.as_ref(), |w, key| Ok(w.fs.nodes.contains_key(&key)))
-            .unwrap_or(false)
+        fs_op(&mut self.lock(), path.as_ref(), |w, key| {
+            Ok(w.fs().nodes.contains_key(&key))
+        })
+        .unwrap_or(false)
     }
 }
 
-impl Inspect<Metadata<'_>> for Sim {
-    fn inspect(&self, op: Metadata<'_>) -> io::Result<FileInfo> {
-        self.fs_op(op.path, |w, key| w.fs.info(&key))
+impl Simulate<Metadata<'_>> for fx::Metadata {
+    fn run(states: &mut States<'_>, op: Metadata<'_>) -> io::Result<FileInfo> {
+        fs_op(states.inner(), op.path, |w, key| w.fs().info(&key))
     }
 }
 
@@ -280,11 +306,11 @@ impl Inspect<Metadata<'_>> for Sim {
 #[derive(Debug)]
 pub struct Dir(std::vec::IntoIter<PathBuf>);
 
-impl Inspect<Opening<ReadDir<'_, Dir>>> for Sim {
-    fn inspect(&self, Opening(op, _): Opening<ReadDir<'_, Dir>>) -> io::Result<Dir> {
-        let paths: Vec<PathBuf> = self.fs_op(op.path, |w, key| {
-            w.fs.require_dir(&key)?;
-            Ok(w.fs
+impl Simulate<Opening<ReadDir<'_, Dir>>> for fx::ReadDir {
+    fn run(states: &mut States<'_>, Opening(op, _): Opening<ReadDir<'_, Dir>>) -> io::Result<Dir> {
+        let paths: Vec<PathBuf> = fs_op(states.inner(), op.path, |w, key| {
+            w.fs().require_dir(&key)?;
+            Ok(w.fs()
                 .children(&key)
                 .filter(|k| k.len() == key.len() + 1)
                 .map(|k| op.path.join(&k[key.len()]))
@@ -294,8 +320,8 @@ impl Inspect<Opening<ReadDir<'_, Dir>>> for Sim {
     }
 }
 
-impl Inspect<Closing<ReadDir<'_, Dir>>> for Sim {
-    fn inspect(&self, Closing(_, _): Closing<ReadDir<'_, Dir>>) -> io::Result<()> {
+impl Simulate<Closing<ReadDir<'_, Dir>>> for fx::ReadDir {
+    fn run(_: &mut States<'_>, Closing(_, _): Closing<ReadDir<'_, Dir>>) -> io::Result<()> {
         Ok(())
     }
 }
@@ -306,54 +332,57 @@ impl Perform<NextEntry> for Dir {
     }
 }
 
-impl Perform<CreateDir<'_>> for Sim {
-    fn perform(&mut self, op: CreateDir<'_>) -> io::Result<()> {
-        self.fs_op(op.path, |w, key| {
-            let now = w.wall;
-            w.fs.create_dir(&key, false, now)
+impl Simulate<CreateDir<'_>> for fx::CreateDir {
+    fn run(states: &mut States<'_>, op: CreateDir<'_>) -> io::Result<()> {
+        fs_op(states.inner(), op.path, |w, key| {
+            let now = w.wall();
+            w.fs().create_dir(&key, false, now)
         })
     }
 }
 
-impl Perform<RemoveFile<'_>> for Sim {
-    fn perform(&mut self, op: RemoveFile<'_>) -> io::Result<()> {
-        self.fs_op(op.path, |w, key| {
-            w.fs.file(&key)?;
-            w.fs.nodes.remove(&key);
-            let now = w.wall;
-            w.fs.touch_parent(&key, now);
+impl Simulate<RemoveFile<'_>> for fx::RemoveFile {
+    fn run(states: &mut States<'_>, op: RemoveFile<'_>) -> io::Result<()> {
+        fs_op(states.inner(), op.path, |w, key| {
+            w.fs().file(&key)?;
+            w.fs().nodes.remove(&key);
+            let now = w.wall();
+            w.fs().touch_parent(&key, now);
             Ok(())
         })
     }
 }
 
-impl Perform<RemoveDir<'_>> for Sim {
-    fn perform(&mut self, op: RemoveDir<'_>) -> io::Result<()> {
-        self.fs_op(op.path, |w, key| {
-            w.fs.require_dir(&key)?;
+impl Simulate<RemoveDir<'_>> for fx::RemoveDir {
+    fn run(states: &mut States<'_>, op: RemoveDir<'_>) -> io::Result<()> {
+        fs_op(states.inner(), op.path, |w, key| {
+            w.fs().require_dir(&key)?;
             if key.is_empty() {
                 return Err(error(ErrorKind::PermissionDenied, "cannot remove the root"));
             }
-            let doomed: Vec<Key> = w.fs.children(&key).cloned().collect();
+            let doomed: Vec<Key> = w.fs().children(&key).cloned().collect();
             if !op.recursive && !doomed.is_empty() {
                 return Err(error(ErrorKind::DirectoryNotEmpty, "directory not empty"));
             }
             for k in doomed {
-                w.fs.nodes.remove(&k);
+                w.fs().nodes.remove(&k);
             }
-            w.fs.nodes.remove(&key);
-            let now = w.wall;
-            w.fs.touch_parent(&key, now);
+            w.fs().nodes.remove(&key);
+            let now = w.wall();
+            w.fs().touch_parent(&key, now);
             Ok(())
         })
     }
 }
 
-impl Perform<Rename<'_>> for Sim {
-    fn perform(&mut self, op: Rename<'_>) -> io::Result<()> {
-        self.fs_op(op.from, |w, from| {
-            let to = w.fs.resolve(&w.cwd, op.to)?;
-            let fs = &mut w.fs;
+impl Simulate<Rename<'_>> for fx::Rename {
+    fn run(states: &mut States<'_>, op: Rename<'_>) -> io::Result<()> {
+        fs_op(states.inner(), op.from, |w, from| {
+            let to = {
+                let cwd = w.cwd();
+                w.fs().resolve(&cwd, op.to)?
+            };
+            let fs = w.fs();
             let node = fs.node(&from)?;
             if from == to {
                 return Ok(());
@@ -391,29 +420,36 @@ impl Perform<Rename<'_>> for Sim {
                 new.extend_from_slice(&k[from.len()..]);
                 fs.nodes.insert(new, n);
             }
-            let now = w.wall;
-            w.fs.touch_parent(&from, now);
-            w.fs.touch_parent(&to, now);
+            let now = w.wall();
+            w.fs().touch_parent(&from, now);
+            w.fs().touch_parent(&to, now);
             Ok(())
         })
     }
 }
 
-impl Perform<CopyFile<'_>> for Sim {
-    fn perform(&mut self, op: CopyFile<'_>) -> io::Result<u64> {
-        self.fs_op(op.from, |w, from| {
-            let to = w.fs.resolve(&w.cwd, op.to)?;
-            let bytes = w.fs.inodes[w.fs.file(&from)?].bytes.clone();
+impl Simulate<CopyFile<'_>> for fx::CopyFile {
+    fn run(states: &mut States<'_>, op: CopyFile<'_>) -> io::Result<u64> {
+        fs_op(states.inner(), op.from, |w, from| {
+            let to = {
+                let cwd = w.cwd();
+                w.fs().resolve(&cwd, op.to)?
+            };
+            let fs = w.fs();
+            let bytes = fs.inodes[fs.file(&from)?].bytes.clone();
             let len = bytes.len() as u64;
-            let now = w.wall;
-            w.fs.write(&to, bytes, now)?;
+            let now = w.wall();
+            w.fs().write(&to, bytes, now)?;
             Ok(len)
         })
     }
 }
 
-impl<M: Mode> Perform<Opening<Open<'_, M, File<M>>>> for Sim {
-    fn perform(&mut self, Opening(op, _): Opening<Open<'_, M, File<M>>>) -> io::Result<File<M>> {
+impl<M: Mode> Simulate<Opening<Open<'_, M, File<M>>>> for fx::Open<M> {
+    fn run(
+        states: &mut States,
+        Opening(op, _): Opening<Open<'_, M, File<M>>>,
+    ) -> io::Result<File<M>> {
         let o = op.options;
         if (o.truncate || o.create || o.create_new) && !M::WRITE {
             return Err(error(ErrorKind::InvalidInput, "invalid open options"));
@@ -424,24 +460,24 @@ impl<M: Mode> Perform<Opening<Open<'_, M, File<M>>>> for Sim {
                 "cannot truncate in append mode",
             ));
         }
-        let inode = self.fs_op(op.path, |w, key| {
-            let now = w.wall;
-            match w.fs.nodes.get(&key) {
+        let inode = fs_op(states.inner(), op.path, |w, key| {
+            let now = w.wall();
+            match w.fs().nodes.get(&key) {
                 Some(_) if o.create_new => Err(error(ErrorKind::AlreadyExists, "already exists")),
                 Some(_) => {
-                    let inode = w.fs.file(&key)?;
+                    let inode = w.fs().file(&key)?;
                     if o.truncate {
-                        w.fs.inodes[inode].bytes.clear();
-                        w.fs.inodes[inode].modified = now;
+                        w.fs().inodes[inode].bytes.clear();
+                        w.fs().inodes[inode].modified = now;
                     }
                     Ok(inode)
                 }
-                None if o.create || o.create_new => w.fs.write(&key, Vec::new(), now),
-                None => Err(w.fs.missing(&key)),
+                None if o.create || o.create_new => w.fs().write(&key, Vec::new(), now),
+                None => Err(w.fs().missing(&key)),
             }
         })?;
         let raw = RawFile {
-            world: self.world.clone(),
+            world: states.shared(),
             inode,
             pos: 0,
             read: M::READ,
@@ -453,8 +489,8 @@ impl<M: Mode> Perform<Opening<Open<'_, M, File<M>>>> for Sim {
 }
 
 /// Writes land immediately, so closing has nothing left to do.
-impl<M: Mode> Perform<Closing<Open<'_, M, File<M>>>> for Sim {
-    fn perform(&mut self, Closing(_, _): Closing<Open<'_, M, File<M>>>) -> io::Result<()> {
+impl<M: Mode> Simulate<Closing<Open<'_, M, File<M>>>> for fx::Open<M> {
+    fn run(_: &mut States<'_>, Closing(_, _): Closing<Open<'_, M, File<M>>>) -> io::Result<()> {
         Ok(())
     }
 }
@@ -496,11 +532,14 @@ impl<M> Inspect<Stat> for File<M> {
 #[derive(Debug)]
 pub struct FileView(RawFile);
 
-impl Inspect<Opening<View<'_, FileView>>> for Sim {
-    fn inspect(&self, Opening(op, _): Opening<View<'_, FileView>>) -> io::Result<FileView> {
-        let inode = self.fs_op(op.path, |w, key| w.fs.file(&key))?;
+impl Simulate<Opening<View<'_, FileView>>> for fx::View {
+    fn run(
+        states: &mut States,
+        Opening(op, _): Opening<View<'_, FileView>>,
+    ) -> io::Result<FileView> {
+        let inode = fs_op(states.inner(), op.path, |w, key| w.fs().file(&key))?;
         Ok(FileView(RawFile {
-            world: self.world.clone(),
+            world: states.shared(),
             inode,
             pos: 0,
             read: true,
@@ -510,16 +549,16 @@ impl Inspect<Opening<View<'_, FileView>>> for Sim {
     }
 }
 
-impl Inspect<Closing<View<'_, FileView>>> for Sim {
-    fn inspect(&self, _: Closing<View<'_, FileView>>) -> io::Result<()> {
+impl Simulate<Closing<View<'_, FileView>>> for fx::View {
+    fn run(_: &mut States<'_>, _: Closing<View<'_, FileView>>) -> io::Result<()> {
         Ok(())
     }
 }
 
 impl Inspect<ReadAt<'_>> for FileView {
     fn inspect(&self, op: ReadAt<'_>) -> io::Result<usize> {
-        let world = self.0.world.lock();
-        let bytes = &world.fs.inodes[self.0.inode].bytes;
+        let mut world = self.0.world.lock();
+        let bytes = &world.fs().inodes[self.0.inode].bytes;
         let rest = usize::try_from(op.offset)
             .ok()
             .and_then(|at| bytes.get(at..))
@@ -562,8 +601,8 @@ impl RawFile {
             return Err(error(ErrorKind::PermissionDenied, "not open for writing"));
         }
         let mut world = self.world.lock();
-        let now = world.wall;
-        let inode = &mut world.fs.inodes[self.inode];
+        let now = world.wall();
+        let inode = &mut world.fs().inodes[self.inode];
         if self.append {
             self.pos = inode.bytes.len();
         }
@@ -581,8 +620,8 @@ impl RawFile {
 impl Perform<Read<'_>> for RawFile {
     fn perform(&mut self, op: Read<'_>) -> io::Result<usize> {
         self.readable()?;
-        let world = self.world.lock();
-        let rest = world.fs.inodes[self.inode]
+        let mut world = self.world.lock();
+        let rest = world.fs().inodes[self.inode]
             .bytes
             .get(self.pos..)
             .unwrap_or_default();
@@ -608,7 +647,7 @@ impl Perform<Flush> for RawFile {
 
 impl Perform<Seek> for RawFile {
     fn perform(&mut self, op: Seek) -> io::Result<u64> {
-        let len = self.world.lock().fs.inodes[self.inode].bytes.len() as u64;
+        let len = self.world.lock().fs().inodes[self.inode].bytes.len() as u64;
         let pos = match op.0 {
             SeekFrom::Start(n) => Some(n),
             SeekFrom::End(d) => len.checked_add_signed(d),
@@ -636,8 +675,8 @@ impl Perform<SetLen> for RawFile {
         let len = usize::try_from(op.0)
             .map_err(|_| error(ErrorKind::InvalidInput, "longer than memory can hold"))?;
         let mut world = self.world.lock();
-        let now = world.wall;
-        let inode = &mut world.fs.inodes[self.inode];
+        let now = world.wall();
+        let inode = &mut world.fs().inodes[self.inode];
         inode.bytes.resize(len, 0);
         inode.modified = now;
         Ok(())
@@ -662,8 +701,8 @@ impl Perform<SyncData> for RawFile {
 /// The file's metadata, even once its path is renamed or removed.
 impl Inspect<Stat> for RawFile {
     fn inspect(&self, _: Stat) -> io::Result<FileInfo> {
-        let world = self.world.lock();
-        let inode = &world.fs.inodes[self.inode];
+        let mut world = self.world.lock();
+        let inode = &world.fs().inodes[self.inode];
         Ok(FileInfo {
             kind: FileKind::File,
             len: inode.bytes.len() as u64,
@@ -688,31 +727,31 @@ pub struct AtomicFile {
     committed: bool,
 }
 
-impl Perform<Opening<CreateAtomic<'_, AtomicFile>>> for Sim {
-    fn perform(
-        &mut self,
+impl Simulate<Opening<CreateAtomic<'_, AtomicFile>>> for fx::CreateAtomic {
+    fn run(
+        states: &mut States,
         Opening(op, _): Opening<CreateAtomic<'_, AtomicFile>>,
     ) -> io::Result<AtomicFile> {
-        let (temp, target, inode) = self.fs_op(op.path, |w, target| {
+        let (temp, target, inode) = fs_op(states.inner(), op.path, |w, target| {
             let Some(name) = target.last() else {
                 return Err(error(ErrorKind::IsADirectory, "is a directory"));
             };
-            if let Some(Node::Dir { .. }) = w.fs.nodes.get(&target) {
+            if let Some(Node::Dir { .. }) = w.fs().nodes.get(&target) {
                 return Err(error(ErrorKind::IsADirectory, "is a directory"));
             }
             let mut temp = parent(&target).to_vec();
-            let n = w.fs.next_temp;
-            w.fs.next_temp += 1;
+            let n = w.fs().next_temp;
+            w.fs().next_temp += 1;
             let mut temp_name = OsString::from(".");
             temp_name.push(name);
             temp_name.push(std::format!(".seam-{n}.tmp"));
             temp.push(temp_name);
-            let now = w.wall;
-            let inode = w.fs.write(&temp, Vec::new(), now)?;
+            let now = w.wall();
+            let inode = w.fs().write(&temp, Vec::new(), now)?;
             Ok((temp, target, inode))
         })?;
         let file = RawFile {
-            world: self.world.clone(),
+            world: states.shared(),
             inode,
             pos: 0,
             read: false,
@@ -728,9 +767,9 @@ impl Perform<Opening<CreateAtomic<'_, AtomicFile>>> for Sim {
     }
 }
 
-impl Perform<Closing<CreateAtomic<'_, AtomicFile>>> for Sim {
-    fn perform(
-        &mut self,
+impl Simulate<Closing<CreateAtomic<'_, AtomicFile>>> for fx::CreateAtomic {
+    fn run(
+        _: &mut States,
         Closing(file, _): Closing<CreateAtomic<'_, AtomicFile>>,
     ) -> io::Result<()> {
         file.commit()
@@ -740,8 +779,8 @@ impl Perform<Closing<CreateAtomic<'_, AtomicFile>>> for Sim {
 impl AtomicFile {
     fn commit(mut self) -> io::Result<()> {
         let mut world = self.file.world.lock();
-        let now = world.wall;
-        let fs = &mut world.fs;
+        let now = world.wall();
+        let fs = world.fs();
         if fs.nodes.get(&self.temp) != Some(&Node::File(self.file.inode)) {
             return Err(error(ErrorKind::NotFound, "the temporary file was removed"));
         }
@@ -764,8 +803,8 @@ impl Drop for AtomicFile {
             return;
         }
         let mut world = self.file.world.lock();
-        if world.fs.nodes.get(&self.temp) == Some(&Node::File(self.file.inode)) {
-            world.fs.nodes.remove(&self.temp);
+        if world.fs().nodes.get(&self.temp) == Some(&Node::File(self.file.inode)) {
+            world.fs().nodes.remove(&self.temp);
         }
     }
 }
@@ -792,6 +831,178 @@ delegate_io! {
 impl Inspect<Stat> for AtomicFile {
     fn inspect(&self, op: Stat) -> io::Result<FileInfo> {
         self.file.inspect(op)
+    }
+}
+
+macro_rules! fs_keys {
+    ($($key:ident),*) => {$(
+        impl Simulated for fx::$key {
+            type State = Files;
+        }
+    )*};
+}
+fs_keys!(
+    Metadata,
+    CreateDir,
+    RemoveFile,
+    RemoveDir,
+    Rename,
+    CopyFile,
+    CreateAtomic,
+    View,
+    ReadDir
+);
+
+impl<M> Simulated for fx::Open<M> {
+    type State = Files;
+}
+
+// ---- world files ----
+
+/// A path in an `fs` block: absolute at the top, relative inside a `dir`.
+fn path_in(node: &WorldNode, parent: Option<&Path>) -> world_file::Result<PathBuf> {
+    let arg = node
+        .args()
+        .first()
+        .ok_or_else(|| node.error(std::format!("`{}` takes a path first", node.name())))?;
+    let path = Path::new(arg.string("a path")?);
+    match parent {
+        None => Ok(path.to_path_buf()),
+        Some(_) if path.is_absolute() => Err(arg.error("inside a `dir`, paths are relative to it")),
+        Some(parent) => Ok(parent.join(path)),
+    }
+}
+
+/// A key as an absolute path.
+fn path_of(key: &[OsString]) -> PathBuf {
+    let mut path = PathBuf::from("/");
+    path.extend(key);
+    path
+}
+
+impl Files {
+    /// Resolves an absolute path from a world file.
+    fn key(&self, path: &Path) -> io::Result<Key> {
+        self.resolve(Path::new("/"), path)
+    }
+
+    fn load_node(&mut self, node: &WorldNode, within: Option<&Path>) -> world_file::Result<()> {
+        let path = match node.name() {
+            "dir" | "file" => path_in(node, within)?,
+            _ => return Err(node.unknown("`fs`", &["dir", "file"])),
+        };
+        let failed =
+            |e: io::Error| node.error(std::format!("cannot create `{}`: {e}", path.display()));
+        let now = std::time::UNIX_EPOCH;
+        let key = self.key(&path).map_err(failed)?;
+        if node.name() == "dir" {
+            node.props_only(&[])?;
+            node.arity(1, Some(1), "a path, then a block of its contents")?;
+            self.create_dir(&key, true, now).map_err(failed)?;
+            for child in node.children() {
+                self.load_node(child, Some(&path))?;
+            }
+        } else {
+            let bytes = node.contents(1, "a path and its contents, or a path and `hex=`")?;
+            self.create_dir(&parent(&key).to_vec(), true, now)
+                .map_err(failed)?;
+            self.write(&key, bytes, now).map_err(failed)?;
+        }
+        Ok(())
+    }
+
+    fn check_node(
+        &self,
+        node: &WorldNode,
+        parent: Option<&Path>,
+        failures: &mut Vec<Failure>,
+    ) -> world_file::Result<()> {
+        let path = match node.name() {
+            "dir" | "file" | "absent" => path_in(node, parent)?,
+            _ => {
+                return Err(node.unknown("`fs` expectations", &["dir", "file", "absent"]));
+            }
+        };
+        let mut fail = |message: std::string::String| {
+            failures.push(node.failure(std::format!("`{}`: {message}", path.display())));
+        };
+        let found = self
+            .key(&path)
+            .ok()
+            .and_then(|k| self.nodes.get(&k).copied());
+        match node.name() {
+            "absent" => {
+                node.no_children()?;
+                node.props_only(&[])?;
+                node.arity(1, Some(1), "a path")?;
+                if found.is_some() {
+                    fail("expected nothing there, but it exists".into());
+                }
+            }
+            "dir" => {
+                node.props_only(&[])?;
+                node.arity(1, Some(1), "a path, then a block of what it holds")?;
+                match found {
+                    Some(Node::Dir { .. }) => {
+                        for child in node.children() {
+                            self.check_node(child, Some(&path), failures)?;
+                        }
+                    }
+                    Some(_) => fail("expected a directory, but it is a file".into()),
+                    None => fail("expected a directory, but nothing is there".into()),
+                }
+            }
+            _ => {
+                let want = node.contents(1, "a path and its expected contents, or `hex=`")?;
+                match found {
+                    Some(Node::File(inode)) if self.inodes[inode].bytes == want => {}
+                    Some(Node::File(inode)) => fail(std::format!(
+                        "expected {}, found {}",
+                        show(&want),
+                        show(&self.inodes[inode].bytes)
+                    )),
+                    Some(Node::Dir { .. }) => fail("expected a file, but it is a directory".into()),
+                    None => fail("expected a file, but nothing is there".into()),
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Its block is `fs { dir P { .. }; file P CONTENTS; file P hex=".." }`.
+/// Written out, every directory and file is listed by its absolute path.
+/// As expectations, `absent P` expects nothing there, and a `dir`'s block
+/// holds expectations about what is in it.
+impl SimState for Files {
+    const BLOCKS: &'static [&'static str] = &["fs"];
+
+    fn load(&mut self, block: &WorldNode) -> world_file::Result<()> {
+        for child in block.block()? {
+            self.load_node(child, None)?;
+        }
+        Ok(())
+    }
+
+    fn to_world(&self) -> Vec<WorldNode> {
+        let mut block = WorldNode::new("fs");
+        for (key, node) in self.nodes.iter().filter(|(k, _)| !k.is_empty()) {
+            let path = path_of(key).to_string_lossy().into_owned();
+            block = block.with_child(match node {
+                Node::Dir { .. } => WorldNode::new("dir").with_arg(path),
+                Node::File(inode) => WorldNode::new("file")
+                    .with_arg(path)
+                    .with_bytes(&self.inodes[*inode].bytes),
+            });
+        }
+        std::vec![block]
+    }
+
+    fn check(&self, block: &WorldNode, failures: &mut Vec<Failure>) -> world_file::Result<()> {
+        for child in block.block()? {
+            self.check_node(child, None, failures)?;
+        }
+        Ok(())
     }
 }
 

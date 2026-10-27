@@ -14,7 +14,7 @@ use seam_core::{Closing, Opening, Perform};
 
 /// Turns a `WouldBlock` into the `TimedOut` of an expired wait.
 #[allow(dead_code)]
-fn expired<T>(result: seam_core::io::Result<T>) -> seam_core::io::Result<T> {
+pub(crate) fn expired<T>(result: seam_core::io::Result<T>) -> seam_core::io::Result<T> {
     result.map_err(|e| match e.kind() {
         seam_core::io::ErrorKind::WouldBlock => seam_core::io::ErrorKind::TimedOut.into(),
         _ => e,
@@ -30,8 +30,9 @@ mod net {
     use seam_core::ops::net::{Accept, RecvFrom, TcpConnect};
 
     use super::*;
-    use crate::Sim;
     use crate::net::{TcpListener, TcpStream, UdpSocket};
+    use crate::sim::{Simulate, States};
+    use seam_core::effects as fx;
 
     macro_rules! at_once {
         ($($ty:ty: $op:ty => $out:ty;)*) => {$(
@@ -68,29 +69,25 @@ mod net {
     }
 
     /// Connecting never waits in the simulation, so the timeout is moot.
-    impl Perform<Opening<Timeout<TcpConnect<TcpStream>>>> for Sim {
-        fn perform(
-            &mut self,
+    impl Simulate<Opening<Timeout<TcpConnect<TcpStream>>>> for fx::TcpConnect {
+        fn run(
+            states: &mut States,
             Opening(op, token): Opening<Timeout<TcpConnect<TcpStream>>>,
         ) -> io::Result<TcpStream> {
-            self.perform(Opening(op.op, token))
+            <fx::TcpConnect as Simulate<Opening<TcpConnect<TcpStream>>>>::run(
+                states,
+                Opening(op.op, token),
+            )
         }
     }
 
-    impl Perform<Closing<Timeout<TcpConnect<TcpStream>>>> for Sim {
-        fn perform(
-            &mut self,
+    impl Simulate<Closing<Timeout<TcpConnect<TcpStream>>>> for fx::TcpConnect {
+        fn run(
+            _: &mut States,
             Closing(stream, _): Closing<Timeout<TcpConnect<TcpStream>>>,
         ) -> io::Result<()> {
             stream.commit()
         }
-    }
-}
-
-#[cfg(feature = "signal")]
-impl Perform<Timeout<seam_core::ops::signal::CtrlC>> for crate::Sim {
-    fn perform(&mut self, op: Timeout<seam_core::ops::signal::CtrlC>) -> seam_core::io::Result<()> {
-        expired(self.perform(op.op))
     }
 }
 

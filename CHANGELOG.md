@@ -2,8 +2,9 @@
 
 ## 0.5.0
 
-Every root part is built the way Rust builds its type, and a simulated
-world is shared by cloning it. All of these are breaking.
+Every root part is built the way Rust builds its type, and every effect is
+simulated on its own key, against a state of a simulated world, the same
+way for seam's effects and a program's own. All of these are breaking.
 
 ### Building roots
 
@@ -34,17 +35,50 @@ Anything else is a compile error naming the four forms.
 
 ### Simulation
 
-- `Sim` is `Clone` (with std), and every clone is a handle to one world:
-  the clock, random numbers, environment, files, network, stdio, scripted
-  commands and Ctrl-C. A part built over the simulation is given a clone.
-  Without std, `Sim` holds its world itself and is not `Clone`.
-- `Sim::invocations` returns a `Vec<Invocation>`, since the log lives
-  behind the world's lock.
-- `Sim`'s world-file blocks are an ordinary `World` impl over public API
-  only, and a test compiles it outside the crate to keep it so.
-- New for every part: `world_file::load` and `world_file::check` set up
-  and check one part outside a root (`Sim::load_world` and
-  `Sim::check_world` are these). `Sim::script_command` is public.
+Effects are simulated on their keys, with two sister traits beside
+`Effect`, and worlds are built from the effects they grant:
+
+```rust
+impl Simulated for BindMount { type State = Mounts; }
+impl Simulate<BindMount> for BindMount {
+    fn run(states: &mut States, op: BindMount) -> io::Result<()> { .. }
+}
+let mut world = seam_test::world![fx::Var, fx::View, BindMount, Unmount];
+```
+
+- New, in `seam_test::sim`: `Simulated` and `Simulate<O>` on an effect's
+  key; `SimState` for the state it works on (its world-file blocks,
+  `load`, `to_world`, `check`, and `uses` for states it brings along);
+  `World<G>` and `world![..]`, which grants exactly the effects listed;
+  and the built-in states `Clock`, `Random`, `Env`, `Files`, `Net`,
+  `Stdio`, `Processes`, `Signals`, `Tasks` and `Stateless`.
+- `Sim` is `World<Everything>`, the world of every built-in effect, and
+  `Clone`: every clone is the same world. Its setup and assertion methods
+  are on every world. Without std, `Sim` is a small clock and
+  random-number world, not `Clone`.
+- A handler's `States` is a capability for every simulated effect, so a
+  simulated effect can be built from others (a store whose `Put` writes a
+  simulated file).
+- `world.to_world()` writes a whole world out as a world file, and loads
+  back to the same world. Expectations are a subset of it by default
+  (`world_file::check_subset`), so a state of your own gets them with no
+  more code; the built-in states keep their own checks where the shape
+  differs (`absent`, `unset`, exact output, the exact `ran` list).
+- World files: `net`, `seed`, `parallelism` and `signal` can be checked
+  (as a subset); `process` loads `ran` lines into the log; `stdio` loads
+  `stdout` and `stderr`; `clock` takes `now-ns=` and `wall-ns=`.
+- `Node` builders (`Node::new`, `with_arg`, `with_prop`, `with_child`,
+  `with_bytes`), `Node::contents`, KDL output (`Display`), and
+  `world_file::show`.
+- `world_file::load` and `world_file::check` set up and check one
+  `SimState` on its own. `World::script_command` is public.
+- `Sim::invocations` returns a `Vec<Invocation>`.
+
+| Removed | Use |
+|---|---|
+| the `World` trait (a root part's world-file blocks) | `SimState`, on the state an effect works on |
+| `load_world::<(K, ..), _>(&mut root, ..)`, `check_world::<..>` | `world.load_world(..)`, `world.check_world(..)` on a `world![..]` |
+| a fake part of a root, with world-file blocks | an effect simulated on its key, in a world |
 
 ## 0.4.0
 

@@ -1,9 +1,14 @@
 # World files
 
 A world file describes a simulated world in [KDL](https://kdl.dev): the
-world a core starts in, or what it should look like after a run. One block
-per area of the world (`env`, `fs`, `net`, ...), with directories that nest
-the way they do on disk.
+world a core starts in, what it should look like after a run, or a
+snapshot of it. One block per *state* of the world (`clock`, `env`, `fs`,
+`net`, ...), with directories that nest the way they do on disk.
+
+Each block is read by the state that names it. The built-in states read
+the blocks on this page; a state of a program's own reads its own (see
+[Blocks of your own](#blocks-of-your-own)). Nothing about the built-in
+blocks is special.
 
 ```kdl
 seed 7
@@ -37,13 +42,12 @@ signal { ctrl-c }
 
 | Call | Does |
 |---|---|
-| `Sim::from_world(text)` | a fresh `Sim`, set up from the file |
-| `sim.load_world(text)` | sets an existing `Sim` up further: a shared base, then a test's own changes |
-| `sim.check_world(text)` | checks the `Sim` against expectations; every failure, with its line |
-| `sim.assert_world(text)` | the same, panicking with the failures |
-| `seam::test::load_world::<(K, ..), _>(&mut root, text)` | sets up every simulated part of a root, through the effects listed |
-| `seam::test::check_world::<(K, ..), _>(&root, text)` | checks every simulated part of a root |
-| `world_file::load(&mut part, text)`, `world_file::check(&part, text)` | one part of your own, outside a root |
+| `Sim::from_world(text)` | a fresh `Sim`, every built-in state, set up from the file |
+| `world.load_world(text)` | sets any world up further: a shared base, then a test's own changes |
+| `world.check_world(text)` | checks a world against expectations; every failure, with its line |
+| `world.assert_world(text)` | the same, panicking with the failures |
+| `world.to_world()` | the whole world, written out as a world file |
+| `world_file::load(&mut state, text)`, `world_file::check(&state, text)` | one state of your own, on its own |
 
 ```rust
 # #[cfg(all(feature = "test", feature = "fs", feature = "env", feature = "io-std"))] {
@@ -103,20 +107,22 @@ and something set twice keeps its last value.
 
 | Block | Directive | Does | Feature |
 |---|---|---|---|
-| | `seed N` | `Sim::set_seed` | `random` |
-| | `parallelism N` | `Sim::set_parallelism` (at least 1) | `rt` |
-| | `clock now=S wall=S` | advances the clock `now` seconds, then sets the wall clock to `wall` seconds after the Unix epoch; either is optional | `time` |
-| `env` | `var NAME VALUE` | `Sim::set_var` | `env` |
-| `env` | `unset NAME` | `Sim::remove_var` | `env` |
-| `env` | `args A...` | `Sim::set_args`, including the program name | `env` |
-| `env` | `cwd P` | `Sim::set_current_dir` | `env` |
-| `env` | `temp P` | `Sim::set_temp_dir` | `env` |
+| | `seed N` | `World::set_seed` | `random` |
+| | `parallelism N` | `World::set_parallelism` (at least 1) | `rt` |
+| | `clock now=S wall=S` | advances both clocks `now` seconds, then sets the wall clock to `wall` seconds after the Unix epoch; either is optional, and `now-ns=` / `wall-ns=` give nanoseconds | `time` |
+| `env` | `var NAME VALUE` | `World::set_var` | `env` |
+| `env` | `unset NAME` | `World::remove_var` | `env` |
+| `env` | `args A...` | `World::set_args`, including the program name | `env` |
+| `env` | `cwd P` | `World::set_current_dir` | `env` |
+| `env` | `temp P` | `World::set_temp_dir` | `env` |
 | `fs` | `dir P { ... }` | creates a directory, its parents and its contents | `fs` |
 | `fs` | `file P CONTENTS` or `file P hex="00ff"` | creates a file and its parents | `fs` |
-| `net` | `host NAME IP` | `Sim::add_host` | `net` |
+| `net` | `host NAME IP` | `World::add_host` | `net` |
 | `process` | `command PROGRAM [ARGS...] exit=N stdout=".." stderr=".."` | a fixed response, for exactly those arguments if any are given; `exit` defaults to 0 | `process` |
-| `stdio` | `stdin CONTENTS` or `stdin hex=".."` | `Sim::feed_stdin` | `io-std` |
-| `signal` | `ctrl-c [N]` | `Sim::raise_ctrl_c`, `N` times (default 1) | `signal` |
+| `process` | `ran PROGRAM [ARGS...] stdin=".."` | adds to the log of commands run, as if it had run | `process` |
+| `stdio` | `stdin CONTENTS` or `stdin hex=".."` | `World::feed_stdin` | `io-std` |
+| `stdio` | `stdout ..`, `stderr ..` (or `hex=`) | output already written | `io-std` |
+| `signal` | `ctrl-c [N]` | `World::raise_ctrl_c`, `N` times (default 1) | `signal` |
 
 Inside a `dir`, paths are relative to it, and an absolute one is an error.
 In `hex`, spaces and `_` are ignored.
@@ -141,7 +147,15 @@ fs {
 }
 stdio { stdout "done\n"; stderr "" }
 process { ran git status; ran cat stdin="hi" }
+net { host example.com "93.184.216.34" }
 ```
+
+By default, an expected block holds when it is a *subset* of what the
+state writes out (`to_world`): each expected node is there, with the same
+name and arguments and at least the expected properties, and each node in
+an expected block holds the same way inside it. A state whose
+expectations have another shape checks them itself; the built-in ones do,
+as below.
 
 | Block | Expectation | Holds when |
 |---|---|---|
@@ -153,9 +167,7 @@ process { ran git status; ran cat stdin="hi" }
 | `fs` | `absent P` | nothing is there |
 | `stdio` | `stdout ..`, `stderr ..` (or `hex=`) | everything written so far is exactly that |
 | `process` | `ran PROGRAM [ARGS...] [stdin=".."]` | the `ran` lines are every command run or spawned, in order; `stdin` also checks what a child was given |
-
-`seed`, `parallelism`, `net` and `signal` do not change during a run, so
-they have no expectations, and listing one is an error that says so.
+| `net`, `seed`, `parallelism`, `signal` | as written out | a subset of the state's `to_world` |
 
 A failure names the expectation's line and what differs:
 
@@ -164,6 +176,37 @@ the world does not match its expectations:
   line 3: `/tmp/out/report.txt`: expected "total 6\n", found "total 5\n"
   line 7: stdout: expected "done\n", found ""
 ```
+
+## Writing a world out
+
+`world.to_world()` writes every state's blocks, in the order the states
+were added, so a test can snapshot a world, diff two of them, or start a
+new world file from a running one:
+
+```rust
+# #[cfg(all(feature = "test", feature = "fs", feature = "env", feature = "time"))] {
+use seam::effects as fx;
+use seam::ops::fs::write_file;
+
+let mut world = seam::test::world![fx::Var, fx::View, fx::Open<seam::ops::fs::WriteOnly>];
+world.load_world(r#"env { var USER ada }"#).unwrap();
+write_file(&mut world, "/tmp/out", "ok").unwrap();
+let text = world.to_world();
+assert!(text.contains(r#"var USER ada"#));
+assert!(text.contains(r#"file "/tmp/out" ok"#));
+
+// It loads back to the same world.
+let mut copy = seam::test::world![fx::Var, fx::View, fx::Open<seam::ops::fs::WriteOnly>];
+copy.load_world(&text).unwrap();
+assert_eq!(copy.to_world(), text);
+# }
+```
+
+Bytes that are not UTF-8 are written as `hex=`. A clock that is not on a
+whole second is written in nanoseconds (`now-ns=`). The log of commands
+run is written as `ran` lines, which load back into the log. Scripted
+command *handlers* written in Rust have no world-file form; only fixed
+`command` responses are written out.
 
 ## Errors
 
@@ -184,46 +227,43 @@ A block whose feature is off is an error naming the feature
 ("`net` needs seam-test's `net` feature"). Expectations that cannot be read
 are reported as a single failure, at their line.
 
-## Blocks of other parts
+## Blocks of your own
 
-`Sim` reads the blocks above. Any other simulated part of a root (a fake of
-a program's own effect, or another crate's simulated backend) reads blocks
-of its own by implementing `seam::test::World`:
+A state of a program's own implements `seam::test::sim::SimState`: the
+blocks it reads, `load` to set it up from one, and `to_world` to write it
+out. Its expectations are then a subset of its `to_world` with no more
+code; it overrides `check` only for expectations of another shape.
 
 ```rust,ignore
-impl World for Recorded {
+impl SimState for Mounts {
     const BLOCKS: &'static [&'static str] = &["mounts"];
     fn load(&mut self, block: &Node) -> world_file::Result<()> { .. }
-    fn check(&self, block: &Node, failures: &mut Vec<Failure>) -> world_file::Result<()> { .. }
+    fn to_world(&self) -> Vec<Node> {
+        let mut block = Node::new("mounts");
+        for m in &self.0 {
+            block = block.with_child(Node::new("bind").with_arg(&m.source).with_arg(&m.target));
+        }
+        vec![block]
+    }
 }
 ```
 
-One file then sets up and checks a whole root. `load_world` and
-`check_world` take the effects whose parts take part, as a tuple of up to
-32 keys:
+A world holds the states of the effects it lists, and sends each block to
+the state that reads it:
 
-```rust,ignore
-seam::test::load_world::<(fx::Var, fx::View, BindMount), _>(&mut root, r#"
-    env { var MODE test }
-    fs { file "/etc/mounts.toml" "..." }
-    mounts { bind "/srv/base" "/mnt/base" }
-"#)?;
-```
+- A block no state of the world reads is an error, with a suggestion
+  ("unknown `mount` in the world (did you mean `mounts`?)").
+- Two states reading the same block is an error.
+- A built-in block whose feature is off says so ("`net` needs
+  seam-test's `net` feature").
 
-- Each block goes to the part that reads it.
-- A part reached through several of the listed keys (a `Sim` serving
-  `fx::Var` and `fx::View`) is used once.
-- A block no listed part reads is an error, with a suggestion.
-- Two different parts reading the same block is an error: list only one
-  of them.
-
-The nodes are read through `Node` and `Value`, the same public API `Sim`'s
-own blocks use, whose checks (`block`, `arity`, `props_only`, `prop`,
-`no_children`, `string`, `uint`, `bool`, `unknown`) report errors at the
-offending line and column. `node.failure(message)` makes a failed
-expectation at a node. See
-[effects of your own](crate::_docs::guide::your_own_effects) for a complete
-example.
+Nodes are read through `Node` and `Value`, whose checks (`block`,
+`arity`, `props_only`, `prop`, `no_children`, `contents`, `string`,
+`uint`, `bool`, `unknown`) report errors at the offending line and column,
+and built with `Node::new(..).with_arg(..).with_prop(..).with_child(..)`
+and `with_bytes`. `node.failure(message)` makes a failed expectation at a
+node. See [effects of your own](crate::_docs::guide::your_own_effects)
+for a complete example.
 
 ## Why KDL
 

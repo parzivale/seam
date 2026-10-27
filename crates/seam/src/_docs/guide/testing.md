@@ -1,7 +1,9 @@
 # Testing
 
-`seam::test::Sim` is a simulated world that implements every operation
-seam defines. A test sets the world up, hands it to the core in place of a
+A simulated *world* implements seam's operations without touching the
+real one. `seam::test::Sim` is the world of every built-in effect, and
+`seam::test::world![..]` builds one of just the effects listed (yours
+among them). A test sets the world up, hands it to the core in place of a
 real backend, and checks what the core left behind. Its only real effect is
 allocation.
 
@@ -22,10 +24,34 @@ assert_eq!(a, b);
 # }
 ```
 
+## Worlds, and what they are made of
+
+Each effect is simulated on its own key, against a *state* of the world:
+`Now` and `Sleep` against a clock, the filesystem's operations against an
+in-memory tree, and so on. A world holds one state of each type, so
+effects that share one (`Now` and `Sleep`) see the same value.
+
+| State | Its blocks | Its effects |
+|---|---|---|
+| `Clock` | `clock` | `Now`, `Sleep`, `WallClock` |
+| `Random` | `seed` | `FillRandom` |
+| `Env` | `env` | `Var`, `SetVar`, `RemoveVar`, `Args`, `CurrentDir`, `TempDir` |
+| `Files` | `fs` | `Metadata`, `CreateDir`, `RemoveFile`, `RemoveDir`, `Rename`, `CopyFile`, `Open`, `CreateAtomic`, `View`, `ReadDir` |
+| `Net` | `net` | `ResolveInto`, `TcpBind`, `TcpConnect`, `UdpBind` |
+| `Stdio` | `stdio` | `OpenStdin`, `OpenStdout`, `OpenStderr` |
+| `Processes` | `process` | `RunCommand`, `SpawnChild`, `Exit` |
+| `Signals` | `signal` | `CtrlC` |
+| `Tasks` | `parallelism` | `AvailableParallelism` |
+
+`Sim` has all of them. A world of only some effects is a precise grant: a
+core given `world![fx::Now, fx::Sleep]` cannot touch a file, and if it
+tries, it fails to compile. `world.state(|clock: &mut Clock| ..)` reaches
+a state directly.
+
 ## Arranging and asserting
 
-`Sim` has plain methods, outside the capability system, for the test's own
-use. Each group needs its seam feature.
+Every world has plain methods, outside the capability system, for the
+test's own use. Each group needs its seam feature.
 
 | Group | Arrange | Assert |
 |---|---|---|
@@ -39,7 +65,7 @@ use. Each group needs its seam feature.
 | signal | `raise_ctrl_c` | |
 | rt | `set_parallelism` | |
 
-The setters return `&mut Sim`, so they chain. `Sim::run(core)` runs a
+The setters return `&mut World`, so they chain. `Sim::run(core)` runs a
 closure on the world and returns it, for one-line tests:
 
 ```rust
@@ -105,8 +131,9 @@ them possible: see [the async guide](crate::_docs::guide::async_and_concurrency)
 
 ## World files
 
-A world file describes the starting world, and what it should look like
-afterwards, in KDL:
+A world file describes the starting world, what it should look like
+afterwards, or a snapshot of it, in KDL. Each block goes to the state that
+reads it:
 
 ```rust
 # #[cfg(all(feature = "test", feature = "fs", feature = "env", feature = "io-std"))] {
@@ -127,14 +154,19 @@ sim.assert_world(r#"
 ```
 
 `check_world` returns every failed expectation with its line, and
-`assert_world` panics with them. See [the format](crate::_docs::world_files)
-for every directive.
+`assert_world` panics with them. `to_world` writes the whole world out in
+the same format, for a snapshot or a diff. See
+[the format](crate::_docs::world_files) for every directive.
 
-## Simulated parts of your own
+## Simulating your own effects
 
-A fake of a program's own effect is a part of a root beside the `Sim`, and
-can read its own world-file blocks: see
-[effects of your own](crate::_docs::guide::your_own_effects).
+A program's own effect is simulated the same way as seam's: two sister
+traits on its key (`Simulated`, naming its state, and `Simulate<O>`,
+running an operation), and a state that reads and writes its own
+world-file blocks. List it in a world beside seam's effects, and one world
+file sets up and checks both. A simulated effect can also be built from
+others: its handler performs seam's simulated effects through the
+`States` it is given. See [effects of your own](crate::_docs::guide::your_own_effects).
 
 ## Checking a fake against the real thing
 

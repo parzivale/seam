@@ -495,7 +495,7 @@ fn a_block_no_state_reads_is_an_error() {
     let err = world.load_world("mounts { }").unwrap_err();
     assert_eq!(
         err.message,
-        "unknown `mounts` in the world (expected one of: `fs`)"
+        "unknown `mounts` in the world (expected one of: `fs`, `clock`, `env`)"
     );
     let mut world = seam_test::world![fx::View, Bind];
     let err = world.load_world("mount { }").unwrap_err();

@@ -1004,6 +1004,14 @@ impl SimState for Files {
         }
         Ok(())
     }
+
+    /// Writes stamp files with the clock, and relative paths resolve
+    /// against the environment's current directory.
+    fn uses(world: &mut crate::sim::Uses<'_>) {
+        world.state::<crate::sim::Clock>();
+        #[cfg(feature = "env")]
+        world.state::<crate::sim::Env>();
+    }
 }
 
 // Every capability type opts in to seam's lifts.

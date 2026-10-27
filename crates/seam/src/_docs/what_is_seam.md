@@ -36,9 +36,11 @@ real randomness) or `seam::tokio::Tokio`, unchanged.
 
 Three things follow:
 
-- **Testable cores.** A core runs against `seam::test::Sim`, a simulated
-  world with a virtual clock, seeded randomness, an in-memory filesystem
-  and network, scripted commands and captured output. Tests are fast and
+- **Testable cores.** A core runs against a simulated world
+  (`seam::test::Sim`, or a `world!` of just the effects it needs) with a
+  virtual clock, seeded randomness, an in-memory filesystem and network,
+  scripted commands and captured output. Effects of the program's own are
+  simulated the same way, on their own keys. Tests are fast and
   deterministic, and concurrency bugs are reproduced from a seed.
 - **Signatures are an audit.** A function's bounds list everything it can
   do. A core bounded on `Open<'a, ReadOnly, F>` cannot write a file, and
@@ -56,7 +58,8 @@ tail-resumptive handlers**, encoded in Rust's traits:
 | an operation (a request to the outside world) | a type implementing [`Operation`](crate::Operation), naming its result: `Sleep`, `Open`, a `Get` of your own |
 | an effect signature (what a computation may do) | trait bounds: `C: Perform<Sleep> + Inspect<Now>` |
 | performing an operation | `c.perform(Sleep(d))`, `c.inspect(Now)` |
-| a handler | an `impl Perform<Sleep> for Std`, or for `Sim`, or for a fake |
+| a handler | an `impl Perform<Sleep> for Std`, or for a fake |
+| a simulated handler | `impl Simulate<Sleep> for effects::Sleep`: defined on the effect's own key, against a state of a simulated world |
 | installing handlers | passing a capability value: `core(&mut Std)`, `core(&mut sim)`, `core(&mut root)` |
 | composing handlers, one per effect | a [`Root`](crate::Root): each part serves the effects listed for it |
 | a handler built on other effects | a part that holds another capability and performs through it |

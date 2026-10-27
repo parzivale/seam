@@ -118,6 +118,30 @@ pub trait SimState: Any + Send + Default {
         check_subset(&self.to_world(), block, failures);
         Ok(())
     }
+
+    /// Adds the states this one uses to a world it is added to, so that the
+    /// world reads and writes their blocks from the start. The filesystem
+    /// uses the clock (to stamp files) and the environment (for the current
+    /// directory). None, by default.
+    fn uses(world: &mut Uses<'_>) {
+        let _ = world;
+    }
+}
+
+/// What [`SimState::uses`] adds states to.
+pub struct Uses<'a>(&'a mut Inner);
+
+impl Uses<'_> {
+    /// Adds the state `S`, fresh, unless the world has it.
+    pub fn state<S: SimState>(&mut self) {
+        self.0.state::<S>();
+    }
+}
+
+impl core::fmt::Debug for Uses<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Uses").finish_non_exhaustive()
+    }
 }
 
 /// The state an effect works on. Implemented on the effect's key, beside
@@ -306,7 +330,9 @@ impl Inner {
                     blocks: S::BLOCKS,
                     state: Box::new(S::default()),
                 });
-                self.list.len() - 1
+                let i = self.list.len() - 1;
+                S::uses(&mut Uses(self));
+                i
             }
         };
         self.list[i]

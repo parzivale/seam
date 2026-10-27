@@ -11,7 +11,7 @@ the longer record of decisions and the alternatives that were set aside.
 | `seam-core` | `seam-rs-core` | the traits, the operation types and their helpers, roots | nothing; `no_std` |
 | `seam-std` | `seam-rs-std` | `Std`: every operation, through std | seam-core |
 | `seam-tokio` | `seam-rs-tokio` | `Tokio`: the async operations, through Tokio | seam-core, Tokio |
-| `seam-test` | `seam-rs-test` | `Sim`, the deterministic runtime and threads, world files | seam-core; nothing else |
+| `seam-test` | `seam-rs-test` | simulated worlds (`Sim`, `world!`), the deterministic runtime and threads, world files | seam-core; nothing else |
 | `seam` | `seam-rs` | re-exports, behind features | the above, optionally |
 
 Features come in two independent kinds. **Capability groups** (`fs`, `net`,
@@ -235,15 +235,66 @@ in seam.
 
 ## The simulation
 
-### One shared world
+### Effects simulated on their keys
 
-All of a `Sim`'s state (clock, random generator, environment, files,
-network, stdio, scripted commands, Ctrl-C) lives in one `World` behind an
-`Arc<Mutex<_>>`, and a `Sim` is a handle to it. Handles the `Sim` hands out
-(an open file, a socket) hold the same `Arc`, which is why they can outlive
-the borrow that made them, and why `Sim` is `Clone` with every clone the
-same world. Without std there is no mutex, and the `Sim` holds its clock
-and random generator itself.
+A simulated effect is defined on its key, with two sister traits, the way
+`Effect` names the key itself:
+
+```rust,ignore
+pub trait Simulated {
+    type State: SimState;              // what the effect works on
+}
+pub trait Simulate<O: Operation>: Simulated {
+    fn run(states: &mut States<'_>, op: O) -> O::Outcome;
+}
+
+pub trait SimState: Any + Send + Default {
+    const BLOCKS: &'static [&'static str];         // its world-file blocks
+    fn load(&mut self, block: &Node) -> Result<()>;
+    fn to_world(&self) -> Vec<Node>;
+    fn check(&self, block: &Node, failures: &mut Vec<Failure>) -> Result<()> { /* subset of to_world */ }
+    fn uses(world: &mut Uses<'_>) {}               // states it brings along
+}
+```
+
+The key, not a handler type, is the one name an effect has, so there is
+no list of handlers to keep beside the list of keys. seam-test implements
+the traits on seam-core's keys (a crate may implement its own trait for
+another crate's types), and a program implements them on its own keys.
+Built-in and program effects are written the same way.
+
+A `World<G>` holds the states, one per type, behind an `Arc<Mutex<_>>`,
+in the order they were added. Every clone is a handle on the same states,
+and so is every handle a world hands out (an open file, a socket), which
+is why handles outlive the borrow that made them. The states are boxed
+behind a small object-safe trait, and found by `TypeId`: the one place
+seam-test dispatches dynamically, and only for setup, checks and
+`state::<S>()` lookups.
+
+The world implements every capability form for an operation `O` when its
+key has a `Simulate<O>` impl and `G: Grants<O::Key>`. `world![K, ..]`
+defines a fresh `G` with one `Grants` impl per key listed, and adds each
+key's state, so an effect the world does not list is a compile error.
+`Sim` is `World<Everything>`, whose `G` grants every built-in key, with
+every built-in state added up front.
+
+**Locking.** `States` locks the world lazily, the first time a handler
+reaches a state, and the lock is released when the operation returns. A
+handler that only commits a handle (closing a stream shuts it down, and
+the stream locks the world itself) never takes it. `States` is also a
+capability for every simulated effect, so a handler can perform others
+(`write_file(states, ..)`); each runs as a step of its own, with the world
+unlocked around it, so the handles it opens can lock. Scripted command
+handlers, which are the test's own code, run with the world unlocked.
+
+**States that use others.** The filesystem stamps writes with the clock
+and resolves relative paths against the environment, so adding `Files`
+to a world adds `Clock` and `Env` too (`SimState::uses`). A world's
+`to_world` then always loads back into a fresh world of the same effects.
+
+**Without std** there is no mutex or boxing: `Sim` is a small struct of a
+virtual clock and seeded random numbers, implementing those operations
+itself, and allocating nothing.
 
 That mutex, the runtimes' bookkeeping and the simulated channels and cells
 are seam-test's only shared state. The crate is linted with seam's own
@@ -284,19 +335,17 @@ payload.
 ### World files
 
 The parser handles the subset of KDL v2 world files use, with positions on
-every node and value. `World` is the trait a simulated part implements to
-read its blocks. `load_world::<K, _>` and `check_world::<K, _>` take a
-tuple of up to 32 keys (the impls are written by a macro); for each block,
-they ask each key's part for its `BLOCKS`, find the one that reads it, and
-compare parts by address and type so a part reached through several keys
-is used once.
+every node and value, and a writer prints nodes back. A world sends each
+top-level block to the one state whose `BLOCKS` names it (an error if none
+does, or if two do), and `to_world` concatenates every state's output.
 
-`Sim`'s own blocks are an ordinary `World` impl, in its own module, that
-uses only public API: `Node`, `Value` and `Sim`'s public methods. An
-integration test compiles that same source file outside seam-test, over a
-stand-in `Sim` that reaches the real one only through `Deref`, so any
-private item it used would fail the build. That keeps extending the
-simulation exactly as capable for other crates as for seam itself.
+Checking defaults to a subset test against `to_world`: an expected node
+holds if a node with the same name and arguments is there with at least
+the expected properties, and the expected node's children hold the same
+way inside it. That makes a state's expectations free once it can write
+itself out; states with expectations of another shape (an absent file, an
+unset variable, exact output, the exact command log) check them
+themselves.
 
 ## Keeping cores honest
 

@@ -791,6 +791,12 @@ impl SimState for Processes {
         }
         Ok(())
     }
+
+    /// Output a child inherits goes to standard output and error.
+    #[cfg(feature = "io-std")]
+    fn uses(world: &mut crate::sim::Uses<'_>) {
+        world.state::<crate::sim::Stdio>();
+    }
 }
 
 /// Runs `f`, catching a simulated [`Exit`] as `Err(code)`. Other panics

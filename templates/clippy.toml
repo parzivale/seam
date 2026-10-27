@@ -1,7 +1,7 @@
 # Copy into a crate that should stay sans-effect. It bans reaching around
 # seam to std or Tokio directly, so every effect has to arrive as a
-# capability bound. Backends (seam-std, seam-tokio, seam-futures, seam-jiff) must not use
-# this file.
+# capability bound. Backends and wrappers (seam-std, seam-tokio, seam-smol, seam-futures,
+# seam-jiff, ...) must not use this file.
 disallowed-types = [
     { path = "std::fs::File", reason = "take `Provide<Open<M, F>>` instead" },
     { path = "std::fs::OpenOptions", reason = "take `Provide<Open<M, F>>` instead" },
@@ -20,6 +20,8 @@ disallowed-types = [
     { path = "std::sync::mpsc::Receiver", reason = "take `Perform<Channel<S, R>>` instead" },
     { path = "tokio::fs::File", reason = "take `AsyncProvide<Open<M, F>>` instead" },
     { path = "tokio::net::TcpStream", reason = "take `SendPerform<TcpConnect<S>>` instead" },
+    { path = "smol::fs::File", reason = "take `AsyncProvide<Open<M, F>>` instead" },
+    { path = "smol::net::TcpStream", reason = "take `SendPerform<TcpConnect<S>>` instead" },
     { path = "tokio::net::TcpListener", reason = "take `SendPerform<TcpBind<L>>` instead" },
     { path = "tokio::net::UdpSocket", reason = "take `SendPerform<UdpBind<U>>` instead" },
 ]
@@ -61,6 +63,31 @@ disallowed-methods = [
     { path = "jiff::tz::TimeZone::try_system", reason = "take `Inspect<seam_jiff::SystemTimeZone>` instead" },
     { path = "jiff::tz::TimeZone::get", reason = "take `Inspect<seam_jiff::TimeZoneFor>` instead" },
     { path = "jiff::tz::db", reason = "take `Inspect<seam_jiff::TimeZoneFor>` instead" },
+    { path = "rand::rng", reason = "use `seam_rand::rng` over `Perform<FillRandom>` instead" },
+    { path = "rand::random", reason = "use `seam_rand::rng` over `Perform<FillRandom>` instead" },
+    { path = "rand::make_rng", reason = "use `seam_rand::seeded` instead" },
+    { path = "uuid::Uuid::new_v4", reason = "use `seam_uuid::new_v4` instead" },
+    { path = "uuid::Uuid::now_v7", reason = "use `seam_uuid::new_v7` instead" },
+    { path = "dirs::home_dir", reason = "use `seam_dirs::dir(c, Dir::Home)` instead" },
+    { path = "dirs::config_dir", reason = "use `seam_dirs::dir(c, Dir::Config)` instead" },
+    { path = "dirs::cache_dir", reason = "use `seam_dirs::dir(c, Dir::Cache)` instead" },
+    { path = "dirs::data_dir", reason = "use `seam_dirs::dir(c, Dir::Data)` instead" },
+    { path = "notify::recommended_watcher", reason = "acquire `seam_notify::Watch` instead" },
+    { path = "reqwest::get", reason = "take `Perform<seam_reqwest::Fetch>` instead" },
+    { path = "reqwest::Client::execute", reason = "take `Perform<seam_reqwest::Fetch>` instead" },
+    { path = "reqwest::RequestBuilder::send", reason = "take `Perform<seam_reqwest::Fetch>` instead" },
+    { path = "sqlx::Pool::connect", reason = "take `seam_sqlx::Execute`/`Fetch` bounds; connect in the edge" },
+    { path = "smol::spawn", reason = "spawning is an effect" },
+    { path = "smol::Timer::after", reason = "take `SendPerform<Sleep>` instead" },
+    { path = "rustix::mount::mount", reason = "take `Perform<seam_unix::Mount>` instead" },
+    { path = "rustix::mount::mount_bind", reason = "take `Perform<seam_unix::Mount>` instead" },
+    { path = "rustix::mount::unmount", reason = "take `Perform<seam_unix::Unmount>` instead" },
+    { path = "rustix::process::kill_process", reason = "take `Perform<seam_unix::Kill>` instead" },
+    { path = "nix::mount::mount", reason = "take `Perform<seam_unix::Mount>` instead" },
+    { path = "nix::mount::umount", reason = "take `Perform<seam_unix::Unmount>` instead" },
+    { path = "nix::mount::umount2", reason = "take `Perform<seam_unix::Unmount>` instead" },
+    { path = "nix::sys::signal::kill", reason = "take `Perform<seam_unix::Kill>` instead" },
+    { path = "nix::unistd::chown", reason = "take `Perform<seam_unix::Chown>` instead" },
 ]
 disallowed-macros = [
     { path = "std::println", reason = "use `seam::ops::stdio::println` instead" },

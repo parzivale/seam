@@ -14,6 +14,17 @@ categories.workspace = true
 seam-core = { workspace = true }
 seam-futures = { workspace = true, optional = true }
 seam-jiff = { workspace = true, optional = true }
+seam-dirs = { workspace = true, optional = true }
+seam-nix = { workspace = true, optional = true }
+seam-notify = { workspace = true, optional = true }
+seam-rand = { workspace = true, optional = true }
+seam-reqwest = { workspace = true, optional = true }
+seam-rustix = { workspace = true, optional = true }
+seam-smol = { workspace = true, optional = true }
+seam-sqlx = { workspace = true, optional = true }
+seam-tracing = { workspace = true, optional = true }
+seam-unix = { workspace = true, optional = true }
+seam-uuid = { workspace = true, optional = true }
 seam-std = { workspace = true, optional = true }
 seam-test = { workspace = true, optional = true }
 seam-tokio = { workspace = true, optional = true }
@@ -41,27 +52,43 @@ futures = ["dep:seam-futures"]
 # the tz database compiled in.
 jiff = ["dep:seam-jiff", "fs", "env", "time"]
 jiff-bundled = ["jiff", "seam-jiff?/bundled"]
+# The smol backend, `seam::smol`: like `tokio`, an async backend for time,
+# files, the network, stdio, processes, Ctrl-C, tasks and channels.
+smol = ["dep:seam-smol"]
+# Wrappers of popular crates, each its own effects with a real handler
+# and one for tests. Each brings in the operation types it is built on.
+rand = ["dep:seam-rand", "random"]
+uuid = ["dep:seam-uuid", "random", "time", "std"]
+dirs = ["dep:seam-dirs", "env"]
+tracing = ["dep:seam-tracing"]
+notify = ["dep:seam-notify", "fs", "time"]
+reqwest = ["dep:seam-reqwest"]
+sqlx = ["dep:seam-sqlx"]
+# Unix effects (`seam::unix`), and their handlers over rustix and nix.
+unix = ["dep:seam-unix", "fs"]
+rustix = ["unix", "dep:seam-rustix"]
+nix = ["unix", "dep:seam-nix"]
 test = ["dep:seam-test"]
 
 # Capability groups. Each enables its operation types and, in whichever
 # backends are on, their implementations. None of them enables a backend.
 # Those whose types need std (`io::Error`, `Path`, ...) link std, but a
 # core using only them still performs no effects of its own.
-fs = ["seam-core/fs", "seam-std?/fs", "seam-tokio?/fs", "seam-test?/fs", "seam-futures?/fs"]
-net = ["seam-core/net", "seam-std?/net", "seam-tokio?/net", "seam-test?/net", "seam-futures?/net"]
-process = ["seam-core/process", "seam-std?/process", "seam-tokio?/process", "seam-test?/process", "seam-futures?/process"]
+fs = ["seam-core/fs", "seam-std?/fs", "seam-tokio?/fs", "seam-test?/fs", "seam-futures?/fs", "seam-smol?/fs"]
+net = ["seam-core/net", "seam-std?/net", "seam-tokio?/net", "seam-test?/net", "seam-futures?/net", "seam-smol?/net"]
+process = ["seam-core/process", "seam-std?/process", "seam-tokio?/process", "seam-test?/process", "seam-futures?/process", "seam-smol?/process"]
 env = ["seam-core/env", "seam-std?/env", "seam-test?/env"]
-io-std = ["seam-core/io-std", "seam-std?/io-std", "seam-tokio?/io-std", "seam-test?/io-std"]
-signal = ["seam-core/signal", "seam-tokio?/signal", "seam-test?/signal"]
+io-std = ["seam-core/io-std", "seam-std?/io-std", "seam-tokio?/io-std", "seam-test?/io-std", "seam-smol?/io-std"]
+signal = ["seam-core/signal", "seam-tokio?/signal", "seam-test?/signal", "seam-smol?/signal"]
 # Channels and shared cells. No std needed for the operation types.
-sync = ["seam-core/sync", "seam-std?/sync", "seam-tokio?/sync", "seam-test?/sync", "seam-futures?/sync"]
+sync = ["seam-core/sync", "seam-std?/sync", "seam-tokio?/sync", "seam-test?/sync", "seam-futures?/sync", "seam-smol?/sync"]
 # Usable without std: `Sleep`, `Now`, `RandomU64`, `FillRandom`, and the
 # task operations (`Spawn`, `Join`, ...). In the Tokio backend, `rt` also
 # turns on Tokio's runtime, as in Tokio; with `test`, it adds the simulated
 # runtime, which needs std.
-time = ["seam-core/time", "seam-std?/time", "seam-tokio?/time", "seam-test?/time", "seam-futures?/time"]
+time = ["seam-core/time", "seam-std?/time", "seam-tokio?/time", "seam-test?/time", "seam-futures?/time", "seam-smol?/time"]
 random = ["seam-core/random", "seam-std?/random", "seam-test?/random"]
-rt = ["seam-core/rt", "seam-std?/rt", "seam-tokio?/rt", "seam-test?/rt", "seam-futures?/rt"]
+rt = ["seam-core/rt", "seam-std?/rt", "seam-tokio?/rt", "seam-test?/rt", "seam-futures?/rt", "seam-smol?/rt"]
 # `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type.
 alloc = ["seam-core/alloc"]
 # Handle-level read/write operations alone; `fs`, `net` and `process` pull

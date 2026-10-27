@@ -1663,11 +1663,22 @@ name = "seam-rs"
 version = "0.5.0"
 dependencies = [
  "seam-rs-core",
+ "seam-rs-dirs",
  "seam-rs-futures",
  "seam-rs-jiff",
+ "seam-rs-nix",
+ "seam-rs-notify",
+ "seam-rs-rand",
+ "seam-rs-reqwest",
+ "seam-rs-rustix",
+ "seam-rs-smol",
+ "seam-rs-sqlx",
  "seam-rs-std",
  "seam-rs-test",
  "seam-rs-tokio",
+ "seam-rs-tracing",
+ "seam-rs-unix",
+ "seam-rs-uuid",
  "tokio",
 ]
 

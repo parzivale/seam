@@ -8,8 +8,9 @@ seam = { package = "seam-rs", version = "0.5", features = ["fs", "std"] }
 ```
 
 The crates are published as `seam-rs`, `seam-rs-core`, `seam-rs-std`,
-`seam-rs-tokio`, `seam-rs-futures`, `seam-rs-jiff` and `seam-rs-test`; in
-code they are still `seam`, `seam_core`, and so on.
+`seam-rs-tokio`, `seam-rs-smol`, `seam-rs-test`, and one `seam-rs-*` crate
+per wrapped library (below); in code they are still `seam`, `seam_core`,
+and so on.
 
 Sans-IO pulls I/O out of protocol logic. `seam` pulls out **every** effect:
 I/O, time, randomness, shared state. The core of your program is written
@@ -86,8 +87,18 @@ where
 | [`seam-core`](https://github.com/parzivale/seam/tree/main/crates/seam-core) (`seam-rs-core`) | The traits (`Operation`, `Query`, `Inspect`, `Perform`, `Provide`/`Lend` and their async forms, `block_on`), the operation and acquisition types, and a `prelude`. `no_std`. |
 | [`seam-std`](https://github.com/parzivale/seam/tree/main/crates/seam-std) (`seam-rs-std`) | The std backend: a `Std` capability (used alone, or as a part of a `Root`) and newtype handles (`File`, `TcpStream`, ...) that expose no std I/O traits. |
 | [`seam-tokio`](https://github.com/parzivale/seam/tree/main/crates/seam-tokio) (`seam-rs-tokio`) | The Tokio backend: a `Tokio` capability implementing the async and `Send` capability traits, for time, files, the network, stdio, processes, signals, tasks and channels. |
+| [`seam-smol`](https://github.com/parzivale/seam/tree/main/crates/seam-smol) (`seam-rs-smol`) | The smol backend: a `Smol` capability implementing the async and `Send` traits, for time, files, the network, stdio, processes, Ctrl-C (Unix), tasks and channels. |
 | [`seam-futures`](https://github.com/parzivale/seam/tree/main/crates/seam-futures) (`seam-rs-futures`) | The futures-rs backend: `Futures` (channels and shared cells that need no runtime) and `Executor` (tasks on any futures-rs executor), futures-io adapters both ways, `Stream`s of messages, lines and directory entries, and helpers that need concurrency within a task (`within`, `copy_bidirectional`, `pipe_through`). |
 | [`seam-jiff`](https://github.com/parzivale/seam/tree/main/crates/seam-jiff) (`seam-rs-jiff`) | Time zones as effects, over jiff: `TimeZoneFor` and `SystemTimeZone` queries, answered by `TzDb` (the tz database, read through the filesystem of any capability, so a `Sim` decides what the zones are) or `Bundled` (compiled in), and `now_in`, `now_local` and friends over `WallClock`. |
+| [`seam-rand`](https://github.com/parzivale/seam/tree/main/crates/seam-rand) (`seam-rs-rand`) | rand on seam's randomness: any `FillRandom` capability as a rand RNG, or a rand generator seeded from it. `no_std`. |
+| [`seam-uuid`](https://github.com/parzivale/seam/tree/main/crates/seam-uuid) (`seam-rs-uuid`) | v4 UUIDs from `FillRandom`, time-ordered v7 UUIDs from `WallClock` and `FillRandom`. |
+| [`seam-dirs`](https://github.com/parzivale/seam/tree/main/crates/seam-dirs) (`seam-rs-dirs`) | Home, config, cache and data directories by the rules of `dirs`/`directories`, from the environment seam reads. |
+| [`seam-tracing`](https://github.com/parzivale/seam/tree/main/crates/seam-tracing) (`seam-rs-tracing`) | Logging as an effect (`Log`, `info!`, ...), sent to tracing, or captured and checked in world files. |
+| [`seam-notify`](https://github.com/parzivale/seam/tree/main/crates/seam-notify) (`seam-rs-notify`) | File watching as a scope: the OS's events through notify, or rescanning through any capability's filesystem (so a `Sim` drives it). |
+| [`seam-reqwest`](https://github.com/parzivale/seam/tree/main/crates/seam-reqwest) (`seam-rs-reqwest`) | HTTP requests as an effect (`Fetch`, over `http`'s types), sent with reqwest, or scripted per URL in tests. |
+| [`seam-sqlx`](https://github.com/parzivale/seam/tree/main/crates/seam-sqlx) (`seam-rs-sqlx`) | SQL as effects: `Execute`, `Fetch`, transactions as scopes, portable values; sqlx's `Any` pool, or in-memory SQLite in tests. |
+| [`seam-unix`](https://github.com/parzivale/seam/tree/main/crates/seam-unix) (`seam-rs-unix`) | Unix effects: mounts, `chmod`/`chown`, symlinks, IDs, signals, the host name, the umask; and `SimUnix`, which simulates them. |
+| [`seam-rustix`](https://github.com/parzivale/seam/tree/main/crates/seam-rustix), [`seam-nix`](https://github.com/parzivale/seam/tree/main/crates/seam-nix) | `seam-unix`'s effects performed with rustix, or with nix. |
 | [`seam-test`](https://github.com/parzivale/seam/tree/main/crates/seam-test) (`seam-rs-test`) | The pure test backend: a `Sim` world with a virtual clock, seeded randomness, in-memory filesystem and network, scripted commands and captured stdio. Its only real effect is allocation. |
 | [`seam`](https://github.com/parzivale/seam/tree/main/crates/seam) (`seam-rs`) | Re-exports everything, behind feature flags. `no_std` by default. |
 
@@ -117,6 +128,9 @@ and only the binary (or its tests) picks a backend.
 | `tokio` | The Tokio backend, `seam::tokio`. |
 | `futures` | The futures-rs backend, `seam::futures`. |
 | `jiff`, `jiff-bundled` | Time zones over jiff, `seam::jiff`; `jiff-bundled` adds the compiled-in tz database. |
+| `smol` | The smol backend, `seam::smol`. |
+| `rand`, `uuid`, `dirs`, `tracing`, `notify`, `reqwest`, `sqlx` | The wrapper of that crate, as `seam::rand`, `seam::uuid`, and so on. |
+| `unix`, `rustix`, `nix` | Unix effects, `seam::unix`, and their handlers over rustix (`seam::rustix`) and nix (`seam::nix`). |
 | `test` | The pure test backend, `seam::test`. No std on its own. |
 | `rt-multi-thread`, `test-util` | Tokio runtime options, named as in Tokio. Only with `tokio`. |
 

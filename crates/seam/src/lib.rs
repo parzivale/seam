@@ -285,3 +285,47 @@ pub use seam_futures as futures;
 /// filesystem, so tests decide what they are.
 #[cfg(feature = "jiff")]
 pub use seam_jiff as jiff;
+
+/// The smol backend.
+#[cfg(feature = "smol")]
+pub use seam_smol as smol;
+
+/// rand on seam's randomness.
+#[cfg(feature = "rand")]
+pub use seam_rand as rand;
+
+/// UUIDs from seam's randomness and clock.
+#[cfg(feature = "uuid")]
+pub use seam_uuid as uuid;
+
+/// Platform directories, from seam's environment.
+#[cfg(feature = "dirs")]
+pub use seam_dirs as dirs;
+
+/// Logging as an effect, sent to tracing or captured.
+#[cfg(feature = "tracing")]
+pub use seam_tracing as tracing;
+
+/// File watching, from the OS or by rescanning.
+#[cfg(feature = "notify")]
+pub use seam_notify as notify;
+
+/// HTTP requests as an effect, with reqwest or scripted.
+#[cfg(feature = "reqwest")]
+pub use seam_reqwest as reqwest;
+
+/// SQL queries and transactions as effects, with sqlx.
+#[cfg(feature = "sqlx")]
+pub use seam_sqlx as sqlx;
+
+/// Unix effects: mounts, permissions, links, IDs, signals.
+#[cfg(feature = "unix")]
+pub use seam_unix as unix;
+
+/// Unix effects performed with rustix.
+#[cfg(feature = "rustix")]
+pub use seam_rustix as rustix;
+
+/// Unix effects performed with nix.
+#[cfg(feature = "nix")]
+pub use seam_nix as nix;

@@ -104,6 +104,35 @@ feature), makes time zones effects:
   `ThreadPool::new`; `println!` and `eprintln!` now point at the new
   `println` and `eprintln` helpers.
 
+### smol backend
+
+A new crate, `seam-smol` (`seam-rs-smol`, `seam::smol` with the `smol`
+feature): a `Smol` capability for time, files, TCP and UDP, processes,
+stdio, Ctrl-C (Unix), tasks and task sets on smol's global executor,
+channels, shared cells and every timeout, as `seam-tokio` does for Tokio.
+`Split` lends two clones of a stream, so a failed split loses nothing.
+
+### Wrappers of popular crates
+
+Each is its own crate (`seam-rs-<name>`, and a `seam` feature of that
+name re-exporting it as `seam::<name>`): the library's effects as seam
+operations, a real handler, and one for tests. `templates/clippy.toml`
+bans each library's own direct calls.
+
+| Crate | Effects | Real | For tests |
+|---|---|---|---|
+| `seam-rand` | rand's API over `FillRandom` (`rng`, `seeded`) | any `FillRandom` | a seeded `Sim` |
+| `seam-uuid` | `new_v4`, `new_v7` over `FillRandom` and `WallClock` | `Std` | `Sim` |
+| `seam-dirs` | platform directories (`dir`, `ProjectDirs`) over `Var` | `Std` | `Sim`'s `set_var` |
+| `seam-tracing` | `Log`, with `error!` .. `trace!` | `Tracing` | `Captured` (world-file `logs` block) |
+| `seam-notify` | the `Watch` scope, `NextEvent` | `Notify` (the OS) | `Polling` over a `Sim` |
+| `seam-reqwest` | `Fetch` (an `http::Request` to an `http::Response`), `get`, `get_text`, `post` | `Reqwest` | `Scripted` (world-file `http` block) |
+| `seam-sqlx` | `Execute`, `Fetch`, `Begin` (a transaction scope), `Acquire` | `Sqlx` (an `AnyPool`) | `Sqlx::memory` (in-memory SQLite) |
+| `seam-unix` | `Mount`, `Unmount`, `Chmod`, `Chown`, `Symlink`, `ReadLink`, `Ids`, `ProcessId`, `Hostname`, `Kill`, `SetUmask` | `seam-rustix`'s `Rustix`, `seam-nix`'s `Nix` | `SimUnix` (world-file `unix` block) |
+
+All of them build on Rust 1.85: the resolver picks the newest release of
+each library that does (uuid 1.26, sqlx 0.8, reqwest 0.12).
+
 ### Documentation
 
 - A `docs` feature adds `seam::_docs`: what seam is, usage guides, the

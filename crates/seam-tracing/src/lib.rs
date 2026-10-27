@@ -244,7 +244,7 @@ where
     c.perform(Log::new(level, target, message));
 }
 
-/// [`log`], for async capabilities.
+/// [`log()`], for async capabilities.
 pub async fn log_async<C>(c: &mut C, level: Level, target: &str, message: &str)
 where
     C: for<'a> seam_core::future::AsyncPerform<Log<'a>> + ?Sized,
@@ -252,7 +252,7 @@ where
     c.perform_async(Log::new(level, target, message)).await;
 }
 
-/// [`log`], with a `Send` future: for multithreaded runtimes.
+/// [`log()`], with a `Send` future: for multithreaded runtimes.
 pub async fn log_send<C>(c: &mut C, level: Level, target: &str, message: &str)
 where
     C: for<'a> seam_core::future::SendPerform<Log<'a>> + Send + ?Sized,

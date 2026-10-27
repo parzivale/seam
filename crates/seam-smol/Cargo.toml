@@ -1,0 +1,50 @@
+[package]
+name = "seam-rs-smol"
+description = "smol backend for seam: async implementations of seam operations over smol."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+seam-core = { workspace = true, features = ["std"] }
+smol = { workspace = true }
+# Bounded channels: futures-rs's can reserve room, so a timed-out send can
+# hand its message back.
+futures = { workspace = true, features = ["std"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+async-signal = { workspace = true, optional = true }
+
+[dev-dependencies]
+seam-core = { workspace = true, features = ["full"] }
+
+# Each turns on the matching seam-core operation types. smol itself has no
+# features: it is always all there.
+[features]
+default = []
+full = ["fs", "net", "time", "process", "io-std", "signal", "sync", "rt"]
+
+rt = ["seam-core/rt"]
+fs = ["seam-core/fs"]
+net = ["seam-core/net"]
+time = ["seam-core/time"]
+process = ["seam-core/process"]
+io-std = ["seam-core/io-std"]
+# Ctrl-C, on Unix (async-signal).
+signal = ["seam-core/signal", "dep:async-signal"]
+# `time` too: `try_send` and `try_recv` are a timeout of zero.
+sync = ["time", "seam-core/sync", "dep:futures"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
+name = "seam_smol"
+
+[lints]
+workspace = true

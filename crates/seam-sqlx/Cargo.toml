@@ -1,0 +1,34 @@
+[package]
+name = "seam-rs-sqlx"
+description = "SQL databases for seam: queries and transactions as effects, performed with sqlx, and tested against in-memory SQLite."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+seam-core = { workspace = true, features = ["std"] }
+sqlx = { workspace = true, features = ["any", "runtime-tokio", "macros"] }
+
+[dev-dependencies]
+seam-tokio = { workspace = true, features = ["rt"] }
+
+[features]
+default = ["sqlite"]
+# The drivers `Sqlx` can connect with, by URL scheme.
+sqlite = ["sqlx/sqlite"]
+postgres = ["sqlx/postgres"]
+mysql = ["sqlx/mysql"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
+name = "seam_sqlx"
+
+[lints]
+workspace = true

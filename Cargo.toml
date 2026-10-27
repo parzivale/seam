@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/seam", "crates/seam-core", "crates/seam-dirs", "crates/seam-futures", "crates/seam-jiff", "crates/seam-notify", "crates/seam-rand", "crates/seam-reqwest", "crates/seam-std", "crates/seam-test", "crates/seam-tokio", "crates/seam-tracing", "crates/seam-uuid"]
+members = ["crates/seam", "crates/seam-core", "crates/seam-dirs", "crates/seam-futures", "crates/seam-jiff", "crates/seam-notify", "crates/seam-rand", "crates/seam-reqwest", "crates/seam-sqlx", "crates/seam-std", "crates/seam-test", "crates/seam-tokio", "crates/seam-tracing", "crates/seam-uuid"]
 
 [workspace.package]
 version = "0.5.0"
@@ -24,6 +24,7 @@ seam-dirs = { package = "seam-rs-dirs", path = "crates/seam-dirs", version = "0.
 seam-tracing = { package = "seam-rs-tracing", path = "crates/seam-tracing", version = "0.5.0", default-features = false }
 seam-notify = { package = "seam-rs-notify", path = "crates/seam-notify", version = "0.5.0", default-features = false }
 seam-reqwest = { package = "seam-rs-reqwest", path = "crates/seam-reqwest", version = "0.5.0", default-features = false }
+seam-sqlx = { package = "seam-rs-sqlx", path = "crates/seam-sqlx", version = "0.5.0", default-features = false }
 tokio = { version = "1.54", default-features = false }
 futures = { version = "0.3.34", default-features = false }
 jiff = { version = "0.2.38", default-features = false }
@@ -34,6 +35,7 @@ tracing = { version = "0.1.40", default-features = false }
 notify = { version = "8", default-features = false }
 reqwest = { version = "0.12", default-features = false }
 http = { version = "1", default-features = false }
+sqlx = { version = "0.8", default-features = false }
 
 [workspace.lints.rust]
 # Forbidden in every crate root but seam-std, which allows it only where it

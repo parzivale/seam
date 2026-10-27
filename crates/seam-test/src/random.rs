@@ -27,11 +27,13 @@ pub use with_std::Random;
 mod with_std {
     use std::vec::Vec;
 
-    use seam_core::effects as fx;
     use seam_core::ops::random::FillRandom;
 
+    use seam_core::Perform;
+
     use super::SplitMix64;
-    use crate::sim::{SimState, Simulate, Simulated, States, World};
+    use crate::Sim;
+    use crate::sim::{States, World};
     use crate::world_file::{self, Node};
 
     /// The simulated random numbers: a seeded SplitMix64 stream. The same
@@ -49,7 +51,7 @@ mod with_std {
         }
     }
 
-    impl<G> World<G> {
+    impl Sim {
         /// Restarts the random numbers from `seed`, as if the world had
         /// been created with [`Sim::with_seed`](crate::Sim::with_seed).
         pub fn set_seed(&mut self, seed: u64) -> &mut Self {
@@ -58,7 +60,7 @@ mod with_std {
         }
     }
 
-    impl SimState for Random {
+    impl World for Random {
         const BLOCKS: &'static [&'static str] = &["seed"];
 
         /// `seed N`: restarts the stream from `N`.
@@ -75,12 +77,9 @@ mod with_std {
         }
     }
 
-    impl Simulated for fx::FillRandom {
-        type State = Random;
-    }
-
-    impl Simulate<FillRandom<'_>> for fx::FillRandom {
-        fn run(states: &mut States<'_>, op: FillRandom<'_>) {
+    impl Perform<FillRandom<'_>> for Sim {
+        fn perform(&mut self, op: FillRandom<'_>) {
+            let states = &mut States::new(&self.shared);
             states.state::<Random>().0.fill(op.0);
         }
     }

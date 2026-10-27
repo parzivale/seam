@@ -227,11 +227,8 @@ re-exported without exposing Tokio itself.
 
 ## Test backend
 
-`seam-test` provides simulated worlds, implementing every operation group
-with no real effects other than allocation. Each effect is simulated on its
-own key, against a state of the world (see **Simulated effects on their
-keys** below); `Sim` is the world of every built-in effect, with these
-states:
+`seam-test` provides `Sim`, a simulated world implementing every operation
+group with no real effects other than allocation:
 
 - **time**: a virtual monotonic clock and wall clock (starting at the Unix
   epoch). `Sleep` advances both and returns at once.
@@ -294,50 +291,19 @@ behave identically in both modes. Those that would wait are native async:
   executor so a task is never dropped mid-poll. When `block_on` returns,
   remaining tasks are dropped.
 
-### Simulated effects on their keys
-
-An effect is simulated by two sister traits on its key, beside `Effect`:
-`Simulated` names the state it works on, and `Simulate<O>` runs an
-operation against the world's states. The state implements `SimState`:
-the world-file blocks it reads, `load`, `to_world`, and `check` (a subset
-of `to_world` by default). seam-test implements them on seam-core's keys,
-and a program on its own keys, in the same way: the built-in effects are
-not special. The key is the effect's one name, so a simulated handler is
-never a second type to list beside the keys.
-
-A `World<G>` holds one state per type, behind an `Arc<Mutex<_>>`, so
-effects that share a state (`Now` and `Sleep`) share one value, and a
-handler can use other states (writing a file stamps it with the clock).
-Every clone, and every handle a world hands out (an open file, a socket),
-is a handle on the same states, which is why handles outlive the borrow
-that made them. The world implements every capability form for an
-operation whose key has a `Simulate` impl and is granted by `G`;
-`world![K, ..]` grants the keys listed, so an unlisted effect is a compile
-error, and `Sim` is `World<Everything>`. States are found by `TypeId`,
-boxed behind a small object-safe trait: the one dynamic dispatch in
-seam-test, and only for setup, checks and lookups.
-
-The world locks lazily, when a handler first reaches a state, and unlocks
-when the operation returns. A handler's `States` is a capability for every
-simulated effect, so a simulated effect can be built from others (a
-store's `Put` that writes a simulated file); each nested operation runs as
-a step of its own, unlocked around it, so the handles it opens can lock.
-A test's own scripted command handlers run unlocked too. A state that uses
-others brings them into a world with it (`Files` brings `Clock` and
-`Env`), so `to_world` always loads back into a fresh world of the same
-effects.
-
-Considered and set aside: one handler type per effect listed beside the
-keys (a second name for each effect), a key-to-handler mapping that built
-one handler value per key (two keys sharing a state would get two values),
-and a monolithic `Sim` holding every area's state (a program's effects
-could not be simulated on equal terms).
-
-Without std there is no mutex or boxing, so `Sim` is a small struct of a
-virtual clock and seeded random numbers. The mutex, the runtimes' own
-bookkeeping, and the simulated cells and channels are the crate's only
-shared state; it is linted with `templates/clippy.toml`, with an allow on
-each of those modules alone.
+Handles outlive the borrow of the `Sim` that made them, so the world state
+they reach is shared behind an `Arc<Mutex<_>>`, split by area (a clock,
+random numbers, the environment, files, the network, stdio, processes,
+signals), each area reading and writing its own world-file block. All of it lives there (clock,
+random numbers, environment, files, network, stdio, scripted commands), and
+the `Sim` itself is only a handle, so `Sim: Clone` and every clone is the
+same world. A part that is built over the simulation (a store that keeps
+its data in a simulated file, say) is handed a clone, and sees what the
+root's own `Sim` part sees; no other mechanism for sharing parts is needed.
+Without std there is no mutex, so the `Sim` holds the clock and random
+numbers itself and is not `Clone`. That, the runtimes' own bookkeeping, and the simulated
+cells and channels are the crate's only shared state; it is linted with
+`templates/clippy.toml`, with an allow on each of those modules alone.
 
 ### Deterministic threads
 
@@ -370,13 +336,12 @@ lets only one run at a time, handing over through a condvar.
 
 ### World files
 
-`Sim::from_world` (or any world's `load_world`) sets a world up from a KDL
-file, `check_world` checks one against expectations in the same format, and
-`to_world` writes one out. KDL was chosen for its tree shape: a block per
-state (`env`, `fs`, `net`, ...), and directories that nest the way they do
-on disk. Each block is read by the state that names it, so the format
-cannot describe a world the simulation does not support, and a program's
-own states add blocks of their own.
+`Sim::from_world` sets a world up from a KDL file, `check_world` checks one
+against expectations in the same format, and `to_world` writes one out. KDL was chosen for its tree
+shape: blocks per kind of operation (`env`, `fs`, `net`, ...), and
+directories that nest the way they do on disk. Each directive is one of
+`Sim`'s setup methods, so the format cannot describe a world the simulation
+does not support.
 
 Ordering follows KDL: nodes and arguments are ordered, properties are not.
 So anything whose order matters is written as nodes or arguments, and
@@ -386,16 +351,29 @@ layers over another. The simulated filesystem lists directories by name,
 whatever order the files were written in.
 
 Expectations check only what they list. By default an expected block is
-a subset of the state's `to_world` (each expected node there, with the
-same name and arguments and at least the expected properties), which
-makes expectations free for any state that can write itself out. States
-with expectations of another shape check them themselves: `unset` and
-`absent` expect something not to be there, `stdout` and `stderr` compare
-exact bytes, and `ran` lines must be every command, in order. Everything
-is checked before reporting, so one run shows every difference.
+a subset of what the part writes out (each expected node there, with the
+same name and arguments and at least the expected properties), which makes
+expectations free for anything that can write itself out. The simulation's
+own areas check some blocks themselves: `unset` and `absent` expect
+something not to be there, `stdout` and `stderr` compare exact bytes, and
+`ran` lines must be every command, in order. Everything is checked before
+reporting, so one run shows every difference.
 
-A block goes to the one state of the world that reads it; none, or two,
-is an error, and a built-in block whose feature is off says so.
+**Parts read their own blocks.** `World` is the one trait the simulation
+adds, and it is not an effect trait: `Sim` and a program's fakes handle
+effects with ordinary `Perform` and `Inspect` impls, like any backend, and
+`World` only describes a handler's state. A simulated part of a root
+implements it: the top-level blocks it reads, `load`, `to_world`, and
+`check` (by default the subset above). `Sim` is one such part, reading the blocks above; a fake of a
+program's own, or another crate's simulated effect, reads its own, through
+seam-test's public `Node` and `Value`. `load_world::<K, _>(&mut root, text)`,
+`check_world` and `to_world` take the effects whose parts take part, as a tuple of up
+to 32 keys (impls written by a macro): each block goes to the first listed
+part that reads it, a part reached through several keys is used once
+(compared by address and type), two different parts reading one block are
+an error, and so is a block no listed part reads. Listing effects rather
+than parts keeps the call in the root's own vocabulary, and it is the only
+handle on a part a root gives.
 
 The parser is a small one for the subset of KDL v2 world files use (no type
 annotations, integers only), rather than the `kdl` crate, which keeps

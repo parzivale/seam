@@ -3,10 +3,13 @@
 use core::num::NonZeroUsize;
 use std::vec::Vec;
 
-use seam_core::effects as fx;
 use seam_core::ops::task::AvailableParallelism;
 
-use crate::sim::{SimState, Simulate, Simulated, States, World};
+use seam_core::Inspect;
+
+use crate::sim::{States, World};
+
+use crate::Sim;
 use crate::world_file::{self, Node};
 
 /// The machine tasks run on: how many threads it reports.
@@ -26,7 +29,7 @@ impl Default for Tasks {
     }
 }
 
-impl<G> World<G> {
+impl Sim {
     /// Sets what `AvailableParallelism` reports. The default is 1.
     pub fn set_parallelism(&mut self, n: NonZeroUsize) -> &mut Self {
         self.lock().state::<Tasks>().parallelism = n;
@@ -34,7 +37,7 @@ impl<G> World<G> {
     }
 }
 
-impl SimState for Tasks {
+impl World for Tasks {
     const BLOCKS: &'static [&'static str] = &["parallelism"];
 
     /// `parallelism N`, at least 1.
@@ -53,12 +56,9 @@ impl SimState for Tasks {
     }
 }
 
-impl Simulated for fx::AvailableParallelism {
-    type State = Tasks;
-}
-
-impl Simulate<AvailableParallelism> for fx::AvailableParallelism {
-    fn run(states: &mut States<'_>, _: AvailableParallelism) -> NonZeroUsize {
+impl Inspect<AvailableParallelism> for Sim {
+    fn inspect(&self, _: AvailableParallelism) -> NonZeroUsize {
+        let states = &mut States::new(&self.shared);
         states.state::<Tasks>().parallelism
     }
 }

@@ -108,80 +108,88 @@ run(&mut root)?;
 This is the one place the real effect lives, so it is the one place that
 is not unit tested; keep it thin.
 
-## 4. The simulated handler
+## 4. A simulated handler
 
-A simulated effect is defined on its key, with two sister traits, and
-works on a *state* of the simulated world:
+For tests, a fake that records what is mounted, and can be told to refuse
+one target:
 
-- `Simulated` names the state the effect works on. Effects that share a
-  state (`BindMount` and `Unmount` both work on the mount table) name the
-  same one, and a world holds one value of each state type, so they share
-  it.
-- `Simulate<O>` runs an operation against the world's states.
+```rust
+# use std::path::PathBuf;
+# use seam::{Effect, Operation, io};
+# #[derive(Debug, Clone, PartialEq, Eq)]
+# pub struct BindMount { pub source: PathBuf, pub target: PathBuf, pub read_only: bool }
+# impl Operation for BindMount { type Outcome = io::Result<()>; }
+# pub struct Unmount { pub target: PathBuf }
+# impl Operation for Unmount { type Outcome = io::Result<()>; }
+use seam::{Capability, Perform};
 
-The state is an ordinary struct, implementing `SimState`: its `Default`
-is a fresh world, `load` sets it up from its world-file block, and
-`to_world` writes it out.
+#[derive(Debug, Default)]
+pub struct Recorded {
+    pub mounts: Vec<BindMount>,
+    pub fail_on: Option<PathBuf>,
+}
+impl Capability for Recorded {}
+
+impl Perform<BindMount> for Recorded {
+    fn perform(&mut self, op: BindMount) -> io::Result<()> {
+        if self.fail_on.as_ref() == Some(&op.target) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "mount refused"));
+        }
+        self.mounts.push(op);
+        Ok(())
+    }
+}
+
+impl Perform<Unmount> for Recorded {
+    fn perform(&mut self, op: Unmount) -> io::Result<()> {
+        match self.mounts.iter().rposition(|m| m.target == op.target) {
+            Some(i) => {
+                self.mounts.remove(i);
+                Ok(())
+            }
+            None => Err(io::Error::new(io::ErrorKind::InvalidInput, "not mounted")),
+        }
+    }
+}
+```
+
+A fake can be as faithful as the tests need. If it must touch the rest of
+the simulated world (keep its state in a simulated file, print through the
+simulated stdout), give it a clone of the test's `Sim` and perform through
+that: every clone of a `Sim` is the same world. See
+[roots](crate::_docs::guide::roots#parts-built-on-other-parts).
+
+## 5. World-file blocks for it
+
+A fake can read its own blocks of a
+[world file](crate::_docs::world_files), so one file sets up, checks and
+snapshots the whole simulated world, `Sim` and fakes alike. Implement
+`World`: the block names it reads, `load` to set the fake up from one, and
+`to_world` to write it out. Expectations are then a subset of `to_world`
+with no more code; override `check` only for expectations of another shape
+(something that must be absent, a list that must be exact). Read nodes
+with the public `Node` and `Value`, whose checks report the line and
+column of a mistake, and build them with `Node::new`:
 
 ```rust
 # #[cfg(all(feature = "test", feature = "std"))] {
 # use std::path::PathBuf;
-# use seam::{Effect, Operation, Perform, io};
+# use seam::{Capability, Effect, Operation, Perform, io};
 # #[derive(Debug, Clone, PartialEq, Eq)]
 # pub struct BindMount { pub source: PathBuf, pub target: PathBuf, pub read_only: bool }
 # impl Operation for BindMount { type Outcome = io::Result<()>; }
-# impl Effect for BindMount { type Key = BindMount; }
-# pub struct Unmount { pub target: PathBuf }
-# impl Operation for Unmount { type Outcome = io::Result<()>; }
-# impl Effect for Unmount { type Key = Unmount; }
-# pub fn bind_all<C>(c: &mut C, mounts: &[BindMount]) -> io::Result<()>
-# where C: Perform<BindMount> + Perform<Unmount> {
-#     for (done, mount) in mounts.iter().enumerate() {
-#         if let Err(e) = c.perform(mount.clone()) {
-#             for made in mounts[..done].iter().rev() {
-#                 let _ = c.perform(Unmount { target: made.target.clone() });
-#             }
-#             return Err(e);
-#         }
-#     }
-#     Ok(())
-# }
-use seam::test::sim::{SimState, Simulate, Simulated, States};
-use seam::test::world_file::{self, Node};
+# #[derive(Debug, Default)]
+# pub struct Recorded { pub mounts: Vec<BindMount>, pub fail_on: Option<PathBuf> }
+use seam::test::world_file::{self, Node, World};
 
-/// The mount table: what is mounted, and a target to refuse, for testing
-/// failures.
-#[derive(Debug, Default)]
-pub struct Mounts {
-    pub mounts: Vec<BindMount>,
-    pub refuse: Option<PathBuf>,
-}
-
-/// `mounts { bind SOURCE TARGET read-only=#true; refuse TARGET }`
-impl SimState for Mounts {
+/// `mounts { bind "/srv/a" "/mnt/a" read-only=#true }`: mounts in place
+/// before a run, or expected after one.
+impl World for Recorded {
     const BLOCKS: &'static [&'static str] = &["mounts"];
 
     fn load(&mut self, block: &Node) -> world_file::Result<()> {
         for node in block.block()? {
-            if node.name() == "refuse" {
-                node.arity(1, Some(1), "a target")?;
-                self.refuse = Some(node.args()[0].string("the target")?.into());
-                continue;
-            }
-            if node.name() != "bind" {
-                return Err(node.unknown("`mounts`", &["bind", "refuse"]));
-            }
-            node.arity(2, Some(2), "a source and a target")?;
-            node.props_only(&["read-only"])?;
-            let read_only = match node.prop("read-only") {
-                Some(v) => v.bool("`read-only`")?,
-                None => false,
-            };
-            self.mounts.push(BindMount {
-                source: node.args()[0].string("the source")?.into(),
-                target: node.args()[1].string("the target")?.into(),
-                read_only,
-            });
+            self.mounts.push(entry(node)?);
         }
         Ok(())
     }
@@ -200,61 +208,48 @@ impl SimState for Mounts {
     }
 }
 
-impl Simulated for BindMount {
-    type State = Mounts;
-}
-
-impl Simulate<BindMount> for BindMount {
-    fn run(states: &mut States, op: BindMount) -> io::Result<()> {
-        let mounts = states.state::<Mounts>();
-        if mounts.refuse.as_ref() == Some(&op.target) {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "mount refused"));
-        }
-        mounts.mounts.push(op);
-        Ok(())
+/// One `bind SOURCE TARGET [read-only=#true]` line.
+fn entry(node: &Node) -> world_file::Result<BindMount> {
+    if node.name() != "bind" {
+        return Err(node.unknown("`mounts`", &["bind"]));
     }
+    node.arity(2, Some(2), "a source and a target")?;
+    node.props_only(&["read-only"])?;
+    node.no_children()?;
+    Ok(BindMount {
+        source: node.args()[0].string("the source")?.into(),
+        target: node.args()[1].string("the target")?.into(),
+        read_only: match node.prop("read-only") {
+            Some(v) => v.bool("`read-only`")?,
+            None => false,
+        },
+    })
 }
 
-impl Simulated for Unmount {
-    type State = Mounts;
-}
-
-impl Simulate<Unmount> for Unmount {
-    fn run(states: &mut States, op: Unmount) -> io::Result<()> {
-        let mounts = &mut states.state::<Mounts>().mounts;
-        match mounts.iter().rposition(|m| m.target == op.target) {
-            Some(i) => {
-                mounts.remove(i);
-                Ok(())
-            }
-            None => Err(io::Error::new(io::ErrorKind::InvalidInput, "not mounted")),
-        }
-    }
-}
+// On its own, outside a root:
+let mut fake = Recorded::default();
+world_file::load(&mut fake, r#"mounts { bind "/srv/a" "/mnt/a" }"#).unwrap();
+assert_eq!(fake.mounts.len(), 1);
+world_file::check(&fake, r#"mounts { bind "/srv/a" "/mnt/a" }"#).unwrap();
+let mismatch = world_file::check(&fake, r#"mounts { bind "/srv/b" "/mnt/b" }"#).unwrap_err();
+assert_eq!(mismatch.failures[0].message, r#"expected `bind "/srv/b" "/mnt/b"`, found nothing"#);
 # }
 ```
 
-`Mounts` has no `check`: the default is that an expected block holds in
-`to_world`, as a subset (each expected `bind`, with the same arguments and
-at least the expected properties). A state whose expectations have
-another shape (something that must be absent, a list that must be exact)
-overrides `check`.
+`Sim` reads its own blocks through the same trait, so anything its world
+files can do, a fake of yours can do too.
 
-This is exactly how seam's own simulated effects are written: `Sleep` is
-simulated on `effects::Sleep`, against a `Clock` state; the filesystem's
-operations against `Files`. Nothing about the built-in ones is special.
+## 6. Testing it in a root
 
-## 5. Testing it in a world
-
-[`world!`](crate::test::world) builds a simulated world that grants
-exactly the effects it lists, each with its state. A core takes it like
-any capability, and the world reads and writes world files through its
-states:
+Put the fake in a root beside a `Sim`, and drive both from one world file.
+`load_world` and `check_world` take the effects whose parts take part, as
+a tuple of keys; each block goes to the part that reads it:
 
 ```rust
-# #[cfg(all(feature = "test", feature = "std", feature = "env"))] {
+# #[cfg(all(feature = "test", feature = "std"))] {
 # use std::path::PathBuf;
-# use seam::{Effect, Operation, Perform, io};
+# use seam::{Capability, Effect, Operation, Perform, io};
+# use seam::test::world_file::{self, Node, World};
 # #[derive(Debug, Clone, PartialEq, Eq)]
 # pub struct BindMount { pub source: PathBuf, pub target: PathBuf, pub read_only: bool }
 # impl Operation for BindMount { type Outcome = io::Result<()>; }
@@ -274,172 +269,102 @@ states:
 #     }
 #     Ok(())
 # }
-# use seam::test::sim::{SimState, Simulate, Simulated, States};
-# use seam::test::world_file::{self, Node};
 # #[derive(Debug, Default)]
-# pub struct Mounts { pub mounts: Vec<BindMount>, pub refuse: Option<PathBuf> }
-# impl SimState for Mounts {
+# pub struct Recorded { pub mounts: Vec<BindMount>, pub fail_on: Option<PathBuf> }
+# impl Capability for Recorded {}
+# impl Perform<BindMount> for Recorded {
+#     fn perform(&mut self, op: BindMount) -> io::Result<()> {
+#         if self.fail_on.as_ref() == Some(&op.target) {
+#             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "mount refused"));
+#         }
+#         self.mounts.push(op);
+#         Ok(())
+#     }
+# }
+# impl Perform<Unmount> for Recorded {
+#     fn perform(&mut self, op: Unmount) -> io::Result<()> {
+#         let i = self.mounts.iter().rposition(|m| m.target == op.target).unwrap();
+#         self.mounts.remove(i);
+#         Ok(())
+#     }
+# }
+# impl World for Recorded {
 #     const BLOCKS: &'static [&'static str] = &["mounts"];
 #     fn load(&mut self, block: &Node) -> world_file::Result<()> {
-#         for node in block.block()? {
-#             if node.name() == "refuse" {
-#                 node.arity(1, Some(1), "a target")?;
-#                 self.refuse = Some(node.args()[0].string("the target")?.into());
-#                 continue;
-#             }
-#             node.arity(2, Some(2), "a source and a target")?;
-#             let read_only = match node.prop("read-only") { Some(v) => v.bool("`read-only`")?, None => false };
-#             self.mounts.push(BindMount {
-#                 source: node.args()[0].string("the source")?.into(),
-#                 target: node.args()[1].string("the target")?.into(),
-#                 read_only,
-#             });
-#         }
+#         for node in block.block()? { self.mounts.push(entry(node)?); }
 #         Ok(())
 #     }
 #     fn to_world(&self) -> Vec<Node> {
 #         let mut block = Node::new("mounts");
 #         for m in &self.mounts {
-#             block = block.with_child(
-#                 Node::new("bind")
-#                     .with_arg(m.source.to_string_lossy().into_owned())
-#                     .with_arg(m.target.to_string_lossy().into_owned())
-#                     .with_prop("read-only", m.read_only),
-#             );
+#             block = block.with_child(Node::new("bind")
+#                 .with_arg(m.source.to_string_lossy().into_owned())
+#                 .with_arg(m.target.to_string_lossy().into_owned()));
 #         }
 #         vec![block]
 #     }
 # }
-# impl Simulated for BindMount { type State = Mounts; }
-# impl Simulate<BindMount> for BindMount {
-#     fn run(states: &mut States, op: BindMount) -> io::Result<()> {
-#         let mounts = states.state::<Mounts>();
-#         if mounts.refuse.as_ref() == Some(&op.target) {
-#             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "mount refused"));
-#         }
-#         mounts.mounts.push(op);
-#         Ok(())
-#     }
-# }
-# impl Simulated for Unmount { type State = Mounts; }
-# impl Simulate<Unmount> for Unmount {
-#     fn run(states: &mut States, op: Unmount) -> io::Result<()> {
-#         let mounts = &mut states.state::<Mounts>().mounts;
-#         match mounts.iter().rposition(|m| m.target == op.target) {
-#             Some(i) => { mounts.remove(i); Ok(()) }
-#             None => Err(io::Error::new(io::ErrorKind::InvalidInput, "not mounted")),
-#         }
-#     }
+# fn entry(node: &Node) -> world_file::Result<BindMount> {
+#     node.arity(2, Some(2), "a source and a target")?;
+#     Ok(BindMount {
+#         source: node.args()[0].string("the source")?.into(),
+#         target: node.args()[1].string("the target")?.into(),
+#         read_only: false,
+#     })
 # }
 use seam::effects as fx;
+use seam::test::{Sim, check_world, load_world};
 
-let mut world = seam::test::world![fx::Var, BindMount, Unmount];
-world.load_world(r#"
+let mut root = seam::root![
+    Sim<fx::Var>::new(),
+    Recorded<BindMount, Unmount> { mounts: Vec::new(), fail_on: Some("/mnt/c".into()) },
+];
+load_world::<(fx::Var, BindMount), _>(&mut root, r#"
     env { var MODE test }
-    mounts { bind "/srv/base" "/mnt/base"; refuse "/mnt/c" }
-"#).unwrap();
+    mounts { bind "/srv/base" "/mnt/base" }
+"#)
+.unwrap();
 
 let wanted = [
     BindMount { source: "/srv/a".into(), target: "/mnt/a".into(), read_only: false },
     BindMount { source: "/srv/c".into(), target: "/mnt/c".into(), read_only: false },
 ];
-assert!(bind_all(&mut world, &wanted).is_err());
+assert!(bind_all(&mut root, &wanted).is_err());
 
 // The refused mount undid `/mnt/a`; the base mount is untouched.
-world.check_world(r#"mounts { bind "/srv/base" "/mnt/base" }"#).unwrap();
-let mismatch = world.check_world(r#"mounts { bind "/srv/a" "/mnt/a" }"#).unwrap_err();
-assert_eq!(
-    mismatch.failures[0].message,
-    r#"expected `bind "/srv/a" "/mnt/a"`, found nothing"#
-);
+check_world::<(BindMount,), _>(&root, r#"mounts { bind "/srv/base" "/mnt/base" }"#).unwrap();
+assert_eq!(root.part::<BindMount>().mounts.len(), 1);
 
-// The whole world, written out:
-assert!(world.to_world().contains(r#"bind "/srv/base" "/mnt/base" read-only=#false"#));
+// The whole root, written out: the `Sim`'s blocks and the fake's.
+let text = seam::test::to_world::<(fx::Var, BindMount), _>(&root);
+assert!(text.contains("var MODE test"));
+assert!(text.contains(r#"bind "/srv/base" "/mnt/base""#));
 # }
 ```
 
-- A core performing an effect the world does not list fails to compile:
-  "the world does not grant `fx::Sleep`".
-- A block no state of the world reads is an error, with a suggestion
-  ("unknown `mount` in the world (did you mean `mounts`?)"), and so is a
-  block two states claim.
-- `world.state(|m: &mut Mounts| ..)` reaches a state directly, to set it
-  up or check it in Rust rather than KDL.
-- [`Sim`](crate::test::Sim) is the world of every built-in effect. A world
-  of your own can list any mix of built-in effects and yours.
-- A world is a capability, so it can also be one part of a root, beside
-  real parts: `World<fx::Now, fx::Sleep>::clone(&world)`. Every clone is
-  the same world.
-
-## 6. Simulated effects built from others
-
-A handler's `States` is itself a capability for every simulated effect,
-so a simulated effect can be built from others, the way a real one is.
-A key-value store that keeps each value in a file of the simulated
-filesystem has no state of its own; its handlers perform the
-filesystem's effects:
-
-```rust
-# #[cfg(all(feature = "test", feature = "fs"))] {
-use seam::{Effect, Operation, Query, io};
-use seam::effects as fx;
-use seam::ops::fs::{read_to_string, write_file};
-use seam::prelude::*;
-use seam::test::sim::{Simulate, Simulated, Stateless, States};
-
-pub struct Put(pub String, pub String);
-impl Operation for Put { type Outcome = io::Result<()>; }
-impl Effect for Put { type Key = Put; }
-
-pub struct Get(pub String);
-impl Operation for Get { type Outcome = io::Result<String>; }
-impl Query for Get {}
-impl Effect for Get { type Key = Get; }
-
-impl Simulated for Put { type State = Stateless; }
-impl Simulate<Put> for Put {
-    fn run(states: &mut States, op: Put) -> io::Result<()> {
-        write_file(states, &format!("/kv/{}", op.0), &op.1)
-    }
-}
-
-impl Simulated for Get { type State = Stateless; }
-impl Simulate<Get> for Get {
-    fn run(states: &mut States, op: Get) -> io::Result<String> {
-        read_to_string(&*states, &format!("/kv/{}", op.0))
-    }
-}
-
-let mut world = seam::test::world![fx::View, Put, Get];
-world.load_world(r#"fs { dir "/kv" }"#).unwrap();
-world.perform(Put("k".into(), "v".into())).unwrap();
-assert_eq!(world.inspect(Get("k".into())).unwrap(), "v");
-world.check_world(r#"fs { file "/kv/k" "v" }"#).unwrap();
-# }
-```
-
-Each operation a handler performs this way runs as a step of its own: the
-world is unlocked around it, so the handles it opens can reach the world.
+A block that no listed part reads is an error ("no part of the root reads
+`mount` (did you mean `mounts`?)"), and so is a block two different parts
+claim. A part reached through several of the listed keys (the `Sim` above
+serves many) is set up, checked and written out once.
 
 ## Variations
 
-- **A plain fake, without a world.** For a quick test of one effect, a
-  struct that implements `Perform<BindMount>` itself, listed in a root
-  next to a `Sim`, works too. It has no world-file blocks.
 - **Async handlers** implement `AsyncInspect` / `AsyncPerform`, and the
   `Send` forms for multithreaded runtimes, returning
-  `impl Future<Output = ..> + Send`. A world implements every form of
-  every effect it grants.
-- **Effects built from other effects, for real.** A handler can hold
-  another capability and perform through it: a store kept in files is a
+  `impl Future<Output = ..> + Send`. A sync handler gets all three through
+  the lifts.
+- **Effects built from other effects.** A handler can hold another
+  capability and perform through it: a store kept in files is a
   `FileStore<C>` whose `Put` writes through `C`'s `CreateAtomic`. It then
-  runs on every backend. See the `custom_ops` example.
+  runs on every backend, the simulation included, and on the simulated
+  runtime and threads its interleavings are explored like any other. See
+  the `custom_ops` example.
 - **Another implementation of seam's own effects** (a different
   filesystem, a remote clock) implements seam's operations and is listed in
   a root under seam's keys (`fx::View`, `fx::Now`, ...) in place of a
   backend.
 - **Scoped effects** of your own implement
   [`Acquisition`](crate::Acquisition), and the handler implements
-  `Perform<Opening<A>>` and `Perform<Closing<A>>` (or `Simulate` for both,
-  in a world). Dropping the resource must roll it back; only closing
-  commits.
+  `Perform<Opening<A>>` and `Perform<Closing<A>>` (or `Inspect`, for a
+  scope that changes nothing outside itself). Dropping the resource must
+  roll it back; only closing commits.

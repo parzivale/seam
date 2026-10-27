@@ -6,10 +6,12 @@ use std::path::{Path, PathBuf};
 use std::string::String;
 use std::vec::Vec;
 
-use seam_core::effects as fx;
 use seam_core::ops::env::{Args, CurrentDir, RemoveVar, SetVar, TempDir, Var};
 
-use crate::sim::{Inner, SimState, Simulate, Simulated, States, World};
+use seam_core::{Inspect, Perform};
+
+use crate::Sim;
+use crate::sim::{Inner, States, World};
 use crate::world_file::{self, Failure, Node};
 
 /// The simulated environment: variables, arguments, and the current and
@@ -56,7 +58,7 @@ impl Inner {
     }
 }
 
-impl<G> World<G> {
+impl Sim {
     /// Sets an environment variable.
     pub fn set_var(&mut self, name: impl Into<OsString>, value: impl Into<OsString>) -> &mut Self {
         self.lock()
@@ -101,7 +103,7 @@ fn env_node(node: &Node) -> world_file::Result<()> {
     node.props_only(&[])
 }
 
-impl SimState for Env {
+impl World for Env {
     const BLOCKS: &'static [&'static str] = &["env"];
 
     fn load(&mut self, block: &Node) -> world_file::Result<()> {
@@ -208,23 +210,16 @@ impl SimState for Env {
     }
 }
 
-macro_rules! env_keys {
-    ($($key:ident),*) => {$(
-        impl Simulated for fx::$key {
-            type State = Env;
-        }
-    )*};
-}
-env_keys!(Var, SetVar, RemoveVar, Args, CurrentDir, TempDir);
-
-impl Simulate<Var<'_>> for fx::Var {
-    fn run(states: &mut States<'_>, op: Var<'_>) -> Option<OsString> {
+impl Inspect<Var<'_>> for Sim {
+    fn inspect(&self, op: Var<'_>) -> Option<OsString> {
+        let states = &mut States::new(&self.shared);
         states.state::<Env>().vars.get(op.name).cloned()
     }
 }
 
-impl Simulate<SetVar<'_>> for fx::SetVar {
-    fn run(states: &mut States<'_>, op: SetVar<'_>) -> io::Result<()> {
+impl Perform<SetVar<'_>> for Sim {
+    fn perform(&mut self, op: SetVar<'_>) -> io::Result<()> {
+        let states = &mut States::new(&self.shared);
         op.check()?;
         states
             .state::<Env>()
@@ -234,28 +229,32 @@ impl Simulate<SetVar<'_>> for fx::SetVar {
     }
 }
 
-impl Simulate<RemoveVar<'_>> for fx::RemoveVar {
-    fn run(states: &mut States<'_>, op: RemoveVar<'_>) -> io::Result<()> {
+impl Perform<RemoveVar<'_>> for Sim {
+    fn perform(&mut self, op: RemoveVar<'_>) -> io::Result<()> {
+        let states = &mut States::new(&self.shared);
         op.check()?;
         states.state::<Env>().vars.remove(op.name);
         Ok(())
     }
 }
 
-impl Simulate<Args> for fx::Args {
-    fn run(states: &mut States<'_>, _: Args) -> Vec<OsString> {
+impl Inspect<Args> for Sim {
+    fn inspect(&self, _: Args) -> Vec<OsString> {
+        let states = &mut States::new(&self.shared);
         states.state::<Env>().args.clone()
     }
 }
 
-impl Simulate<CurrentDir> for fx::CurrentDir {
-    fn run(states: &mut States<'_>, _: CurrentDir) -> io::Result<PathBuf> {
+impl Inspect<CurrentDir> for Sim {
+    fn inspect(&self, _: CurrentDir) -> io::Result<PathBuf> {
+        let states = &mut States::new(&self.shared);
         Ok(states.state::<Env>().cwd.clone())
     }
 }
 
-impl Simulate<TempDir> for fx::TempDir {
-    fn run(states: &mut States<'_>, _: TempDir) -> PathBuf {
+impl Inspect<TempDir> for Sim {
+    fn inspect(&self, _: TempDir) -> PathBuf {
+        let states = &mut States::new(&self.shared);
         states.state::<Env>().temp.clone()
     }
 }

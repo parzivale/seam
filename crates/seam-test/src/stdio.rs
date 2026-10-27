@@ -5,12 +5,13 @@ use seam_core::io;
 use std::collections::VecDeque;
 use std::vec::Vec;
 
-use seam_core::effects as fx;
 use seam_core::ops::io::{Flush, Read, Write};
 use seam_core::ops::stdio::{OpenStderr, OpenStdin, OpenStdout};
 use seam_core::{Closing, Opening, Perform};
 
-use crate::sim::{Inner, Shared, SimState, Simulate, Simulated, States, World};
+use crate::sim::{Inner, Shared, World};
+
+use crate::Sim;
 use crate::world_file::{self, Failure, Node, show};
 
 /// The simulated standard streams: input still to be read, and everything
@@ -39,7 +40,7 @@ impl Stdio {
     }
 }
 
-impl<G> World<G> {
+impl Sim {
     /// Appends bytes to standard input. Input is a finite script: once it is
     /// consumed, reads report the end of input.
     pub fn feed_stdin(&mut self, bytes: impl AsRef<[u8]>) -> &mut Self {
@@ -78,7 +79,7 @@ impl Inner {
     }
 }
 
-impl SimState for Stdio {
+impl World for Stdio {
     const BLOCKS: &'static [&'static str] = &["stdio"];
 
     fn load(&mut self, block: &Node) -> world_file::Result<()> {
@@ -133,12 +134,12 @@ impl SimState for Stdio {
 pub struct Stdin(Shared);
 
 /// Standard output, acquired with [`OpenStdout`]. Performs `Write` and
-/// `Flush`; what it writes lands at once, in [`World::stdout`].
+/// `Flush`; what it writes lands at once, in [`Sim::stdout`].
 #[derive(Debug)]
 pub struct Stdout(Shared);
 
 /// Standard error, acquired with [`OpenStderr`]. Performs `Write` and
-/// `Flush`; what it writes lands at once, in [`World::stderr`].
+/// `Flush`; what it writes lands at once, in [`Sim::stderr`].
 #[derive(Debug)]
 pub struct Stderr(Shared);
 
@@ -192,18 +193,14 @@ impl Perform<Flush> for Stderr {
 
 macro_rules! open {
     ($($op:ident => $handle:ident),*) => {$(
-        impl Simulated for fx::$op {
-            type State = Stdio;
-        }
-
-        impl Simulate<Opening<$op<$handle>>> for fx::$op {
-            fn run(states: &mut States<'_>, Opening(_, _): Opening<$op<$handle>>) -> io::Result<$handle> {
-                Ok($handle(states.shared()))
+        impl Perform<Opening<$op<$handle>>> for Sim {
+            fn perform(&mut self, Opening(_, _): Opening<$op<$handle>>) -> io::Result<$handle> {
+                Ok($handle(self.shared.clone()))
             }
         }
 
-        impl Simulate<Closing<$op<$handle>>> for fx::$op {
-            fn run(_: &mut States<'_>, Closing(_, _): Closing<$op<$handle>>) -> io::Result<()> {
+        impl Perform<Closing<$op<$handle>>> for Sim {
+            fn perform(&mut self, Closing(_, _): Closing<$op<$handle>>) -> io::Result<()> {
                 Ok(())
             }
         }

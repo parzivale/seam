@@ -30,10 +30,8 @@ mod net {
     use seam_core::ops::net::{Accept, RecvFrom, TcpConnect};
 
     use super::*;
+    use crate::Sim;
     use crate::net::{TcpListener, TcpStream, UdpSocket};
-    use crate::sim::{Simulate, States};
-    use seam_core::effects as fx;
-
     macro_rules! at_once {
         ($($ty:ty: $op:ty => $out:ty;)*) => {$(
             impl Perform<Timeout<$op>> for $ty {
@@ -69,21 +67,18 @@ mod net {
     }
 
     /// Connecting never waits in the simulation, so the timeout is moot.
-    impl Simulate<Opening<Timeout<TcpConnect<TcpStream>>>> for fx::TcpConnect {
-        fn run(
-            states: &mut States,
+    impl Perform<Opening<Timeout<TcpConnect<TcpStream>>>> for Sim {
+        fn perform(
+            &mut self,
             Opening(op, token): Opening<Timeout<TcpConnect<TcpStream>>>,
         ) -> io::Result<TcpStream> {
-            <fx::TcpConnect as Simulate<Opening<TcpConnect<TcpStream>>>>::run(
-                states,
-                Opening(op.op, token),
-            )
+            self.perform(Opening(op.op, token))
         }
     }
 
-    impl Simulate<Closing<Timeout<TcpConnect<TcpStream>>>> for fx::TcpConnect {
-        fn run(
-            _: &mut States,
+    impl Perform<Closing<Timeout<TcpConnect<TcpStream>>>> for Sim {
+        fn perform(
+            &mut self,
             Closing(stream, _): Closing<Timeout<TcpConnect<TcpStream>>>,
         ) -> io::Result<()> {
             stream.commit()

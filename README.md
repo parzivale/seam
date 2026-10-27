@@ -251,9 +251,8 @@ visit(&mut root, "home")?;
 
 ## Testing a core
 
-`seam-test`'s `Sim`, a simulated world of every built-in effect, stands in
-for a real backend. Set up the world, run the core, assert on what it left
-behind:
+`seam-test`'s `Sim` stands in for a real backend. Set up the world, run the
+core, assert on what it left behind:
 
 ```rust
 use seam::ops::fs::write_file;
@@ -394,49 +393,34 @@ sim.assert_world(r#"
 Directives apply in order, and something set twice keeps its last value;
 `load_world` layers a test's changes over a shared base. Directories nest.
 Expectations check only what they list: the clock, variables, files,
-output and the commands that ran.
+output and the commands that ran. `sim.to_world()` writes the whole world
+out in the same format, for a snapshot or a diff, and loading it back
+gives the same world.
 A failing expectation is reported with its line, all of them at once, and
 a mistake in the file is an error with its line and column ("unknown `fil`
 in `fs` (did you mean `file`?)"). The parser is seam-test's own, for the
 part of KDL world files use, so seam-test still has no dependencies.
 
-`world.to_world()` writes a whole world out in the same format, for a
-snapshot or a diff, and loading it gives back the same world.
-
-### Simulating your own effects
-
-Every effect is simulated on its own key, against a state of the world:
-`Sleep` on `effects::Sleep` against a clock, the filesystem's operations
-against an in-memory tree. A program simulates its own effects the same
-way, with two sister traits on the key and a state that reads and writes
-its own world-file blocks:
+A root's other simulated parts read blocks of their own: a part
+is an ordinary handler of its effect that also implements `World` (the
+block names it reads, `load`, and `to_world`; its expectations are then a
+subset of `to_world`), and one file sets up and checks the whole root
+through the effects it lists:
 
 ```rust
-impl Simulated for BindMount { type State = Mounts; }   // the state it works on
-impl Simulate<BindMount> for BindMount {                  // how it runs
-    fn run(states: &mut States, op: BindMount) -> io::Result<()> {
-        states.state::<Mounts>().0.push(op);
-        Ok(())
-    }
-}
-impl SimState for Mounts {                                 // `mounts { bind A B }`
-    const BLOCKS: &'static [&'static str] = &["mounts"];
-    fn load(&mut self, block: &Node) -> world_file::Result<()> { /* ... */ }
-    fn to_world(&self) -> Vec<Node> { /* ... */ }        // expectations: a subset of this
-}
-
-let mut world = seam::test::world![fx::Args, fx::View, fx::OpenStdout, BindMount, Unmount];
-world.load_world(WORLD)?;
-run(&mut world)?;                                         // a capability like any other
-world.check_world(EXPECTED)?;
+let mut root = seam::root![
+    Sim<fx::Args, fx::View, fx::OpenStdout>::new(),
+    FakeMounts<BindMount, Unmount>::default(),   // reads `mounts { .. }`
+];
+seam::test::load_world::<(fx::Args, fx::View, BindMount), _>(&mut root, WORLD)?;
+run(&mut root)?;
+seam::test::check_world::<(fx::OpenStdout, BindMount), _>(&root, EXPECTED)?;
+let snapshot = seam::test::to_world::<(fx::Args, BindMount), _>(&root); // the whole world, written out
 ```
 
-`world![..]` grants exactly the effects it lists, so a core that performs
-anything else fails to compile, and `Sim` is the world of every built-in
-effect. Effects that share a state share one value, a handler can perform
-other simulated effects through its `States` (a store whose `Put` writes
-a simulated file), and a block no state reads is an error, with a
-suggestion.
+Up to 32 effects are listed. Each block goes to the part that reads it, a
+part serving several of them is used once, and a block no listed part reads
+is an error, with a suggestion.
 
 ## Timeouts
 

@@ -1,11 +1,13 @@
 use seam_core::io::{self, ErrorKind};
 use std::vec::Vec;
 
-use seam_core::effects as fx;
 use seam_core::ops::signal::CtrlC;
 
 use crate::error;
-use crate::sim::{SimState, Simulate, Simulated, States, World};
+use seam_core::Perform;
+
+use crate::Sim;
+use crate::sim::{States, World};
 use crate::world_file::{self, Node};
 
 /// The simulated signals: Ctrl-Cs raised and not yet waited for.
@@ -26,7 +28,7 @@ impl Signals {
     }
 }
 
-impl<G> World<G> {
+impl Sim {
     /// Delivers a Ctrl-C. Each one satisfies one `CtrlC` wait.
     pub fn raise_ctrl_c(&mut self) -> &mut Self {
         self.lock().state::<Signals>().ctrl_c += 1;
@@ -40,7 +42,7 @@ impl<G> World<G> {
     }
 }
 
-impl SimState for Signals {
+impl World for Signals {
     const BLOCKS: &'static [&'static str] = &["signal"];
 
     /// `ctrl-c [N]` raises `N` Ctrl-Cs, 1 by default.
@@ -69,13 +71,10 @@ impl SimState for Signals {
     }
 }
 
-impl Simulated for fx::CtrlC {
-    type State = Signals;
-}
-
 /// Succeeds if a Ctrl-C was raised, and fails with `WouldBlock` otherwise.
-impl Simulate<CtrlC> for fx::CtrlC {
-    fn run(states: &mut States<'_>, _: CtrlC) -> io::Result<()> {
+impl Perform<CtrlC> for Sim {
+    fn perform(&mut self, _: CtrlC) -> io::Result<()> {
+        let states = &mut States::new(&self.shared);
         if states.state::<Signals>().take_ctrl_c() {
             Ok(())
         } else {
@@ -90,8 +89,8 @@ impl Simulate<CtrlC> for fx::CtrlC {
 /// Nothing in a world waits, so a timed wait with no Ctrl-C raised expires
 /// at once.
 #[cfg(feature = "time")]
-impl Simulate<seam_core::ops::time::Timeout<CtrlC>> for fx::CtrlC {
-    fn run(states: &mut States<'_>, op: seam_core::ops::time::Timeout<CtrlC>) -> io::Result<()> {
-        crate::timeouts::expired(<fx::CtrlC as Simulate<CtrlC>>::run(states, op.op))
+impl Perform<seam_core::ops::time::Timeout<CtrlC>> for Sim {
+    fn perform(&mut self, op: seam_core::ops::time::Timeout<CtrlC>) -> io::Result<()> {
+        crate::timeouts::expired(self.perform(op.op))
     }
 }

@@ -22,10 +22,9 @@ use seam_core::ops::fs::{
 use seam_core::ops::io::{Flush, Read, Seek, SeekFrom, Write};
 use seam_core::{Closing, Inspect, Opening, Perform};
 
-use seam_core::effects as fx;
-
+use crate::Sim;
 use crate::error;
-use crate::sim::{Inner, Shared, SimState, Simulate, Simulated, States, World};
+use crate::sim::{Inner, Shared, States, World};
 use crate::world_file::{self, Failure, Node as WorldNode, show};
 
 /// A resolved path: its normal components from the root.
@@ -243,7 +242,7 @@ impl Inner {
     }
 }
 
-impl<G> World<G> {
+impl Sim {
     /// Creates a file with `contents`, and any missing parent directories.
     /// For setting up a test; replaces an existing file.
     ///
@@ -294,8 +293,9 @@ impl<G> World<G> {
     }
 }
 
-impl Simulate<Metadata<'_>> for fx::Metadata {
-    fn run(states: &mut States<'_>, op: Metadata<'_>) -> io::Result<FileInfo> {
+impl Inspect<Metadata<'_>> for Sim {
+    fn inspect(&self, op: Metadata<'_>) -> io::Result<FileInfo> {
+        let states = &mut States::new(&self.shared);
         fs_op(states.inner(), op.path, |w, key| w.fs().info(&key))
     }
 }
@@ -306,8 +306,9 @@ impl Simulate<Metadata<'_>> for fx::Metadata {
 #[derive(Debug)]
 pub struct Dir(std::vec::IntoIter<PathBuf>);
 
-impl Simulate<Opening<ReadDir<'_, Dir>>> for fx::ReadDir {
-    fn run(states: &mut States<'_>, Opening(op, _): Opening<ReadDir<'_, Dir>>) -> io::Result<Dir> {
+impl Inspect<Opening<ReadDir<'_, Dir>>> for Sim {
+    fn inspect(&self, Opening(op, _): Opening<ReadDir<'_, Dir>>) -> io::Result<Dir> {
+        let states = &mut States::new(&self.shared);
         let paths: Vec<PathBuf> = fs_op(states.inner(), op.path, |w, key| {
             w.fs().require_dir(&key)?;
             Ok(w.fs()
@@ -320,8 +321,8 @@ impl Simulate<Opening<ReadDir<'_, Dir>>> for fx::ReadDir {
     }
 }
 
-impl Simulate<Closing<ReadDir<'_, Dir>>> for fx::ReadDir {
-    fn run(_: &mut States<'_>, Closing(_, _): Closing<ReadDir<'_, Dir>>) -> io::Result<()> {
+impl Inspect<Closing<ReadDir<'_, Dir>>> for Sim {
+    fn inspect(&self, Closing(_, _): Closing<ReadDir<'_, Dir>>) -> io::Result<()> {
         Ok(())
     }
 }
@@ -332,8 +333,9 @@ impl Perform<NextEntry> for Dir {
     }
 }
 
-impl Simulate<CreateDir<'_>> for fx::CreateDir {
-    fn run(states: &mut States<'_>, op: CreateDir<'_>) -> io::Result<()> {
+impl Perform<CreateDir<'_>> for Sim {
+    fn perform(&mut self, op: CreateDir<'_>) -> io::Result<()> {
+        let states = &mut States::new(&self.shared);
         fs_op(states.inner(), op.path, |w, key| {
             let now = w.wall();
             w.fs().create_dir(&key, false, now)
@@ -341,8 +343,9 @@ impl Simulate<CreateDir<'_>> for fx::CreateDir {
     }
 }
 
-impl Simulate<RemoveFile<'_>> for fx::RemoveFile {
-    fn run(states: &mut States<'_>, op: RemoveFile<'_>) -> io::Result<()> {
+impl Perform<RemoveFile<'_>> for Sim {
+    fn perform(&mut self, op: RemoveFile<'_>) -> io::Result<()> {
+        let states = &mut States::new(&self.shared);
         fs_op(states.inner(), op.path, |w, key| {
             w.fs().file(&key)?;
             w.fs().nodes.remove(&key);
@@ -353,8 +356,9 @@ impl Simulate<RemoveFile<'_>> for fx::RemoveFile {
     }
 }
 
-impl Simulate<RemoveDir<'_>> for fx::RemoveDir {
-    fn run(states: &mut States<'_>, op: RemoveDir<'_>) -> io::Result<()> {
+impl Perform<RemoveDir<'_>> for Sim {
+    fn perform(&mut self, op: RemoveDir<'_>) -> io::Result<()> {
+        let states = &mut States::new(&self.shared);
         fs_op(states.inner(), op.path, |w, key| {
             w.fs().require_dir(&key)?;
             if key.is_empty() {
@@ -375,8 +379,9 @@ impl Simulate<RemoveDir<'_>> for fx::RemoveDir {
     }
 }
 
-impl Simulate<Rename<'_>> for fx::Rename {
-    fn run(states: &mut States<'_>, op: Rename<'_>) -> io::Result<()> {
+impl Perform<Rename<'_>> for Sim {
+    fn perform(&mut self, op: Rename<'_>) -> io::Result<()> {
+        let states = &mut States::new(&self.shared);
         fs_op(states.inner(), op.from, |w, from| {
             let to = {
                 let cwd = w.cwd();
@@ -428,8 +433,9 @@ impl Simulate<Rename<'_>> for fx::Rename {
     }
 }
 
-impl Simulate<CopyFile<'_>> for fx::CopyFile {
-    fn run(states: &mut States<'_>, op: CopyFile<'_>) -> io::Result<u64> {
+impl Perform<CopyFile<'_>> for Sim {
+    fn perform(&mut self, op: CopyFile<'_>) -> io::Result<u64> {
+        let states = &mut States::new(&self.shared);
         fs_op(states.inner(), op.from, |w, from| {
             let to = {
                 let cwd = w.cwd();
@@ -445,11 +451,9 @@ impl Simulate<CopyFile<'_>> for fx::CopyFile {
     }
 }
 
-impl<M: Mode> Simulate<Opening<Open<'_, M, File<M>>>> for fx::Open<M> {
-    fn run(
-        states: &mut States,
-        Opening(op, _): Opening<Open<'_, M, File<M>>>,
-    ) -> io::Result<File<M>> {
+impl<M: Mode> Perform<Opening<Open<'_, M, File<M>>>> for Sim {
+    fn perform(&mut self, Opening(op, _): Opening<Open<'_, M, File<M>>>) -> io::Result<File<M>> {
+        let states = &mut States::new(&self.shared);
         let o = op.options;
         if (o.truncate || o.create || o.create_new) && !M::WRITE {
             return Err(error(ErrorKind::InvalidInput, "invalid open options"));
@@ -489,8 +493,8 @@ impl<M: Mode> Simulate<Opening<Open<'_, M, File<M>>>> for fx::Open<M> {
 }
 
 /// Writes land immediately, so closing has nothing left to do.
-impl<M: Mode> Simulate<Closing<Open<'_, M, File<M>>>> for fx::Open<M> {
-    fn run(_: &mut States<'_>, Closing(_, _): Closing<Open<'_, M, File<M>>>) -> io::Result<()> {
+impl<M: Mode> Perform<Closing<Open<'_, M, File<M>>>> for Sim {
+    fn perform(&mut self, Closing(_, _): Closing<Open<'_, M, File<M>>>) -> io::Result<()> {
         Ok(())
     }
 }
@@ -532,11 +536,9 @@ impl<M> Inspect<Stat> for File<M> {
 #[derive(Debug)]
 pub struct FileView(RawFile);
 
-impl Simulate<Opening<View<'_, FileView>>> for fx::View {
-    fn run(
-        states: &mut States,
-        Opening(op, _): Opening<View<'_, FileView>>,
-    ) -> io::Result<FileView> {
+impl Inspect<Opening<View<'_, FileView>>> for Sim {
+    fn inspect(&self, Opening(op, _): Opening<View<'_, FileView>>) -> io::Result<FileView> {
+        let states = &mut States::new(&self.shared);
         let inode = fs_op(states.inner(), op.path, |w, key| w.fs().file(&key))?;
         Ok(FileView(RawFile {
             world: states.shared(),
@@ -549,8 +551,8 @@ impl Simulate<Opening<View<'_, FileView>>> for fx::View {
     }
 }
 
-impl Simulate<Closing<View<'_, FileView>>> for fx::View {
-    fn run(_: &mut States<'_>, _: Closing<View<'_, FileView>>) -> io::Result<()> {
+impl Inspect<Closing<View<'_, FileView>>> for Sim {
+    fn inspect(&self, _: Closing<View<'_, FileView>>) -> io::Result<()> {
         Ok(())
     }
 }
@@ -727,11 +729,12 @@ pub struct AtomicFile {
     committed: bool,
 }
 
-impl Simulate<Opening<CreateAtomic<'_, AtomicFile>>> for fx::CreateAtomic {
-    fn run(
-        states: &mut States,
+impl Perform<Opening<CreateAtomic<'_, AtomicFile>>> for Sim {
+    fn perform(
+        &mut self,
         Opening(op, _): Opening<CreateAtomic<'_, AtomicFile>>,
     ) -> io::Result<AtomicFile> {
+        let states = &mut States::new(&self.shared);
         let (temp, target, inode) = fs_op(states.inner(), op.path, |w, target| {
             let Some(name) = target.last() else {
                 return Err(error(ErrorKind::IsADirectory, "is a directory"));
@@ -767,9 +770,9 @@ impl Simulate<Opening<CreateAtomic<'_, AtomicFile>>> for fx::CreateAtomic {
     }
 }
 
-impl Simulate<Closing<CreateAtomic<'_, AtomicFile>>> for fx::CreateAtomic {
-    fn run(
-        _: &mut States,
+impl Perform<Closing<CreateAtomic<'_, AtomicFile>>> for Sim {
+    fn perform(
+        &mut self,
         Closing(file, _): Closing<CreateAtomic<'_, AtomicFile>>,
     ) -> io::Result<()> {
         file.commit()
@@ -832,29 +835,6 @@ impl Inspect<Stat> for AtomicFile {
     fn inspect(&self, op: Stat) -> io::Result<FileInfo> {
         self.file.inspect(op)
     }
-}
-
-macro_rules! fs_keys {
-    ($($key:ident),*) => {$(
-        impl Simulated for fx::$key {
-            type State = Files;
-        }
-    )*};
-}
-fs_keys!(
-    Metadata,
-    CreateDir,
-    RemoveFile,
-    RemoveDir,
-    Rename,
-    CopyFile,
-    CreateAtomic,
-    View,
-    ReadDir
-);
-
-impl<M> Simulated for fx::Open<M> {
-    type State = Files;
 }
 
 // ---- world files ----
@@ -974,7 +954,7 @@ impl Files {
 /// Written out, every directory and file is listed by its absolute path.
 /// As expectations, `absent P` expects nothing there, and a `dir`'s block
 /// holds expectations about what is in it.
-impl SimState for Files {
+impl World for Files {
     const BLOCKS: &'static [&'static str] = &["fs"];
 
     fn load(&mut self, block: &WorldNode) -> world_file::Result<()> {
@@ -1003,14 +983,6 @@ impl SimState for Files {
             self.check_node(child, None, failures)?;
         }
         Ok(())
-    }
-
-    /// Writes stamp files with the clock, and relative paths resolve
-    /// against the environment's current directory.
-    fn uses(world: &mut crate::sim::Uses<'_>) {
-        world.state::<crate::sim::Clock>();
-        #[cfg(feature = "env")]
-        world.state::<crate::sim::Env>();
     }
 }
 

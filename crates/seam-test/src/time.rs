@@ -7,7 +7,8 @@ mod with_std {
     use std::format;
     use std::vec::Vec;
 
-    use crate::sim::{SimState, World};
+    use crate::Sim;
+    use crate::sim::World;
     use crate::world_file::{self, Failure, Node};
 
     /// The simulated clocks: a monotonic one, from `Instant::EPOCH`, and a
@@ -36,7 +37,7 @@ mod with_std {
         }
     }
 
-    impl<G> World<G> {
+    impl Sim {
         /// Moves both clocks forward, as if `d` passed outside the core.
         pub fn advance(&mut self, d: Duration) -> &mut Self {
             self.lock().state::<Clock>().advance(d);
@@ -90,7 +91,7 @@ mod with_std {
         node.props_only(&["now", "now-ns", "wall", "wall-ns"])
     }
 
-    impl SimState for Clock {
+    impl World for Clock {
         const BLOCKS: &'static [&'static str] = &["clock"];
 
         /// `clock now=S wall=S`: advances both clocks by `now`, then sets
@@ -136,39 +137,32 @@ mod with_std {
 
     #[cfg(feature = "time")]
     mod effects {
-        use seam_core::effects as fx;
         use seam_core::ops::time::{Instant, Now, Sleep, WallClock};
 
+        use seam_core::{Inspect, Perform};
+
         use super::Clock;
-        use crate::sim::{Simulate, Simulated, States};
+        use crate::Sim;
+        use crate::sim::States;
 
-        impl Simulated for fx::Now {
-            type State = Clock;
-        }
-
-        impl Simulate<Now> for fx::Now {
-            fn run(states: &mut States<'_>, _: Now) -> Instant {
+        impl Inspect<Now> for Sim {
+            fn inspect(&self, _: Now) -> Instant {
+                let states = &mut States::new(&self.shared);
                 Instant::from_epoch(states.state::<Clock>().now)
             }
         }
 
-        impl Simulated for fx::Sleep {
-            type State = Clock;
-        }
-
         /// Advances the virtual clocks and returns at once.
-        impl Simulate<Sleep> for fx::Sleep {
-            fn run(states: &mut States<'_>, op: Sleep) {
+        impl Perform<Sleep> for Sim {
+            fn perform(&mut self, op: Sleep) {
+                let states = &mut States::new(&self.shared);
                 states.state::<Clock>().advance(op.0);
             }
         }
 
-        impl Simulated for fx::WallClock {
-            type State = Clock;
-        }
-
-        impl Simulate<WallClock> for fx::WallClock {
-            fn run(states: &mut States<'_>, _: WallClock) -> std::time::SystemTime {
+        impl Inspect<WallClock> for Sim {
+            fn inspect(&self, _: WallClock) -> std::time::SystemTime {
+                let states = &mut States::new(&self.shared);
                 states.state::<Clock>().wall_time()
             }
         }

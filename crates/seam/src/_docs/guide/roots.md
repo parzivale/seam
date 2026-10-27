@@ -199,13 +199,6 @@ assert_eq!(read_to_string(&root, "/kv/k").unwrap(), "v");
 
 In production, the same part would hold `Std`, or a root of its own.
 
-A simulated world built with `seam::test::world![..]` is a part like any
-other, listed under the effects it grants:
-`World<fx::Now, fx::Sleep>::clone(&world)`. For effects of your own that
-only exist in tests, simulating them in the world itself (see
-[effects of your own](crate::_docs::guide::your_own_effects)) is usually
-simpler than a separate fake part, and lets one world file set up both.
-
 ## Naming the root's type
 
 `root![..]` evaluates to a `Root` of a generated struct, whose type cannot

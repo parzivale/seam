@@ -1,7 +1,7 @@
 //! Scripted commands, child processes, and exiting.
 //!
-//! Commands are scripted per program with [`World::on_command`](crate::World::on_command) (or
-//! [`World::on_command_with_stdin`](crate::World::on_command_with_stdin)): a handler sees the command, and the
+//! Commands are scripted per program with [`Sim::on_command`](crate::Sim::on_command) (or
+//! [`Sim::on_command_with_stdin`](crate::Sim::on_command_with_stdin)): a handler sees the command, and the
 //! input written to it, and returns what the program printed and its exit
 //! code. Both [`RunCommand`] and [`SpawnChild`] use them.
 //!
@@ -33,10 +33,9 @@ use seam_core::ops::process::{
 };
 use seam_core::{Closing, Inspect, Opening, Perform};
 
-use seam_core::effects as fx;
-
+use crate::Sim;
 use crate::error;
-use crate::sim::{Inner, SimState, Simulate, Simulated, States, World};
+use crate::sim::{Inner, States, World};
 use crate::world_file::{self, Failure, Node, show};
 
 type Handler = Box<dyn FnMut(&Command, &[u8]) -> io::Result<Output> + Send + Sync>;
@@ -129,7 +128,7 @@ impl Eq for Invocation {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Exited(pub i32);
 
-impl<G> World<G> {
+impl Sim {
     /// Scripts what running `program` does. The handler sees the full
     /// command and returns its output. A program with no handler fails to
     /// start with `NotFound`. A later handler for the same program replaces
@@ -210,7 +209,7 @@ impl Processes {
         handlers.push((program, handler));
     }
 
-    /// Scripts a fixed response; see [`World::script_command`].
+    /// Scripts a fixed response; see [`Sim::script_command`].
     fn script(&mut self, program: OsString, args: Option<Vec<OsString>>, output: Output) {
         let rules = Arc::clone(&self.rules);
         rules
@@ -273,8 +272,9 @@ impl Inner {
     }
 }
 
-impl Simulate<RunCommand> for fx::RunCommand {
-    fn run(states: &mut States<'_>, op: RunCommand) -> io::Result<Output> {
+impl Perform<RunCommand> for Sim {
+    fn perform(&mut self, op: RunCommand) -> io::Result<Output> {
+        let states = &mut States::new(&self.shared);
         let cmd = op.0;
         let (_, stdin) = states.inner().record(&cmd)?;
         let _ = stdin.set(Vec::new());
@@ -453,11 +453,9 @@ impl Inner {
     }
 }
 
-impl Simulate<Opening<SpawnChild<Child>>> for fx::SpawnChild {
-    fn run(
-        states: &mut States<'_>,
-        Opening(op, _): Opening<SpawnChild<Child>>,
-    ) -> io::Result<Child> {
+impl Perform<Opening<SpawnChild<Child>>> for Sim {
+    fn perform(&mut self, Opening(op, _): Opening<SpawnChild<Child>>) -> io::Result<Child> {
+        let states = &mut States::new(&self.shared);
         let (entry, given) = states.inner().record(&op.command)?;
         let mut child = Child {
             handlers: states.inner().process().handlers.clone(),
@@ -483,11 +481,9 @@ impl Simulate<Opening<SpawnChild<Child>>> for fx::SpawnChild {
 }
 
 /// Runs the child if it has not run, and prints what it inherited.
-impl Simulate<Closing<SpawnChild<Child>>> for fx::SpawnChild {
-    fn run(
-        states: &mut States,
-        Closing(mut child, _): Closing<SpawnChild<Child>>,
-    ) -> io::Result<()> {
+impl Perform<Closing<SpawnChild<Child>>> for Sim {
+    fn perform(&mut self, Closing(mut child, _): Closing<SpawnChild<Child>>) -> io::Result<()> {
+        let states = &mut States::new(&self.shared);
         child.run();
         let inherited = child.take_inherited();
         states.inner().deliver(inherited);
@@ -595,20 +591,11 @@ impl seam_core::Capability for Child {}
 
 /// Unwinds with [`Exited`] instead of ending the process. The panic hook is
 /// not run, so nothing is printed.
-impl Simulate<Exit> for fx::Exit {
-    fn run(_: &mut States<'_>, op: Exit) -> Infallible {
+impl Perform<Exit> for Sim {
+    fn perform(&mut self, op: Exit) -> Infallible {
         std::panic::resume_unwind(Box::new(Exited(op.0)))
     }
 }
-
-macro_rules! process_keys {
-    ($($key:ident),*) => {$(
-        impl Simulated for fx::$key {
-            type State = Processes;
-        }
-    )*};
-}
-process_keys!(RunCommand, SpawnChild, Exit);
 
 /// One `command PROGRAM [ARGS..] exit=N stdout=".." stderr=".."` line.
 fn command(node: &Node) -> world_file::Result<(OsString, Option<Vec<OsString>>, Output)> {
@@ -655,7 +642,7 @@ fn ran(node: &Node) -> world_file::Result<(Vec<OsString>, Option<Vec<u8>>)> {
     Ok((words, stdin))
 }
 
-impl SimState for Processes {
+impl World for Processes {
     const BLOCKS: &'static [&'static str] = &["process"];
 
     /// `command ..` scripts a fixed response; `ran ..` adds to the log, as
@@ -790,12 +777,6 @@ impl SimState for Processes {
             )));
         }
         Ok(())
-    }
-
-    /// Output a child inherits goes to standard output and error.
-    #[cfg(feature = "io-std")]
-    fn uses(world: &mut crate::sim::Uses<'_>) {
-        world.state::<crate::sim::Stdio>();
     }
 }
 

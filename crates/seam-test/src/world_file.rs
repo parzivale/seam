@@ -1,5 +1,4 @@
-//! World files: a simulated [`World`](crate::World) described in
-//! [KDL](https://kdl.dev).
+//! World files: a simulated world described in [KDL](https://kdl.dev).
 //!
 //! A world file sets up the world a core starts in, in one block per
 //! state (the clock, the environment, the filesystem, ...):
@@ -32,35 +31,35 @@
 //! signal { ctrl-c }
 //! ```
 //!
-//! Each block is read by the [state](crate::sim::SimState) of the world
-//! that names it in its `BLOCKS`: the built-in ones below, or a state of a
-//! program's own. Load a world with [`Sim::from_world`](crate::Sim::from_world),
-//! or onto an existing world with [`World::load_world`](crate::World::load_world).
+//! A [`Sim`](crate::Sim) reads the blocks below, each with the part of the
+//! simulation it sets up; a fake of a program's own, beside it in a root,
+//! reads blocks of its own (see [below](#blocks-of-your-own)). Load a world
+//! with [`Sim::from_world`](crate::Sim::from_world), or onto an existing one
+//! with [`Sim::load_world`](crate::Sim::load_world).
 //! Blocks apply in order, top to bottom, as the matching setup methods
 //! would; something set twice keeps its last value. Paths are quoted: KDL
 //! does not allow `/` in a bare word. Directories nest, and a nested path is
 //! relative to its directory.
 //!
-//! [`World::to_world`](crate::World::to_world) writes a world out in the
-//! same format, every state's blocks in turn, and loading that into a fresh
-//! world of the same effects gives the same world.
+//! [`Sim::to_world`](crate::Sim::to_world) writes a world out in the same
+//! format, and loading that into a fresh `Sim` gives the same world.
 //!
 //! # Directives
 //!
 //! | Block | Directive | Does |
 //! |---|---|---|
-//! | | `seed N` | `World::set_seed` |
-//! | | `parallelism N` | `World::set_parallelism` |
+//! | | `seed N` | `Sim::set_seed` |
+//! | | `parallelism N` | `Sim::set_parallelism` |
 //! | | `clock now=S wall=S` | advances both clocks by `now` seconds, then sets the wall clock to `wall` seconds after the Unix epoch; `now-ns=` and `wall-ns=` for nanoseconds |
-//! | `env` | `var NAME VALUE`, `unset NAME` | `World::set_var`, `World::remove_var` |
-//! | `env` | `args A...`, `cwd P`, `temp P` | `World::set_args`, `World::set_current_dir`, `World::set_temp_dir` |
+//! | `env` | `var NAME VALUE`, `unset NAME` | `Sim::set_var`, `Sim::remove_var` |
+//! | `env` | `args A...`, `cwd P`, `temp P` | `Sim::set_args`, `Sim::set_current_dir`, `Sim::set_temp_dir` |
 //! | `fs` | `dir P { ... }` | creates a directory and its contents |
 //! | `fs` | `file P CONTENTS`, `file P hex="..."` | creates a file, and its parents |
-//! | `net` | `host NAME IP` | `World::add_host` |
+//! | `net` | `host NAME IP` | `Sim::add_host` |
 //! | `process` | `command PROGRAM [ARGS...] exit=N stdout=".." stderr=".."` | a fixed response; with arguments, only for exactly those |
 //! | `process` | `ran PROGRAM [ARGS...] stdin=".."` | adds to the log, as if it had run |
 //! | `stdio` | `stdin ..`, `stdout ..`, `stderr ..` (or `hex=`) | input to read; output already written |
-//! | `signal` | `ctrl-c [N]` | `World::raise_ctrl_c`, `N` times |
+//! | `signal` | `ctrl-c [N]` | `Sim::raise_ctrl_c`, `N` times |
 //!
 //! Each block needs the seam-test feature of its state (`io-std` for
 //! `stdio`, `random` for `seed`, `rt` for `parallelism`); a block whose
@@ -71,8 +70,8 @@
 //! # Expectations
 //!
 //! The same format describes what the world should look like after a run,
-//! for [`World::check_world`](crate::World::check_world) and
-//! [`World::assert_world`](crate::World::assert_world). Only what is listed
+//! for [`Sim::check_world`](crate::Sim::check_world) and
+//! [`Sim::assert_world`](crate::Sim::assert_world). Only what is listed
 //! is checked:
 //!
 //! ```kdl
@@ -103,11 +102,13 @@
 //!
 //! # Blocks of your own
 //!
-//! A state of a program's own implements [`SimState`]: the blocks it
-//! reads, [`load`](SimState::load) and [`to_world`](SimState::to_world),
-//! with nodes read through [`Node`] and [`Value`] and built with
-//! [`Node::new`]. Its expectations are then a subset of its `to_world`,
-//! with no more code. See the [`sim`](crate::sim) module.
+//! A fake of a program's own effect is an ordinary handler (it implements
+//! `Perform` for the effect) that also implements [`World`]: the blocks it
+//! reads, [`load`](World::load) and [`to_world`](World::to_world), with
+//! nodes read through [`Node`] and [`Value`] and built with [`Node::new`].
+//! Its expectations are then a subset of its `to_world`, with no more code.
+//! [`load_world`], [`check_world`] and [`to_world`] set up, check and write
+//! out every part of a root at once, through the effects they serve.
 
 use std::fmt;
 use std::format;
@@ -116,7 +117,7 @@ use std::vec::Vec;
 
 use crate::kdl::{self, Kind, Pos};
 pub use crate::kdl::{Node, Value};
-use crate::sim::SimState;
+pub use crate::sim::World;
 
 /// A world file that cannot be loaded: it is not valid KDL, or it says
 /// something the world does not understand.
@@ -229,7 +230,31 @@ fn unknown(node: &Node, within: &str, options: &[&str]) -> WorldError {
     )
 }
 
-/// Reading a node, for a [`SimState`]'s own blocks. The checks return a
+/// The error for a top-level block that nothing reads: naming the feature
+/// it needs, if it is one of the simulation's and that feature is off, and
+/// otherwise suggesting the closest of `options`.
+pub(crate) fn unknown_block(node: &Node, options: &[&str]) -> WorldError {
+    let needs: &[(&str, &str, bool)] = &[
+        ("clock", "time", cfg!(any(feature = "time", feature = "fs"))),
+        ("seed", "random", cfg!(feature = "random")),
+        ("env", "env", cfg!(feature = "env")),
+        ("fs", "fs", cfg!(feature = "fs")),
+        ("net", "net", cfg!(feature = "net")),
+        ("stdio", "io-std", cfg!(feature = "io-std")),
+        ("process", "process", cfg!(feature = "process")),
+        ("signal", "signal", cfg!(feature = "signal")),
+        ("parallelism", "rt", cfg!(feature = "rt")),
+    ];
+    match needs.iter().find(|(name, _, on)| *name == node.name && !on) {
+        Some((_, feature, _)) => node.error(format!(
+            "`{}` needs seam-test's `{feature}` feature",
+            node.name
+        )),
+        None => unknown(node, "the world", options),
+    }
+}
+
+/// Reading a node, for a [`World`]'s own blocks. The checks return a
 /// [`WorldError`] that points at the offending line and column.
 impl Node {
     /// Its name: `file` in `file "/a" "x"`.
@@ -392,7 +417,7 @@ impl Value {
     }
 }
 
-/// Building nodes, for a part's [`to_world`](crate::sim::SimState::to_world):
+/// Building nodes, for a part's [`to_world`](crate::sim::World::to_world):
 /// `Node::new("file").with_arg("/a.txt").with_arg("hello")`. A built node
 /// has no position; it is reported as line 0.
 impl Node {
@@ -544,7 +569,7 @@ fn write_ident(out: &mut String, s: &str) {
 }
 
 /// Checks that `expected` holds in `actual`, a part's
-/// [`to_world`](crate::sim::SimState::to_world): a node with the same name
+/// [`to_world`](crate::sim::World::to_world): a node with the same name
 /// and arguments must be there, with at least the expected properties, and
 /// each node in the expected block must hold, the same way, in its block.
 /// Each one that does not adds a [`Failure`] at its line.
@@ -579,26 +604,26 @@ pub fn check_subset(actual: &[Node], expected: &Node, failures: &mut Vec<Failure
     }
 }
 
-/// Sets up one state from a world file, outside a world: for testing a
-/// [`SimState`] on its own. Each block must be one of its
-/// [`BLOCKS`](SimState::BLOCKS).
-pub fn load<S: SimState>(state: &mut S, text: &str) -> core::result::Result<(), WorldError> {
+/// Sets up one handler's state from a world file: each block must be one
+/// of its [`BLOCKS`](World::BLOCKS). [`Sim::load_world`](crate::Sim::load_world)
+/// is this.
+pub fn load<S: World>(state: &mut S, text: &str) -> core::result::Result<(), WorldError> {
     for node in &parse(text)? {
         if !S::BLOCKS.contains(&node.name()) {
-            return Err(node.unknown("the world", S::BLOCKS));
+            return Err(unknown_block(node, S::BLOCKS));
         }
         state.load(node)?;
     }
     Ok(())
 }
 
-/// Checks one state against expectations written as a world file, outside
-/// a world.
-pub fn check<S: SimState>(state: &S, text: &str) -> core::result::Result<(), WorldMismatch> {
+/// Checks one handler's state against expectations written as a world
+/// file. [`Sim::check_world`](crate::Sim::check_world) is this.
+pub fn check<S: World>(state: &S, text: &str) -> core::result::Result<(), WorldMismatch> {
     let mut failures = Vec::new();
     for node in &parse(text).map_err(invalid)? {
         if !S::BLOCKS.contains(&node.name()) {
-            return Err(invalid(node.unknown("the world", S::BLOCKS)));
+            return Err(invalid(unknown_block(node, S::BLOCKS)));
         }
         state.check(node, &mut failures).map_err(invalid)?;
     }
@@ -626,12 +651,7 @@ impl WorldMismatch {
     }
 }
 
-/// Parses a world file into its top-level nodes.
-pub(crate) fn parse_world(text: &str) -> Result<Vec<Node>> {
-    parse(text)
-}
-
-/// Parses a world file holding one node, for testing a [`SimState`] on
+/// Parses a world file holding one node, for testing a [`World`] on
 /// its own.
 pub fn parse_one(text: &str) -> Result<Node> {
     let mut nodes = parse(text)?;
@@ -710,4 +730,191 @@ impl Node {
             }
         }
     }
+}
+
+/// The effects whose parts take part in [`load_world`] and
+/// [`check_world`]: a tuple of up to 32 keys, each served by a [`World`]
+/// part of the root.
+pub trait WorldKeys<A> {
+    /// The blocks the part of the key at `i` reads, or `None` past the end.
+    #[doc(hidden)]
+    fn blocks(i: usize) -> Option<&'static [&'static str]>;
+    /// Where the part of the key at `i` is, to use a part reached through
+    /// several keys once.
+    #[doc(hidden)]
+    fn place(parts: &A, i: usize) -> (usize, core::any::TypeId);
+    #[doc(hidden)]
+    fn load(parts: &mut A, i: usize, block: &Node) -> Result<()>;
+    #[doc(hidden)]
+    fn check(parts: &A, i: usize, block: &Node, failures: &mut Vec<Failure>) -> Result<()>;
+    #[doc(hidden)]
+    fn to_world(parts: &A, i: usize) -> Vec<Node>;
+}
+
+macro_rules! world_keys {
+    ([$($k:ident $i:tt)*]) => {};
+    ([$($k:ident $i:tt)*] $next:ident $ni:tt $($rest:tt)*) => {
+        impl<A, $($k,)* $next> WorldKeys<A> for ($($k,)* $next,)
+        where
+            $($k: seam_core::Pick<A>, $k::Part: World + 'static,)*
+            $next: seam_core::Pick<A>,
+            $next::Part: World + 'static,
+        {
+            fn blocks(i: usize) -> Option<&'static [&'static str]> {
+                match i {
+                    $($i => Some(<$k::Part as World>::BLOCKS),)*
+                    $ni => Some(<$next::Part as World>::BLOCKS),
+                    _ => None,
+                }
+            }
+
+            fn place(parts: &A, i: usize) -> (usize, core::any::TypeId) {
+                match i {
+                    $($i => (
+                        core::ptr::from_ref($k::pick(parts)).addr(),
+                        core::any::TypeId::of::<$k::Part>(),
+                    ),)*
+                    _ => (
+                        core::ptr::from_ref($next::pick(parts)).addr(),
+                        core::any::TypeId::of::<$next::Part>(),
+                    ),
+                }
+            }
+
+            fn load(parts: &mut A, i: usize, block: &Node) -> Result<()> {
+                match i {
+                    $($i => World::load($k::pick_mut(parts), block),)*
+                    _ => World::load($next::pick_mut(parts), block),
+                }
+            }
+
+            fn check(parts: &A, i: usize, block: &Node, failures: &mut Vec<Failure>) -> Result<()> {
+                match i {
+                    $($i => World::check($k::pick(parts), block, failures),)*
+                    _ => World::check($next::pick(parts), block, failures),
+                }
+            }
+
+            fn to_world(parts: &A, i: usize) -> Vec<Node> {
+                match i {
+                    $($i => World::to_world($k::pick(parts)),)*
+                    _ => World::to_world($next::pick(parts)),
+                }
+            }
+        }
+
+        world_keys!([$($k $i)* $next $ni] $($rest)*);
+    };
+}
+
+world_keys!([]
+    K0 0 K1 1 K2 2 K3 3 K4 4 K5 5 K6 6 K7 7 K8 8 K9 9 K10 10 K11 11 K12 12 K13 13 K14 14 K15 15
+    K16 16 K17 17 K18 18 K19 19 K20 20 K21 21 K22 22 K23 23 K24 24 K25 25 K26 26 K27 27 K28 28
+    K29 29 K30 30 K31 31
+);
+
+/// The key whose part reads `name`: the first listed. Two different parts
+/// that read the same block are an error.
+fn owner<K: WorldKeys<A>, A>(parts: &A, node: &Node) -> Result<usize> {
+    let mut found: Option<(usize, (usize, core::any::TypeId))> = None;
+    let mut all: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while let Some(blocks) = K::blocks(i) {
+        all.extend(blocks.iter().copied());
+        if blocks.contains(&node.name.as_str()) {
+            let place = K::place(parts, i);
+            match found {
+                None => found = Some((i, place)),
+                Some((_, first)) if first == place => {}
+                Some(_) => {
+                    return Err(node.error(format!(
+                        "two parts of the root read `{}`; list one of them",
+                        node.name
+                    )));
+                }
+            }
+        }
+        i += 1;
+    }
+    match found {
+        Some((i, _)) => Ok(i),
+        None => {
+            all.sort_unstable();
+            all.dedup();
+            Err(node.error(format!(
+                "no part of the root reads `{}`{}",
+                node.name,
+                suggest(&node.name, &all)
+            )))
+        }
+    }
+}
+
+/// Sets up the parts of `root` serving the effects `K` from a world file:
+/// each block goes to the part that reads it, and a part serving several of
+/// the effects is set up once.
+///
+/// ```
+/// # #[cfg(all(feature = "fs", feature = "env"))] {
+/// use seam_core::effects as fx;
+/// use seam_test::Sim;
+///
+/// let mut root = seam_core::root![Sim<fx::Var, fx::View>::new()];
+/// seam_test::load_world::<(fx::Var, fx::View), _>(&mut root, r#"
+///     env { var USER ada }
+///     fs { file "/notes.txt" "buy milk" }
+/// "#).unwrap();
+/// seam_test::check_world::<(fx::View,), _>(&root, r#"fs { file "/notes.txt" "buy milk" }"#).unwrap();
+/// let text = seam_test::to_world::<(fx::Var, fx::View), _>(&root);
+/// assert!(text.contains("var USER ada"));
+/// # }
+/// ```
+pub fn load_world<K: WorldKeys<A>, A>(
+    root: &mut seam_core::Root<A>,
+    text: &str,
+) -> core::result::Result<(), WorldError> {
+    for node in &parse(text)? {
+        let i = owner::<K, A>(root.parts(), node)?;
+        K::load(root.parts_mut(), i, node)?;
+    }
+    Ok(())
+}
+
+/// Checks the parts of `root` serving the effects `K` against expectations
+/// written as a world file. Every failing expectation is reported, with its
+/// line.
+pub fn check_world<K: WorldKeys<A>, A>(
+    root: &seam_core::Root<A>,
+    text: &str,
+) -> core::result::Result<(), WorldMismatch> {
+    let mut failures = Vec::new();
+    for node in &parse(text).map_err(invalid)? {
+        let i = owner::<K, A>(root.parts(), node).map_err(invalid)?;
+        K::check(root.parts(), i, node, &mut failures).map_err(invalid)?;
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(WorldMismatch { failures })
+    }
+}
+
+/// Writes out the parts of `root` serving the effects `K`, each once, in
+/// the order their keys are listed: the root's simulated world, as a world
+/// file.
+pub fn to_world<K: WorldKeys<A>, A>(root: &seam_core::Root<A>) -> String {
+    let mut seen: Vec<(usize, core::any::TypeId)> = Vec::new();
+    let mut out = String::new();
+    let mut i = 0;
+    while K::blocks(i).is_some() {
+        let place = K::place(root.parts(), i);
+        if !seen.contains(&place) {
+            seen.push(place);
+            for node in K::to_world(root.parts(), i) {
+                out.push_str(&format!("{node}"));
+            }
+        }
+        i += 1;
+    }
+    out
 }

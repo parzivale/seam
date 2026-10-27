@@ -15,9 +15,7 @@ use std::vec::Vec;
 use seam_core::ops::sync::{Channel, Load, RecvError, RecvMsg, SendError, SendMsg, Share, Update};
 use seam_core::{Inspect, Perform};
 
-use seam_core::effects as fx;
-
-use crate::sim::{Simulate, Simulated, Stateless, States};
+use crate::Sim;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -163,13 +161,8 @@ pub(crate) fn channel<T>(capacity: Option<usize>) -> (Sender<T>, Receiver<T>) {
     (Sender(Arc::clone(&link)), Receiver(link))
 }
 
-/// A channel's state lives in its endpoints, not in the world.
-impl Simulated for fx::Channel {
-    type State = Stateless;
-}
-
-impl<T> Simulate<Channel<Sender<T>, Receiver<T>>> for fx::Channel {
-    fn run(_: &mut States<'_>, op: Channel<Sender<T>, Receiver<T>>) -> (Sender<T>, Receiver<T>) {
+impl<T> Perform<Channel<Sender<T>, Receiver<T>>> for Sim {
+    fn perform(&mut self, op: Channel<Sender<T>, Receiver<T>>) -> (Sender<T>, Receiver<T>) {
         channel(op.capacity)
     }
 }
@@ -205,13 +198,8 @@ impl<T> core::fmt::Debug for Shared<T> {
     }
 }
 
-/// A cell's state lives in its handles, not in the world.
-impl Simulated for fx::Share {
-    type State = Stateless;
-}
-
-impl<T> Simulate<Share<T, Shared<T>>> for fx::Share {
-    fn run(_: &mut States<'_>, op: Share<T, Shared<T>>) -> Shared<T> {
+impl<T> Perform<Share<T, Shared<T>>> for Sim {
+    fn perform(&mut self, op: Share<T, Shared<T>>) -> Shared<T> {
         Shared(Arc::new(Mutex::new(op.value)))
     }
 }

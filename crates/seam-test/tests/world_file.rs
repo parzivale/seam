@@ -394,10 +394,10 @@ fn env_expectations_check_what_a_core_changed() {
     );
 }
 
-// ---- states of a program's own, each reading its own blocks ----
+// ---- a root's parts, each reading its own blocks ----
 
 use seam_core::{Effect, Operation, effects as fx};
-use seam_test::sim::{SimState, Simulate, Simulated, States};
+use seam_test::World;
 use seam_test::world_file::{Node, WorldError};
 
 struct Bind(String, String);
@@ -408,9 +408,16 @@ impl Effect for Bind {
     type Key = Bind;
 }
 
-/// A fake mount table, with a `mounts` block of its own.
+/// A fake mount table: an ordinary handler of `Bind`, with a `mounts`
+/// block of its own.
 #[derive(Default)]
 struct Mounts(Vec<(String, String)>);
+impl seam_core::Capability for Mounts {}
+impl Perform<Bind> for Mounts {
+    fn perform(&mut self, op: Bind) {
+        self.0.push((op.0, op.1));
+    }
+}
 
 fn pair(node: &Node) -> Result<(String, String), WorldError> {
     node.arity(2, Some(2), "a source and a target")?;
@@ -420,7 +427,7 @@ fn pair(node: &Node) -> Result<(String, String), WorldError> {
     ))
 }
 
-impl SimState for Mounts {
+impl World for Mounts {
     const BLOCKS: &'static [&'static str] = &["mounts"];
 
     fn load(&mut self, block: &Node) -> Result<(), WorldError> {
@@ -440,97 +447,82 @@ impl SimState for Mounts {
         }
         vec![block]
     }
-}
-
-impl Simulated for Bind {
-    type State = Mounts;
-}
-impl Simulate<Bind> for Bind {
-    fn run(states: &mut States, op: Bind) {
-        states.state::<Mounts>().0.push((op.0, op.1));
-    }
+    // No `check`: expectations are a subset of `to_world`.
 }
 
 #[cfg(all(feature = "fs", feature = "env", feature = "io-std"))]
 #[test]
-fn one_world_file_sets_up_and_checks_every_state() {
-    let mut world = seam_test::world![fx::Var, fx::View, fx::OpenStdout, Bind];
-    world
-        .load_world(
-            r#"
-            env { var USER ada }
-            fs { file "/etc/binds" "x" }
-            mounts { bind "/srv/a" "/mnt/a" }
-            "#,
-        )
-        .unwrap();
-    assert_eq!(world.file("/etc/binds").unwrap(), b"x");
-    world.state(|m: &mut Mounts| assert_eq!(m.0.len(), 1));
+fn one_world_file_sets_up_and_checks_every_part() {
+    let mut root = seam_core::root![
+        Sim < fx::Var,
+        fx::View,
+        fx::OpenStdout > ::new(),
+        Mounts<Bind>::default(),
+    ];
+    seam_test::load_world::<(fx::Var, fx::View, fx::OpenStdout, Bind), _>(
+        &mut root,
+        r#"
+        env { var USER ada }
+        fs { file "/etc/binds" "x" }
+        mounts { bind "/srv/a" "/mnt/a" }
+        "#,
+    )
+    .unwrap();
+    // Set up once, though the `Sim` serves three of the keys.
+    assert_eq!(root.part::<fx::View>().file("/etc/binds").unwrap(), b"x");
+    assert_eq!(root.part::<Bind>().0.len(), 1);
 
-    world.perform(Bind("/srv/b".into(), "/mnt/b".into()));
-    world
-        .check_world(
-            r#"
-            fs { file "/etc/binds" "x" }
-            mounts { bind "/srv/a" "/mnt/a"; bind "/srv/b" "/mnt/b" }
-            "#,
-        )
-        .unwrap();
+    root.perform(Bind("/srv/b".into(), "/mnt/b".into()));
+    seam_test::check_world::<(fx::View, Bind), _>(
+        &root,
+        r#"
+        fs { file "/etc/binds" "x" }
+        mounts { bind "/srv/a" "/mnt/a"; bind "/srv/b" "/mnt/b" }
+        "#,
+    )
+    .unwrap();
 
-    // `Mounts` has no `check` of its own: the default is a subset of its
-    // `to_world`.
-    let mismatch = world
-        .check_world("mounts { bind \"/srv/c\" \"/mnt/c\" }")
-        .unwrap_err();
+    let mismatch = seam_test::check_world::<(fx::View, Bind), _>(
+        &root,
+        "mounts { bind \"/srv/c\" \"/mnt/c\" }",
+    )
+    .unwrap_err();
     assert_eq!(
         mismatch.failures[0].message,
         "expected `bind \"/srv/c\" \"/mnt/c\"`, found nothing"
     );
+
+    // The whole root, written out: each part once.
+    let text = seam_test::to_world::<(fx::Var, fx::View, Bind), _>(&root);
+    assert_eq!(text.matches("env {").count(), 1);
+    assert!(text.contains("mounts {\n    bind \"/srv/a\" \"/mnt/a\"\n"));
 }
 
 #[cfg(feature = "fs")]
 #[test]
-fn a_block_no_state_reads_is_an_error() {
-    let mut world = seam_test::world![fx::View];
-    let err = world.load_world("mounts { }").unwrap_err();
-    assert_eq!(
-        err.message,
-        "unknown `mounts` in the world (expected one of: `fs`, `clock`, `env`)"
+fn a_block_no_listed_part_reads_is_an_error() {
+    let mut root = seam_core::root![Sim<fx::View>::new(), Mounts<Bind>::default(),];
+    // `Bind` is not listed, so nothing reads `mounts`.
+    let err = seam_test::load_world::<(fx::View,), _>(&mut root, "mounts { }").unwrap_err();
+    assert!(
+        err.message
+            .starts_with("no part of the root reads `mounts`"),
+        "{err}"
     );
-    let mut world = seam_test::world![fx::View, Bind];
-    let err = world.load_world("mount { }").unwrap_err();
+    let err = seam_test::load_world::<(fx::View, Bind), _>(&mut root, "mount { }").unwrap_err();
     assert!(err.message.contains("did you mean `mounts`?"), "{err}");
 }
 
-/// Another state that reads `mounts`.
-#[derive(Default)]
-struct Rival;
-impl SimState for Rival {
-    const BLOCKS: &'static [&'static str] = &["mounts"];
-    fn load(&mut self, _: &Node) -> Result<(), WorldError> {
-        Ok(())
-    }
-    fn to_world(&self) -> Vec<Node> {
-        Vec::new()
-    }
-}
-
-struct Contest;
-impl Operation for Contest {
-    type Outcome = ();
-}
-impl Effect for Contest {
-    type Key = Contest;
-}
-impl Simulated for Contest {
-    type State = Rival;
-}
-
+#[cfg(feature = "fs")]
 #[test]
-fn two_states_reading_one_block_is_an_error() {
-    let mut world = seam_test::world![Bind, Contest];
-    let err = world.load_world("mounts { }").unwrap_err();
-    assert_eq!(err.message, "two parts of the world read `mounts`");
+fn two_parts_reading_one_block_is_an_error() {
+    let mut root = seam_core::root![Sim<fx::View>::new(), Sim<fx::Metadata>::new(),];
+    let err =
+        seam_test::load_world::<(fx::View, fx::Metadata), _>(&mut root, "fs { }").unwrap_err();
+    assert!(
+        err.message.contains("two parts of the root read `fs`"),
+        "{err}"
+    );
 }
 
 /// The whole simulated world, written out, loads back to the same world.

@@ -1,16 +1,11 @@
 //! A pure test backend for seam.
 //!
-//! A simulated `World` implements the same operations as the real
-//! backends, but the clock is virtual, randomness is a seeded PRNG, the
-//! filesystem and network live in memory, commands are scripted and stdio
-//! is captured. Its only real effect is allocation. The crate is linted
-//! with seam's own `clippy.toml`, which bans the std effect APIs.
-//!
-//! Every effect is simulated on its own key, against a state of the world
-//! (the clock, the filesystem, ...), the same way a program simulates its
-//! own effects: see the `sim` module. `world!` builds a world that grants
-//! exactly the effects it lists, and `Sim` is the world of every built-in
-//! one.
+//! [`Sim`] is a simulated world, and a handler like any other: it
+//! implements the same effects as the real backends, but the clock is
+//! virtual, randomness is a seeded PRNG, the filesystem and network live in
+//! memory, commands are scripted and stdio is captured. Its only real
+//! effect is allocation. The crate is linted with seam's own `clippy.toml`,
+//! which bans the std effect APIs.
 //!
 //! Everything is deterministic: the same seed and the same calls give the
 //! same results, in the same order.
@@ -38,9 +33,8 @@
 //!
 //! # Setting up and checking the world
 //!
-//! Every world has plain methods, outside the capability system, for the
-//! test to arrange the world before the core runs and inspect it
-//! afterwards:
+//! `Sim` has plain methods, outside the capability system, for the test to
+//! arrange the world before the core runs and inspect it afterwards:
 //!
 //! | Group | Arrange | Assert |
 //! |---|---|---|
@@ -55,8 +49,10 @@
 //! Each row needs its feature. The same setup can be written as a world
 //! file, in KDL, and loaded with `Sim::from_world` or `load_world`;
 //! `check_world` checks the world afterwards against expectations in the
-//! same format, and `to_world` writes the whole world out in it. See the
-//! `world_file` module.
+//! same format, and `to_world` writes the whole world out in it. A fake of
+//! a program's own effect, beside the `Sim` in a root, reads and writes
+//! blocks of its own by implementing `World`, and one file then sets up,
+//! checks and snapshots the whole root. See the `world_file` module.
 //!
 //! ```
 //! # #[cfg(all(feature = "fs", feature = "env", feature = "io-std"))] {
@@ -98,15 +94,14 @@
 //!
 //! # Async cores
 //!
-//! A world is `Send + Sync`, and implements the async and `Send` forms of
-//! its operations, so async cores (including ones with `Send` bounds,
-//! written for Tokio) run in it through
-//! [`block_on`](seam_core::future::block_on). Every future is ready on its
-//! first poll.
+//! `Sim` is `Send + Sync`, and its operations are synchronous, so async
+//! cores (including ones with `Send` bounds, written for Tokio) run in it
+//! through seam's lifts and [`block_on`](seam_core::future::block_on).
+//! Every future is ready on its first poll.
 //!
 //! # Blocking operations
 //!
-//! Used directly, nothing in a world waits. An operation that would block on
+//! Used directly, nothing in `Sim` waits. An operation that would block on
 //! a real system (reading an empty socket, accepting with no pending
 //! connection, waiting for Ctrl-C that was never raised) fails with
 //! `io::ErrorKind::WouldBlock` instead, and `Sleep` advances the virtual
@@ -128,8 +123,8 @@
 //!
 //! # Features
 //!
-//! Worlds need std. Without it, `time` and `random` give a small `Sim` of
-//! a virtual clock and seeded random numbers, with no allocation. `fs`,
+//! `time` and `random` work without std: a small `Sim` of a virtual clock
+//! and seeded random numbers, with no allocation. `fs`,
 //! `net`, `env`, `process`, `io-std`, `signal` and `sync` need std's types,
 //! but still make no system calls of their own. `rt` adds the
 //! deterministic runtime and threads. `full` turns on everything.
@@ -178,10 +173,11 @@ pub use process::{Exited, Invocation, catch_exit};
 pub use sim::{Sim, World};
 #[cfg(feature = "std")]
 pub use world_file::{Failure, WorldError, WorldMismatch};
+#[cfg(feature = "std")]
+pub use world_file::{check_world, load_world, to_world};
 
 /// A simulated world without std: a virtual clock and seeded random
-/// numbers. With std, `Sim` is the world of every built-in
-/// effect.
+/// numbers. With std, `Sim` simulates every effect whose feature is on.
 #[cfg(not(feature = "std"))]
 #[derive(Debug, Default)]
 pub struct Sim {

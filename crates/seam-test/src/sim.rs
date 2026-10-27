@@ -1,44 +1,12 @@
-//! Simulated effects, each defined on its effect's own key.
+//! The simulated world, and how a handler's state is written in a world
+//! file.
 //!
-//! An effect is simulated by implementing two sister traits on its key, the
-//! type a root routes it by (`effects::Sleep` for `Sleep`, or your own
-//! effect, which is usually its own key):
+//! [`Sim`] is a handler like any other: it implements seam's `Perform` and
+//! `Inspect` for every effect it simulates, exactly as `Std` and `Tokio`
+//! do, so a core takes `&mut sim` wherever it takes a real backend, and a
+//! root lists it under the effects it should serve.
 //!
-//! - [`Simulated`] names the state the effect works on: `Clock` for
-//!   `Now` and `Sleep`, a `Mounts` of yours for a program's `BindMount`.
-//! - [`Simulate<O>`] runs an operation `O` against the world's states.
-//!
-//! The state itself implements [`SimState`]: the world-file blocks it
-//! reads, and its contents written out as a world file. A [`World`] holds
-//! one state per state type, so effects that share a state (`Now` and
-//! `Sleep`) share one value, and a handler can use other states too
-//! (writing a file stamps it with the clock).
-//!
-//! [`world!`](crate::world!) builds a world that grants exactly the effects
-//! it lists, and [`Sim`] is the world of every built-in effect:
-//!
-//! ```
-//! # #[cfg(feature = "time")] {
-//! use core::time::Duration;
-//! use seam_core::effects as fx;
-//! use seam_core::ops::time::{Now, Sleep};
-//! use seam_core::{Inspect, Perform};
-//!
-//! /// The core: generic, as always.
-//! fn nap<C: Perform<Sleep> + Inspect<Now>>(c: &mut C) -> Duration {
-//!     c.perform(Sleep(Duration::from_secs(90)));
-//!     c.inspect(Now).since_epoch()
-//! }
-//!
-//! let mut world = seam_test::world![fx::Now, fx::Sleep];
-//! world.load_world("clock now=10").unwrap();
-//! assert_eq!(nap(&mut world), Duration::from_secs(100));
-//! world.check_world("clock now=100").unwrap();
-//! assert_eq!(world.to_world(), "clock now=100 wall=100\n");
-//! # }
-//! ```
-//!
-//! # The built-in states
+//! Its world is made of states, one per area:
 //!
 //! | State | Blocks | Effects |
 //! |---|---|---|
@@ -51,27 +19,27 @@
 //! | `Processes` | `process` | `RunCommand`, `SpawnChild`, `Exit` |
 //! | `Signals` | `signal` | `CtrlC` |
 //! | `Tasks` | `parallelism` | `AvailableParallelism` |
-//! | `Stateless` | none | `Channel`, `Share` |
 //!
 //! Each needs its seam-test feature.
+//!
+//! # World files
+//!
+//! [`World`] is the one trait the simulation adds, and it is not about
+//! handling effects: it describes a handler's state in a world file. Any
+//! handler with state implements it (`Sim`, and a fake of a program's own),
+//! so one world file sets up, checks and snapshots a whole root; see
+//! [`load_world`](crate::load_world).
 #![allow(clippy::disallowed_types)] // the states are shared with every handle on the world
 
 use core::any::{Any, TypeId};
 use core::cell::RefCell;
-use core::future::Future;
-use core::marker::PhantomData;
 use std::boxed::Box;
 use std::format;
 use std::string::String;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::vec::Vec;
 
-use seam_core::future::{AsyncInspect, AsyncPerform, SendInspect, SendPerform};
-use seam_core::{Effect, Inspect, Operation, Perform, Query};
-
-use crate::world_file::{
-    self, Failure, Node, WorldError, WorldMismatch, check_subset, parse_world,
-};
+use crate::world_file::{self, Failure, Node, WorldError, WorldMismatch, check_subset};
 
 #[cfg(feature = "env")]
 pub use crate::env::Env;
@@ -92,14 +60,13 @@ pub use crate::tasks::Tasks;
 #[cfg(any(feature = "time", feature = "fs"))]
 pub use crate::time::Clock;
 
-/// A part of the simulated world: what effects work on, and how it is
-/// written in a world file.
+/// A handler's state, as written in a world file: the blocks it reads, how
+/// it is set up from one, and how it is written out.
 ///
-/// `Default` is the state of a fresh world. [`load`](Self::load) sets it up
-/// from one of its blocks, and [`to_world`](Self::to_world) writes it out;
-/// expectations are checked against that, as a subset, unless the state
-/// checks a block itself.
-pub trait SimState: Any + Send + Default {
+/// [`load`](Self::load) sets it up from one of its blocks, and
+/// [`to_world`](Self::to_world) writes it out; expectations are checked
+/// against that, as a subset, unless the state checks a block itself.
+pub trait World {
     /// The top-level blocks it reads and writes, by name.
     const BLOCKS: &'static [&'static str];
 
@@ -118,109 +85,42 @@ pub trait SimState: Any + Send + Default {
         check_subset(&self.to_world(), block, failures);
         Ok(())
     }
-
-    /// Adds the states this one uses to a world it is added to, so that the
-    /// world reads and writes their blocks from the start. The filesystem
-    /// uses the clock (to stamp files) and the environment (for the current
-    /// directory). None, by default.
-    fn uses(world: &mut Uses<'_>) {
-        let _ = world;
-    }
 }
 
-/// What [`SimState::uses`] adds states to.
-pub struct Uses<'a>(&'a mut Inner);
-
-impl Uses<'_> {
-    /// Adds the state `S`, fresh, unless the world has it.
-    pub fn state<S: SimState>(&mut self) {
-        self.0.state::<S>();
-    }
-}
-
-impl core::fmt::Debug for Uses<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Uses").finish_non_exhaustive()
-    }
-}
-
-/// The state an effect works on. Implemented on the effect's key, beside
-/// [`Simulate`].
-pub trait Simulated {
-    /// The state.
-    type State: SimState;
-}
-
-/// How an operation is simulated. Implemented on its effect's key: one
-/// impl per operation the key routes.
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` has no simulation for `{O}`",
-    label = "no `Simulate<{O}>` impl",
-    note = "implement `seam_test::sim::Simulate<{O}>` for the effect's key"
-)]
-pub trait Simulate<O: Operation>: Simulated {
-    /// Runs `op` on the world's states.
-    fn run(states: &mut States<'_>, op: O) -> O::Outcome;
-}
-
-/// The effects a world grants: [`world!`](crate::world!) implements it for
-/// each key it lists, and [`Everything`] for every built-in key.
-#[diagnostic::on_unimplemented(
-    message = "the world does not grant `{K}`",
-    label = "`{K}` is not listed",
-    note = "list `{K}` in `world![..]`"
-)]
-pub trait Grants<K> {}
-
-/// A state with nothing in it, for effects that keep no state in the world
-/// (a channel's state lives in its endpoints). It reads no blocks.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Stateless;
-
-impl SimState for Stateless {
-    const BLOCKS: &'static [&'static str] = &[];
-
-    fn load(&mut self, _: &Node) -> world_file::Result<()> {
-        Ok(())
-    }
-
-    fn to_world(&self) -> Vec<Node> {
-        Vec::new()
-    }
-}
-
-/// The world's states, one per type, in the order they were added: what a
-/// world's lock guards. Its helpers are the crate's own.
+/// The simulated world's states, one per type, in the order they were
+/// added: what the world's lock guards.
 #[doc(hidden)]
 pub struct Inner {
     list: Vec<Entry>,
 }
 
 struct Entry {
+    #[allow(dead_code)] // read by whichever areas are on
     id: TypeId,
     blocks: &'static [&'static str],
     state: Box<dyn DynState>,
 }
 
-/// A [`SimState`] behind a pointer: what the world needs of it.
+/// A state behind a pointer: what the world needs of it.
 trait DynState: Send {
     fn load(&mut self, block: &Node) -> world_file::Result<()>;
     fn to_world(&self) -> Vec<Node>;
     fn check(&self, block: &Node, failures: &mut Vec<Failure>) -> world_file::Result<()>;
+    #[allow(dead_code)] // used by whichever areas are on
     fn as_any(&mut self) -> &mut dyn Any;
 }
 
-impl<S: SimState> DynState for S {
+impl<S: World + Any + Send> DynState for S {
     fn load(&mut self, block: &Node) -> world_file::Result<()> {
-        SimState::load(self, block)
+        World::load(self, block)
     }
 
     fn to_world(&self) -> Vec<Node> {
-        SimState::to_world(self)
+        World::to_world(self)
     }
 
     fn check(&self, block: &Node, failures: &mut Vec<Failure>) -> world_file::Result<()> {
-        SimState::check(self, block, failures)
+        World::check(self, block, failures)
     }
 
     fn as_any(&mut self) -> &mut dyn Any {
@@ -236,30 +136,62 @@ impl core::fmt::Debug for Inner {
     }
 }
 
-/// The world's states, as a [`Simulate`] impl sees them. The world is
-/// locked when a state is first reached, and stays locked until the
-/// operation returns, so an operation sees and changes the world as one
-/// step.
-///
-/// `States` is also a capability for every simulated effect, so a handler
-/// can be built from other effects: a store's `Put` that writes a file
-/// calls `write_file(states, ..)`, as a core would. Each of those runs as
-/// a step of its own, so the world is unlocked around it.
-pub struct States<'a> {
+impl Inner {
+    /// The state of type `S`, created fresh if the world has none yet.
+    #[allow(dead_code)] // used by whichever areas are on
+    pub(crate) fn state<S: World + Default + Any + Send>(&mut self) -> &mut S {
+        let id = TypeId::of::<S>();
+        let i = match self.list.iter().position(|e| e.id == id) {
+            Some(i) => i,
+            None => {
+                self.list.push(Entry {
+                    id,
+                    blocks: S::BLOCKS,
+                    state: Box::new(S::default()),
+                });
+                self.list.len() - 1
+            }
+        };
+        self.list[i]
+            .state
+            .as_any()
+            .downcast_mut()
+            .unwrap_or_else(|| unreachable!("entries are found by their type"))
+    }
+
+    /// The state reading the block `node`, as an index.
+    fn owner(&self, node: &Node) -> world_file::Result<usize> {
+        match self
+            .list
+            .iter()
+            .position(|e| e.blocks.contains(&node.name()))
+        {
+            Some(i) => Ok(i),
+            None => Err(world_file::unknown_block(node, Sim::BLOCKS)),
+        }
+    }
+}
+
+/// The states, as an operation of the simulation sees them: locked the
+/// first time a state is reached, and unlocked when the operation returns,
+/// so an operation sees and changes the world as one step.
+#[allow(dead_code)] // used by whichever areas are on
+pub(crate) struct States<'a> {
     shared: &'a Shared,
     guard: RefCell<Option<MutexGuard<'a, Inner>>>,
 }
 
+#[allow(dead_code)] // used by whichever areas are on
 impl<'a> States<'a> {
-    fn new(shared: &'a Shared) -> Self {
+    pub(crate) fn new(shared: &'a Shared) -> Self {
         Self {
             shared,
             guard: RefCell::new(None),
         }
     }
 
-    /// The state of type `S`, created fresh if the world has none yet.
-    pub fn state<S: SimState>(&mut self) -> &mut S {
+    /// The state of type `S`.
+    pub(crate) fn state<S: World + Default + Any + Send>(&mut self) -> &mut S {
         self.inner().state()
     }
 
@@ -270,7 +202,8 @@ impl<'a> States<'a> {
     }
 
     /// Unlocks the world: for an operation that runs code of the test's own
-    /// (a scripted command's handler), or another operation.
+    /// (a scripted command's handler).
+    #[cfg_attr(not(feature = "process"), allow(dead_code))]
     pub(crate) fn unlock(&self) {
         drop(self.guard.borrow_mut().take());
     }
@@ -286,112 +219,8 @@ impl<'a> States<'a> {
     }
 }
 
-impl core::fmt::Debug for States<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("States").finish_non_exhaustive()
-    }
-}
-
-/// Performs another simulated effect, as a step of its own.
-impl<O> Perform<O> for States<'_>
-where
-    O: Operation + Effect,
-    O::Key: Simulate<O>,
-{
-    fn perform(&mut self, op: O) -> O::Outcome {
-        self.unlock();
-        let out = <O::Key as Simulate<O>>::run(self, op);
-        self.unlock();
-        out
-    }
-}
-
-/// Runs another simulated query, as a step of its own.
-impl<Q> Inspect<Q> for States<'_>
-where
-    Q: Query + Effect,
-    Q::Key: Simulate<Q>,
-{
-    fn inspect(&self, query: Q) -> Q::Outcome {
-        self.unlock();
-        <Q::Key as Simulate<Q>>::run(&mut States::new(self.shared), query)
-    }
-}
-
-impl Inner {
-    /// The state of type `S`, created fresh if the world has none yet.
-    pub(crate) fn state<S: SimState>(&mut self) -> &mut S {
-        let id = TypeId::of::<S>();
-        let i = match self.list.iter().position(|e| e.id == id) {
-            Some(i) => i,
-            None => {
-                self.list.push(Entry {
-                    id,
-                    blocks: S::BLOCKS,
-                    state: Box::new(S::default()),
-                });
-                let i = self.list.len() - 1;
-                S::uses(&mut Uses(self));
-                i
-            }
-        };
-        self.list[i]
-            .state
-            .as_any()
-            .downcast_mut()
-            .unwrap_or_else(|| unreachable!("entries are found by their type"))
-    }
-
-    /// The state reading the block `node`, as an index; two states reading
-    /// one block is an error.
-    fn owner(&self, node: &Node) -> world_file::Result<usize> {
-        let mut owners = self
-            .list
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.blocks.contains(&node.name()));
-        match (owners.next(), owners.next()) {
-            (Some((i, _)), None) => Ok(i),
-            (Some(_), Some(_)) => {
-                Err(node.error(format!("two parts of the world read `{}`", node.name())))
-            }
-            (None, _) => {
-                if let Some(feature) = feature_off(node.name()) {
-                    return Err(node.error(format!(
-                        "`{}` needs seam-test's `{feature}` feature",
-                        node.name()
-                    )));
-                }
-                let all: Vec<&str> = self
-                    .list
-                    .iter()
-                    .flat_map(|e| e.blocks.iter().copied())
-                    .collect();
-                Err(node.unknown("the world", &all))
-            }
-        }
-    }
-}
-
-/// The feature a built-in block needs, if it is off.
-fn feature_off(block: &str) -> Option<&'static str> {
-    let off: &[(&str, &str, bool)] = &[
-        ("clock", "time", cfg!(feature = "time")),
-        ("seed", "random", cfg!(feature = "random")),
-        ("env", "env", cfg!(feature = "env")),
-        ("fs", "fs", cfg!(feature = "fs")),
-        ("net", "net", cfg!(feature = "net")),
-        ("stdio", "io-std", cfg!(feature = "io-std")),
-        ("process", "process", cfg!(feature = "process")),
-        ("signal", "signal", cfg!(feature = "signal")),
-        ("parallelism", "rt", cfg!(feature = "rt")),
-    ];
-    off.iter()
-        .find(|(name, _, on)| *name == block && !on)
-        .map(|(_, feature, _)| *feature)
-}
-
-/// A handle on a world's states, kept by the handles a world hands out.
+/// A handle on the world's states, kept by `Sim` and by the handles it
+/// hands out.
 #[derive(Clone)]
 pub(crate) struct Shared(Arc<Mutex<Inner>>);
 
@@ -409,281 +238,16 @@ impl core::fmt::Debug for Shared {
     }
 }
 
-/// A simulated world: the states of the effects it grants, `G`. Build one
-/// with [`world!`](crate::world!), or use [`Sim`], the world of every
-/// built-in effect.
+/// A simulated world: the test backend's handler.
 ///
-/// A world is a capability: a core takes `&mut world` wherever it takes a
-/// backend or a root. Every clone is a handle to the same states.
-pub struct World<G> {
-    shared: Shared,
-    grants: PhantomData<fn() -> G>,
-}
-
-impl<G> Clone for World<G> {
-    fn clone(&self) -> Self {
-        Self {
-            shared: self.shared.clone(),
-            grants: PhantomData,
-        }
-    }
-}
-
-impl<G> core::fmt::Debug for World<G> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("World").finish_non_exhaustive()
-    }
-}
-
-impl<G> World<G> {
-    /// A world with no states yet. Used by `world!`.
-    #[doc(hidden)]
-    pub fn empty() -> Self {
-        let states = Arc::new(Mutex::new(Inner { list: Vec::new() }));
-        Self {
-            shared: Shared(states),
-            grants: PhantomData,
-        }
-    }
-
-    /// Adds the state `S`, fresh, unless the world has it. Used by `world!`.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn with_state<S: SimState>(self) -> Self {
-        self.lock().state::<S>();
-        self
-    }
-
-    /// Locks the world's states.
-    pub(crate) fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.shared.lock()
-    }
-
-    /// Runs `f` on the state `S` (created fresh if the world has none yet):
-    /// for setting the world up, or checking it, from a test. The world is
-    /// locked while `f` runs, so `f` must not use the world itself.
-    pub fn state<S: SimState, R>(&self, f: impl FnOnce(&mut S) -> R) -> R {
-        f(self.lock().state::<S>())
-    }
-
-    /// Runs `core` against this world and returns the world, for chaining
-    /// assertions.
-    pub fn run(mut self, core: impl FnOnce(&mut Self)) -> Self {
-        core(&mut self);
-        self
-    }
-
-    /// Sets the world up further from a world file: each block goes to the
-    /// state that reads it, in order. A base world, then a test's own
-    /// changes. On an error, the blocks before it have been applied.
-    pub fn load_world(&mut self, text: &str) -> Result<&mut Self, WorldError> {
-        let nodes = parse_world(text)?;
-        let mut states = self.lock();
-        for node in &nodes {
-            let i = states.owner(node)?;
-            states.list[i].state.load(node)?;
-        }
-        drop(states);
-        Ok(self)
-    }
-
-    /// Checks the world against expectations written as a world file.
-    /// Every failing expectation is reported, with its line. See
-    /// [the format](crate::world_file#expectations).
-    pub fn check_world(&self, text: &str) -> Result<(), WorldMismatch> {
-        let nodes = parse_world(text).map_err(WorldMismatch::invalid)?;
-        let states = self.lock();
-        let mut failures = Vec::new();
-        for node in &nodes {
-            let i = states.owner(node).map_err(WorldMismatch::invalid)?;
-            states.list[i]
-                .state
-                .check(node, &mut failures)
-                .map_err(WorldMismatch::invalid)?;
-        }
-        if failures.is_empty() {
-            Ok(())
-        } else {
-            Err(WorldMismatch { failures })
-        }
-    }
-
-    /// Like [`check_world`](Self::check_world), but panics with the
-    /// failures, for use in tests.
-    ///
-    /// # Panics
-    ///
-    /// If the world does not match, or the expectations cannot be read.
-    #[track_caller]
-    pub fn assert_world(&self, text: &str) {
-        if let Err(mismatch) = self.check_world(text) {
-            panic!("{mismatch}");
-        }
-    }
-
-    /// The whole world, written out as a world file: every state's blocks,
-    /// in the order the states were added. Loading it into a fresh world
-    /// of the same effects gives the same world.
-    pub fn to_world(&self) -> String {
-        let states = self.lock();
-        states
-            .list
-            .iter()
-            .flat_map(|e| e.state.to_world())
-            .map(|node| format!("{node}"))
-            .collect()
-    }
-}
-
-impl<G, Q> Inspect<Q> for World<G>
-where
-    Q: Query + Effect,
-    Q::Key: Simulate<Q>,
-    G: Grants<Q::Key>,
-{
-    fn inspect(&self, query: Q) -> Q::Outcome {
-        <Q::Key as Simulate<Q>>::run(&mut States::new(&self.shared), query)
-    }
-}
-
-impl<G, O> Perform<O> for World<G>
-where
-    O: Operation + Effect,
-    O::Key: Simulate<O>,
-    G: Grants<O::Key>,
-{
-    fn perform(&mut self, op: O) -> O::Outcome {
-        <O::Key as Simulate<O>>::run(&mut States::new(&self.shared), op)
-    }
-}
-
-// Nothing in a world waits, so the async forms run the operation at once.
-
-impl<G, Q> AsyncInspect<Q> for World<G>
-where
-    Q: Query + Effect,
-    Q::Key: Simulate<Q>,
-    G: Grants<Q::Key>,
-{
-    async fn inspect_async(&self, query: Q) -> Q::Outcome {
-        self.inspect(query)
-    }
-}
-
-impl<G, O> AsyncPerform<O> for World<G>
-where
-    O: Operation + Effect,
-    O::Key: Simulate<O>,
-    G: Grants<O::Key>,
-{
-    async fn perform_async(&mut self, op: O) -> O::Outcome {
-        self.perform(op)
-    }
-}
-
-impl<G, Q> SendInspect<Q> for World<G>
-where
-    Q: Query + Effect,
-    Q::Key: Simulate<Q>,
-    Q::Outcome: Send,
-    G: Grants<Q::Key>,
-{
-    fn inspect_send(&self, query: Q) -> impl Future<Output = Q::Outcome> + Send {
-        core::future::ready(self.inspect(query))
-    }
-}
-
-impl<G, O> SendPerform<O> for World<G>
-where
-    O: Operation + Effect,
-    O::Key: Simulate<O>,
-    O::Outcome: Send,
-    G: Grants<O::Key>,
-{
-    fn perform_send(&mut self, op: O) -> impl Future<Output = O::Outcome> + Send {
-        core::future::ready(self.perform(op))
-    }
-}
-
-/// Builds a simulated [`World`] that grants the effects listed, by their
-/// keys, each with its simulated state:
+/// It implements seam's effects as `Std` does, with a virtual clock,
+/// seeded random numbers, an in-memory filesystem and network, scripted
+/// commands and captured stdio. Create one per test, set up the world it
+/// starts in, hand it to the core in place of a real backend, then assert on
+/// what the core left behind.
 ///
-/// ```
-/// # #[cfg(feature = "time")] {
-/// use seam_core::effects as fx;
-/// let world = seam_test::world![fx::Now, fx::Sleep];
-/// # let _ = world;
-/// # }
-/// ```
-///
-/// A core performing an effect the world does not list fails to compile
-/// ("the world does not grant `fx::Sleep`"), and so does a key with no
-/// [`Simulate`](crate::sim::Simulate) impl:
-///
-/// ```compile_fail
-/// # #[cfg(feature = "time")] {
-/// use seam_core::effects as fx;
-/// use seam_core::Perform;
-/// let mut world = seam_test::world![fx::Now];
-/// world.perform(seam_core::ops::time::Sleep(core::time::Duration::ZERO));
-/// # }
-/// # #[cfg(not(feature = "time"))] compile_error!("E0277");
-/// ```
-#[macro_export]
-macro_rules! world {
-    ($($key:ty),+ $(,)?) => {{
-        #[derive(Debug, Clone, Copy)]
-        struct Grant;
-        $(impl $crate::sim::Grants<$key> for Grant {})+
-        $crate::sim::World::<Grant>::empty()
-            $(.with_state::<<$key as $crate::sim::Simulated>::State>())+
-    }};
-}
-
-// ---- `Sim`: the world of every built-in effect ----
-
-/// What [`Sim`] grants: every built-in effect whose feature is on.
-#[derive(Debug, Clone, Copy)]
-pub struct Everything;
-
-macro_rules! grants_everything {
-    ($($feature:literal: $($key:ty),+;)*) => {$($(
-        #[cfg(feature = $feature)]
-        impl Grants<$key> for Everything {}
-    )+)*};
-}
-
-grants_everything! {
-    "time": seam_core::effects::Now, seam_core::effects::Sleep, seam_core::effects::WallClock;
-    "random": seam_core::effects::FillRandom;
-    "env": seam_core::effects::Var, seam_core::effects::SetVar, seam_core::effects::RemoveVar,
-        seam_core::effects::Args, seam_core::effects::CurrentDir, seam_core::effects::TempDir;
-    "fs": seam_core::effects::Metadata, seam_core::effects::CreateDir,
-        seam_core::effects::RemoveFile, seam_core::effects::RemoveDir, seam_core::effects::Rename,
-        seam_core::effects::CopyFile, seam_core::effects::CreateAtomic, seam_core::effects::View,
-        seam_core::effects::ReadDir;
-    "net": seam_core::effects::ResolveInto, seam_core::effects::TcpConnect,
-        seam_core::effects::TcpBind, seam_core::effects::UdpBind;
-    "process": seam_core::effects::RunCommand, seam_core::effects::SpawnChild,
-        seam_core::effects::Exit;
-    "signal": seam_core::effects::CtrlC;
-    "io-std": seam_core::effects::OpenStdin, seam_core::effects::OpenStdout,
-        seam_core::effects::OpenStderr;
-    "rt": seam_core::effects::AvailableParallelism;
-    "sync": seam_core::effects::Channel, seam_core::effects::Share;
-}
-
-#[cfg(feature = "fs")]
-impl<M> Grants<seam_core::effects::Open<M>> for Everything {}
-
-/// The simulated world of every built-in effect: a [`World`] that grants
-/// all of them, with every built-in state. The test backend's capability.
-///
-/// Create one per test. Set up the world it starts in (files, variables,
-/// scripted commands, stdin), hand it to the core in place of a real
-/// backend, then assert on what the core left behind. Every clone is the
-/// same world, so a part of a root that works over the simulation is given
-/// a clone, and the test asserts through any of them:
+/// Every clone is the same world, so a part of a root that works over the
+/// simulation is given a clone, and the test asserts through any of them:
 ///
 /// ```
 /// # #[cfg(feature = "fs")] {
@@ -693,9 +257,27 @@ impl<M> Grants<seam_core::effects::Open<M>> for Everything {}
 /// assert_eq!(sim.file("/tmp/a").unwrap(), b"hi");
 /// # }
 /// ```
-pub type Sim = World<Everything>;
+#[derive(Clone)]
+pub struct Sim {
+    pub(crate) shared: Shared,
+}
 
-impl World<Everything> {
+impl core::fmt::Debug for Sim {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Sim").finish_non_exhaustive()
+    }
+}
+
+impl Default for Sim {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// Every capability type opts in to seam's lifts.
+impl seam_core::Capability for Sim {}
+
+impl Sim {
     /// A fresh world with seed 0.
     ///
     /// The clock reads `Instant::EPOCH`, the wall clock reads the Unix
@@ -709,8 +291,9 @@ impl World<Everything> {
     pub fn with_seed(seed: u64) -> Self {
         #[cfg(not(feature = "random"))]
         let _ = seed;
-        #[allow(unused_mut)]
-        let mut sim = Self::empty();
+        let sim = Self {
+            shared: Shared(Arc::new(Mutex::new(Inner { list: Vec::new() }))),
+        };
         {
             #[allow(unused_variables, unused_mut)]
             let mut states = sim.lock();
@@ -757,10 +340,98 @@ impl World<Everything> {
         sim.load_world(text)?;
         Ok(sim)
     }
+
+    /// Locks the world's states.
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.shared.lock()
+    }
+
+    /// Runs `core` against this world and returns the world, for chaining
+    /// assertions.
+    pub fn run(mut self, core: impl FnOnce(&mut Self)) -> Self {
+        core(&mut self);
+        self
+    }
+
+    /// Sets the world up further from a world file: a base world, then a
+    /// test's own changes. On an error, the blocks before it have been
+    /// applied.
+    pub fn load_world(&mut self, text: &str) -> Result<&mut Self, WorldError> {
+        world_file::load(self, text)?;
+        Ok(self)
+    }
+
+    /// Checks the world against expectations written as a world file.
+    /// Every failing expectation is reported, with its line. See
+    /// [the format](crate::world_file#expectations).
+    pub fn check_world(&self, text: &str) -> Result<(), WorldMismatch> {
+        world_file::check(self, text)
+    }
+
+    /// Like [`check_world`](Self::check_world), but panics with the
+    /// failures, for use in tests.
+    ///
+    /// # Panics
+    ///
+    /// If the world does not match, or the expectations cannot be read.
+    #[track_caller]
+    pub fn assert_world(&self, text: &str) {
+        if let Err(mismatch) = self.check_world(text) {
+            panic!("{mismatch}");
+        }
+    }
+
+    /// The whole world, written out as a world file. Loading it into a
+    /// fresh `Sim` gives the same world.
+    pub fn to_world(&self) -> String {
+        World::to_world(self)
+            .iter()
+            .map(|node| format!("{node}"))
+            .collect()
+    }
 }
 
-impl Default for World<Everything> {
-    fn default() -> Self {
-        Self::new()
+/// Every block of every state the simulation has; each goes to its state.
+impl World for Sim {
+    const BLOCKS: &'static [&'static str] = &[
+        #[cfg(feature = "random")]
+        "seed",
+        #[cfg(feature = "rt")]
+        "parallelism",
+        #[cfg(any(feature = "time", feature = "fs"))]
+        "clock",
+        #[cfg(feature = "env")]
+        "env",
+        #[cfg(feature = "fs")]
+        "fs",
+        #[cfg(feature = "net")]
+        "net",
+        #[cfg(feature = "process")]
+        "process",
+        #[cfg(feature = "io-std")]
+        "stdio",
+        #[cfg(feature = "signal")]
+        "signal",
+    ];
+
+    fn load(&mut self, block: &Node) -> world_file::Result<()> {
+        let mut states = self.lock();
+        let i = states.owner(block)?;
+        states.list[i].state.load(block)
+    }
+
+    fn to_world(&self) -> Vec<Node> {
+        let states = self.lock();
+        states
+            .list
+            .iter()
+            .flat_map(|e| e.state.to_world())
+            .collect()
+    }
+
+    fn check(&self, block: &Node, failures: &mut Vec<Failure>) -> world_file::Result<()> {
+        let states = self.lock();
+        let i = states.owner(block)?;
+        states.list[i].state.check(block, failures)
     }
 }

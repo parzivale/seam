@@ -21,10 +21,9 @@ use seam_core::ops::net::{
 };
 use seam_core::{Closing, Inspect, Opening, Perform};
 
-use seam_core::effects as fx;
-
+use crate::Sim;
 use crate::error;
-use crate::sim::{Inner, Shared, SimState, Simulate, Simulated, States, World};
+use crate::sim::{Inner, Shared, States, World};
 use crate::world_file::{self, Node};
 
 /// One direction of a TCP connection.
@@ -198,7 +197,7 @@ impl Net {
     }
 }
 
-impl<G> World<G> {
+impl Sim {
     /// Makes `name` resolve to `ip`, in addition to any addresses it
     /// already has. `localhost` resolves to 127.0.0.1 by default.
     pub fn add_host(&mut self, name: impl Into<String>, ip: impl Into<IpAddr>) -> &mut Self {
@@ -239,8 +238,9 @@ impl Inner {
     }
 }
 
-impl Simulate<ResolveInto<'_>> for fx::ResolveInto {
-    fn run(states: &mut States<'_>, op: ResolveInto<'_>) -> io::Result<usize> {
+impl Inspect<ResolveInto<'_>> for Sim {
+    fn inspect(&self, op: ResolveInto<'_>) -> io::Result<usize> {
+        let states = &mut States::new(&self.shared);
         let mut n = 0;
         states.inner().resolve(op.host, op.port, |a| {
             if let Some(slot) = op.out.get_mut(n) {
@@ -252,11 +252,12 @@ impl Simulate<ResolveInto<'_>> for fx::ResolveInto {
     }
 }
 
-impl Simulate<Opening<TcpBind<TcpListener>>> for fx::TcpBind {
-    fn run(
-        states: &mut States,
+impl Perform<Opening<TcpBind<TcpListener>>> for Sim {
+    fn perform(
+        &mut self,
         Opening(op, _): Opening<TcpBind<TcpListener>>,
     ) -> io::Result<TcpListener> {
+        let states = &mut States::new(&self.shared);
         let shared = states.shared();
         let net = states.inner().net();
         let addr = net.assign(op.addr, Net::tcp_taken)?;
@@ -269,17 +270,15 @@ impl Simulate<Opening<TcpBind<TcpListener>>> for fx::TcpBind {
     }
 }
 
-impl Simulate<Closing<TcpBind<TcpListener>>> for fx::TcpBind {
-    fn run(_: &mut States<'_>, Closing(_, _): Closing<TcpBind<TcpListener>>) -> io::Result<()> {
+impl Perform<Closing<TcpBind<TcpListener>>> for Sim {
+    fn perform(&mut self, Closing(_, _): Closing<TcpBind<TcpListener>>) -> io::Result<()> {
         Ok(())
     }
 }
 
-impl Simulate<Opening<TcpConnect<TcpStream>>> for fx::TcpConnect {
-    fn run(
-        states: &mut States,
-        Opening(op, _): Opening<TcpConnect<TcpStream>>,
-    ) -> io::Result<TcpStream> {
+impl Perform<Opening<TcpConnect<TcpStream>>> for Sim {
+    fn perform(&mut self, Opening(op, _): Opening<TcpConnect<TcpStream>>) -> io::Result<TcpStream> {
+        let states = &mut States::new(&self.shared);
         let shared = states.shared();
         let net = states.inner().net();
         let Some(&listener) = net.listeners.keys().find(|&&b| reaches(b, op.addr)) else {
@@ -314,20 +313,15 @@ impl Simulate<Opening<TcpConnect<TcpStream>>> for fx::TcpConnect {
     }
 }
 
-impl Simulate<Closing<TcpConnect<TcpStream>>> for fx::TcpConnect {
-    fn run(
-        _: &mut States<'_>,
-        Closing(stream, _): Closing<TcpConnect<TcpStream>>,
-    ) -> io::Result<()> {
+impl Perform<Closing<TcpConnect<TcpStream>>> for Sim {
+    fn perform(&mut self, Closing(stream, _): Closing<TcpConnect<TcpStream>>) -> io::Result<()> {
         stream.commit()
     }
 }
 
-impl Simulate<Opening<UdpBind<UdpSocket>>> for fx::UdpBind {
-    fn run(
-        states: &mut States,
-        Opening(op, _): Opening<UdpBind<UdpSocket>>,
-    ) -> io::Result<UdpSocket> {
+impl Perform<Opening<UdpBind<UdpSocket>>> for Sim {
+    fn perform(&mut self, Opening(op, _): Opening<UdpBind<UdpSocket>>) -> io::Result<UdpSocket> {
+        let states = &mut States::new(&self.shared);
         let net = states.inner().net();
         let addr = net.assign(op.addr, Net::udp_taken)?;
         net.udp.insert(addr, VecDeque::new());
@@ -338,8 +332,8 @@ impl Simulate<Opening<UdpBind<UdpSocket>>> for fx::UdpBind {
     }
 }
 
-impl Simulate<Closing<UdpBind<UdpSocket>>> for fx::UdpBind {
-    fn run(_: &mut States<'_>, Closing(_, _): Closing<UdpBind<UdpSocket>>) -> io::Result<()> {
+impl Perform<Closing<UdpBind<UdpSocket>>> for Sim {
+    fn perform(&mut self, Closing(_, _): Closing<UdpBind<UdpSocket>>) -> io::Result<()> {
         Ok(())
     }
 }
@@ -592,16 +586,7 @@ impl TcpStream {
     }
 }
 
-macro_rules! net_keys {
-    ($($key:ident),*) => {$(
-        impl Simulated for fx::$key {
-            type State = Net;
-        }
-    )*};
-}
-net_keys!(ResolveInto, TcpBind, TcpConnect, UdpBind);
-
-impl SimState for Net {
+impl World for Net {
     const BLOCKS: &'static [&'static str] = &["net"];
 
     /// `host NAME IP` adds an address `NAME` resolves to.

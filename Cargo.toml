@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/seam", "crates/seam-core", "crates/seam-dirs", "crates/seam-futures", "crates/seam-jiff", "crates/seam-notify", "crates/seam-rand", "crates/seam-reqwest", "crates/seam-smol", "crates/seam-sqlx", "crates/seam-std", "crates/seam-test", "crates/seam-tokio", "crates/seam-tracing", "crates/seam-uuid"]
+members = ["crates/seam", "crates/seam-core", "crates/seam-dirs", "crates/seam-futures", "crates/seam-jiff", "crates/seam-nix", "crates/seam-notify", "crates/seam-rand", "crates/seam-reqwest", "crates/seam-rustix", "crates/seam-smol", "crates/seam-sqlx", "crates/seam-std", "crates/seam-test", "crates/seam-tokio", "crates/seam-tracing", "crates/seam-unix", "crates/seam-uuid"]
 
 [workspace.package]
 version = "0.5.0"
@@ -26,6 +26,9 @@ seam-notify = { package = "seam-rs-notify", path = "crates/seam-notify", version
 seam-reqwest = { package = "seam-rs-reqwest", path = "crates/seam-reqwest", version = "0.5.0", default-features = false }
 seam-sqlx = { package = "seam-rs-sqlx", path = "crates/seam-sqlx", version = "0.5.0", default-features = false }
 seam-smol = { package = "seam-rs-smol", path = "crates/seam-smol", version = "0.5.0", default-features = false }
+seam-unix = { package = "seam-rs-unix", path = "crates/seam-unix", version = "0.5.0", default-features = false }
+seam-rustix = { package = "seam-rs-rustix", path = "crates/seam-rustix", version = "0.5.0", default-features = false }
+seam-nix = { package = "seam-rs-nix", path = "crates/seam-nix", version = "0.5.0", default-features = false }
 tokio = { version = "1.54", default-features = false }
 futures = { version = "0.3.34", default-features = false }
 jiff = { version = "0.2.38", default-features = false }
@@ -39,6 +42,8 @@ http = { version = "1", default-features = false }
 sqlx = { version = "0.8", default-features = false }
 smol = { version = "2", default-features = false }
 async-signal = { version = "0.2", default-features = false }
+rustix = { version = "1", default-features = false }
+nix = { version = "0.30", default-features = false }
 
 [workspace.lints.rust]
 # Forbidden in every crate root but seam-std, which allows it only where it

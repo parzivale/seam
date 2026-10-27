@@ -1,0 +1,30 @@
+[package]
+name = "seam-rs-nix"
+description = "nix for seam: Unix effects (mounts, permissions, ownership, links, IDs, signals) performed with nix."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+seam-core = { workspace = true, features = ["std"] }
+seam-unix = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["fs", "mount", "user", "signal", "hostname", "process"] }
+
+[dev-dependencies]
+seam-rustix = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
+name = "seam_nix"
+
+[lints]
+workspace = true

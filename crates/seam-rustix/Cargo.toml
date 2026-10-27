@@ -1,0 +1,27 @@
+[package]
+name = "seam-rs-rustix"
+description = "rustix for seam: Unix effects (mounts, permissions, ownership, links, IDs, signals) performed with rustix."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+seam-core = { workspace = true, features = ["std"] }
+seam-unix = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["std", "fs", "mount", "process", "system"] }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
+name = "seam_rustix"
+
+[lints]
+workspace = true

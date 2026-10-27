@@ -1,0 +1,32 @@
+[package]
+name = "seam-rs-unix"
+description = "Unix effects for seam: mounts, permissions, ownership, symlinks, user IDs, signals and the hostname, with a simulated handler for tests."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+seam-core = { workspace = true, features = ["std", "fs"] }
+seam-test = { workspace = true, optional = true, features = ["std"] }
+
+[dev-dependencies]
+seam-test = { workspace = true, features = ["std", "fs"] }
+
+[features]
+default = []
+# `World` for `SimUnix`: a `unix` block in world files.
+test = ["dep:seam-test"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
+name = "seam_unix"
+
+[lints]
+workspace = true

@@ -1,0 +1,35 @@
+[package]
+name = "seam-rs-tracing"
+description = "Logging for seam: log records as an effect, sent to tracing, or captured and checked in tests."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+seam-core = { workspace = true, features = ["std"] }
+tracing = { workspace = true, features = ["std"] }
+seam-test = { workspace = true, optional = true, features = ["std"] }
+
+[dev-dependencies]
+seam-test = { workspace = true, features = ["std", "time"] }
+
+
+[features]
+default = []
+# `World` for `Captured`: a `logs` block in world files, to check what a
+# core logged.
+test = ["dep:seam-test"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
+name = "seam_tracing"
+
+[lints]
+workspace = true

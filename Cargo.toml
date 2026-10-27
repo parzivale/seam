@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/seam", "crates/seam-core", "crates/seam-futures", "crates/seam-jiff", "crates/seam-rand", "crates/seam-std", "crates/seam-test", "crates/seam-tokio", "crates/seam-uuid"]
+members = ["crates/seam", "crates/seam-core", "crates/seam-dirs", "crates/seam-futures", "crates/seam-jiff", "crates/seam-rand", "crates/seam-std", "crates/seam-test", "crates/seam-tokio", "crates/seam-tracing", "crates/seam-uuid"]
 
 [workspace.package]
 version = "0.5.0"
@@ -20,12 +20,15 @@ seam-std = { package = "seam-rs-std", path = "crates/seam-std", version = "0.5.0
 seam-test = { package = "seam-rs-test", path = "crates/seam-test", version = "0.5.0", default-features = false }
 seam-tokio = { package = "seam-rs-tokio", path = "crates/seam-tokio", version = "0.5.0", default-features = false }
 seam-uuid = { package = "seam-rs-uuid", path = "crates/seam-uuid", version = "0.5.0", default-features = false }
+seam-dirs = { package = "seam-rs-dirs", path = "crates/seam-dirs", version = "0.5.0", default-features = false }
+seam-tracing = { package = "seam-rs-tracing", path = "crates/seam-tracing", version = "0.5.0", default-features = false }
 tokio = { version = "1.54", default-features = false }
 futures = { version = "0.3.34", default-features = false }
 jiff = { version = "0.2.38", default-features = false }
 jiff-tzdb = { version = "0.1.9", default-features = false }
 rand = { version = "0.10", default-features = false }
 uuid = { version = "1", default-features = false }
+tracing = { version = "0.1.40", default-features = false }
 
 [workspace.lints.rust]
 # Forbidden in every crate root but seam-std, which allows it only where it

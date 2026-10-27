@@ -1,0 +1,26 @@
+[package]
+name = "seam-rs-dirs"
+description = "Platform directories for seam: home, config, cache and data dirs (as the dirs and directories crates find them), read from seam's environment."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+seam-core = { workspace = true, features = ["env"] }
+
+[dev-dependencies]
+seam-test = { workspace = true, features = ["env"] }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
+name = "seam_dirs"
+
+[lints]
+workspace = true

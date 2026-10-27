@@ -1,6 +1,8 @@
 //! Requests, scripted and real.
 
+#[cfg(feature = "reqwest")]
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(feature = "reqwest")]
 use std::net::TcpListener;
 
 use seam_core::io::ErrorKind;
@@ -80,6 +82,7 @@ fn world_files_set_routes_and_check_requests() {
     );
 }
 
+#[cfg(feature = "reqwest")]
 /// Serves one request on a thread, answering with `body`. Returns the
 /// URL and the thread, which returns the request line it read.
 fn serve_once(body: &'static str) -> (String, std::thread::JoinHandle<String>) {

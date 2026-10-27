@@ -13,6 +13,7 @@ categories.workspace = true
 [dependencies]
 seam-core = { workspace = true }
 seam-futures = { workspace = true, optional = true }
+seam-jiff = { workspace = true, optional = true }
 seam-std = { workspace = true, optional = true }
 seam-test = { workspace = true, optional = true }
 seam-tokio = { workspace = true, optional = true }
@@ -35,6 +36,11 @@ docs = []
 std = ["dep:seam-std"]
 tokio = ["dep:seam-tokio"]
 futures = ["dep:seam-futures"]
+# Time zones as effects, over jiff: `seam::jiff`. Brings in the `fs`, `env`
+# and `time` operation types it is built on. `jiff-bundled` adds `Bundled`,
+# the tz database compiled in.
+jiff = ["dep:seam-jiff", "fs", "env", "time"]
+jiff-bundled = ["jiff", "seam-jiff?/bundled"]
 test = ["dep:seam-test"]
 
 # Capability groups. Each enables its operation types and, in whichever

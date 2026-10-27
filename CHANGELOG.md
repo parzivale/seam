@@ -84,6 +84,26 @@ A new crate, `seam-futures` (`seam-rs-futures`, `seam::futures` with the
   and `process::pipe_through_async` (`RunCommand` with input, over a split
   child).
 
+### Time zones over jiff
+
+A new crate, `seam-jiff` (`seam-rs-jiff`, `seam::jiff` with the `jiff`
+feature), makes time zones effects:
+
+- Two queries, `TimeZoneFor` (a zone by IANA name) and `SystemTimeZone`
+  (`TZ`, then `/etc/timezone`, then `/etc/localtime`, else UTC), with keys
+  in `seam_jiff::effects` for roots.
+- `TzDb<C, F>` answers both by reading TZif files through the filesystem
+  (and environment) of the capability it is built over: `Std` in
+  production, a `Sim` in tests, whose files then are the tz database.
+- `Bundled` (`bundled` / `jiff-bundled`) answers `TimeZoneFor` from the
+  database compiled in, with no effect.
+- `timestamp`, `now_zoned`, `now_in` and `now_local` read the wall clock
+  through seam, in sync, `_async` and `_send` forms.
+- `templates/clippy.toml` bans jiff's own `Zoned::now`, `Timestamp::now`,
+  `TimeZone::system`, `TimeZone::get` and `tz::db`, and futures-rs's
+  `ThreadPool::new`; `println!` and `eprintln!` now point at the new
+  `println` and `eprintln` helpers.
+
 ### Documentation
 
 - A `docs` feature adds `seam::_docs`: what seam is, usage guides, the

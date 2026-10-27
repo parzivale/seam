@@ -1,0 +1,39 @@
+[package]
+name = "seam-rs-jiff"
+description = "jiff for seam: time zones as effects, read through the root's filesystem, so tests control them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+seam-core = { workspace = true, features = ["std", "fs", "env", "time"] }
+# No default features: jiff's own system time zone and tz database lookups
+# are effects, which this crate performs through seam instead.
+jiff = { workspace = true, features = ["std"] }
+jiff-tzdb = { workspace = true, optional = true }
+
+[dev-dependencies]
+jiff-tzdb = { workspace = true }
+seam-std = { workspace = true, features = ["fs", "env", "time"] }
+seam-test = { workspace = true, features = ["fs", "env", "time", "rt"] }
+
+[features]
+default = []
+# `Bundled`: the tz database compiled into the program (jiff-tzdb), so
+# looking a zone up performs no effect at all.
+bundled = ["dep:jiff-tzdb"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+# Published as `seam-rs-jiff`; code still refers to it as `seam_jiff`.
+[lib]
+name = "seam_jiff"
+
+[lints]
+workspace = true

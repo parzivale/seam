@@ -280,3 +280,8 @@ pub use seam_tokio as tokio;
 /// futures-io and `Stream` adapters, and concurrent async helpers.
 #[cfg(feature = "futures")]
 pub use seam_futures as futures;
+
+/// Time zones as effects, over jiff: looked up through the root's
+/// filesystem, so tests decide what they are.
+#[cfg(feature = "jiff")]
+pub use seam_jiff as jiff;

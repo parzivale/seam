@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/seam", "crates/seam-core", "crates/seam-futures", "crates/seam-std", "crates/seam-test", "crates/seam-tokio"]
+members = ["crates/seam", "crates/seam-core", "crates/seam-futures", "crates/seam-jiff", "crates/seam-std", "crates/seam-test", "crates/seam-tokio"]
 
 [workspace.package]
 version = "0.5.0"
@@ -14,11 +14,14 @@ categories = ["no-std", "asynchronous", "development-tools::testing"]
 [workspace.dependencies]
 seam-core = { package = "seam-rs-core", path = "crates/seam-core", version = "0.5.0", default-features = false }
 seam-futures = { package = "seam-rs-futures", path = "crates/seam-futures", version = "0.5.0", default-features = false }
+seam-jiff = { package = "seam-rs-jiff", path = "crates/seam-jiff", version = "0.5.0", default-features = false }
 seam-std = { package = "seam-rs-std", path = "crates/seam-std", version = "0.5.0", default-features = false }
 seam-test = { package = "seam-rs-test", path = "crates/seam-test", version = "0.5.0", default-features = false }
 seam-tokio = { package = "seam-rs-tokio", path = "crates/seam-tokio", version = "0.5.0", default-features = false }
 tokio = { version = "1.54", default-features = false }
 futures = { version = "0.3.34", default-features = false }
+jiff = { version = "0.2.38", default-features = false }
+jiff-tzdb = { version = "0.1.9", default-features = false }
 
 [workspace.lints.rust]
 # Forbidden in every crate root but seam-std, which allows it only where it

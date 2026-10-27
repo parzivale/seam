@@ -1,6 +1,7 @@
 # Copy into a crate that should stay sans-effect. It bans reaching around
 # seam to std or Tokio directly, so every effect has to arrive as a
-# capability bound. Backends (seam-std, seam-tokio) must not use this file.
+# capability bound. Backends (seam-std, seam-tokio, seam-futures, seam-jiff) must not use
+# this file.
 disallowed-types = [
     { path = "std::fs::File", reason = "take `Provide<Open<M, F>>` instead" },
     { path = "std::fs::OpenOptions", reason = "take `Provide<Open<M, F>>` instead" },
@@ -53,11 +54,18 @@ disallowed-methods = [
     { path = "tokio::time::sleep", reason = "take `SendPerform<Sleep>` instead" },
     { path = "tokio::time::Instant::now", reason = "take `Inspect<Now>` instead" },
     { path = "tokio::spawn", reason = "spawning is an effect" },
+    { path = "futures::executor::ThreadPool::new", reason = "spawning threads is an effect; take `Spawn` (seam-futures' `Executor`) instead" },
+    { path = "jiff::Timestamp::now", reason = "use `seam_jiff::timestamp` instead" },
+    { path = "jiff::Zoned::now", reason = "use `seam_jiff::now_local` instead" },
+    { path = "jiff::tz::TimeZone::system", reason = "take `Inspect<seam_jiff::SystemTimeZone>` instead" },
+    { path = "jiff::tz::TimeZone::try_system", reason = "take `Inspect<seam_jiff::SystemTimeZone>` instead" },
+    { path = "jiff::tz::TimeZone::get", reason = "take `Inspect<seam_jiff::TimeZoneFor>` instead" },
+    { path = "jiff::tz::db", reason = "take `Inspect<seam_jiff::TimeZoneFor>` instead" },
 ]
 disallowed-macros = [
-    { path = "std::println", reason = "use `seam::ops::stdio::print` instead" },
+    { path = "std::println", reason = "use `seam::ops::stdio::println` instead" },
     { path = "std::print", reason = "use `seam::ops::stdio::print` instead" },
-    { path = "std::eprintln", reason = "take `Provide<OpenStderr<H>>` instead" },
+    { path = "std::eprintln", reason = "use `seam::ops::stdio::eprintln` instead" },
     { path = "std::eprint", reason = "take `Provide<OpenStderr<H>>` instead" },
     { path = "std::dbg", reason = "writes to stderr" },
 ]

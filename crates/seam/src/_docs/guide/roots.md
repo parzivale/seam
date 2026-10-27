@@ -199,6 +199,11 @@ assert_eq!(read_to_string(&root, "/kv/k").unwrap(), "v");
 
 In production, the same part would hold `Std`, or a root of its own.
 
+[`seam::jiff`](crate::jiff)'s `TzDb` is a part of this kind: it answers
+time zone lookups by reading the tz database through the filesystem of the
+capability it holds, so `TzDb::new(Std)` reads the real database and
+`TzDb::new(sim.clone())` reads whatever files the test put in the `Sim`.
+
 ## Naming the root's type
 
 `root![..]` evaluates to a `Root` of a generated struct, whose type cannot

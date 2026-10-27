@@ -24,7 +24,7 @@ pub(crate) struct Pos {
 
 /// A node of a world file: a name, arguments, properties and a block of
 /// children. Read it through its methods, in [`world_file`](crate::world_file).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Node {
     pub(crate) name: String,
     pub(crate) pos: Pos,

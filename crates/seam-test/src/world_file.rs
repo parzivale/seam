@@ -85,7 +85,7 @@
 
 use std::fmt;
 use std::format;
-use std::string::String;
+use std::string::{String, ToString};
 use std::vec::Vec;
 
 use crate::Sim;
@@ -482,6 +482,193 @@ pub trait World {
     fn check(&self, block: &Node, failures: &mut Vec<Failure>) -> Result<()>;
 }
 
+/// Building nodes, for a part's [`to_world`](crate::sim::SimState::to_world):
+/// `Node::new("file").with_arg("/a.txt").with_arg("hello")`. A built node
+/// has no position; it is reported as line 0.
+impl Node {
+    /// A node with no arguments, properties or block.
+    pub fn new(name: impl Into<String>) -> Self {
+        Node {
+            name: name.into(),
+            pos: Pos { line: 0, column: 0 },
+            args: Vec::new(),
+            props: Vec::new(),
+            children: Vec::new(),
+        }
+    }
+
+    /// Adds an argument.
+    #[must_use]
+    pub fn with_arg(mut self, value: impl Into<Value>) -> Self {
+        self.args.push(value.into());
+        self
+    }
+
+    /// Adds a property.
+    #[must_use]
+    pub fn with_prop(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
+        self.props.push((key.into(), value.into()));
+        self
+    }
+
+    /// Adds a node to its block.
+    #[must_use]
+    pub fn with_child(mut self, child: Node) -> Self {
+        self.children.push(child);
+        self
+    }
+
+    /// The node on one line, without its block: for messages.
+    fn head(&self) -> String {
+        let mut out = String::new();
+        write_ident(&mut out, &self.name);
+        for arg in &self.args {
+            out.push(' ');
+            out.push_str(&arg.to_string());
+        }
+        for (key, value) in &self.props {
+            out.push(' ');
+            write_ident(&mut out, key);
+            out.push('=');
+            out.push_str(&value.to_string());
+        }
+        out
+    }
+
+    fn write(&self, out: &mut String, indent: usize) {
+        out.push_str(&"    ".repeat(indent));
+        out.push_str(&self.head());
+        if !self.children.is_empty() {
+            out.push_str(" {\n");
+            for child in &self.children {
+                child.write(out, indent + 1);
+            }
+            out.push_str(&"    ".repeat(indent));
+            out.push('}');
+        }
+        out.push('\n');
+    }
+}
+
+/// The node as KDL, with its block, ending in a newline.
+impl fmt::Display for Node {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut out = String::new();
+        self.write(&mut out, 0);
+        f.write_str(&out)
+    }
+}
+
+/// The value as KDL: a bare word where KDL allows one, quoted otherwise.
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            Kind::Str(s) => {
+                let mut out = String::new();
+                write_ident(&mut out, s);
+                f.write_str(&out)
+            }
+            Kind::Int(n) => write!(f, "{n}"),
+            Kind::Bool(b) => write!(f, "#{b}"),
+            Kind::Null => f.write_str("#null"),
+        }
+    }
+}
+
+/// Values are equal when they are the same value, wherever they were written.
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl Eq for Value {}
+
+macro_rules! value_from {
+    ($($t:ty => |$v:ident| $kind:expr;)*) => {$(
+        impl From<$t> for Value {
+            fn from($v: $t) -> Self {
+                Value { kind: $kind, pos: Pos { line: 0, column: 0 } }
+            }
+        }
+    )*};
+}
+
+value_from! {
+    &str => |v| Kind::Str(v.into());
+    String => |v| Kind::Str(v);
+    &String => |v| Kind::Str(v.clone());
+    bool => |v| Kind::Bool(v);
+    i32 => |v| Kind::Int(v.into());
+    i64 => |v| Kind::Int(v.into());
+    u32 => |v| Kind::Int(v.into());
+    u64 => |v| Kind::Int(v.into());
+    usize => |v| Kind::Int(v as i128);
+    i128 => |v| Kind::Int(v);
+}
+
+/// Writes `s` bare if KDL reads it back as the same string, quoted otherwise.
+fn write_ident(out: &mut String, s: &str) {
+    let bare = !s.is_empty()
+        && !s.starts_with(|c: char| c.is_ascii_digit())
+        && !(s.starts_with(['-', '+', '.']) && s[1..].starts_with(|c: char| c.is_ascii_digit()))
+        && !matches!(s, "true" | "false" | "null" | "inf" | "-inf" | "nan")
+        && s.chars().all(|c| c.is_alphanumeric() || "-_.:".contains(c));
+    if bare {
+        out.push_str(s);
+        return;
+    }
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+/// Checks that `expected` holds in `actual`, a part's
+/// [`to_world`](crate::sim::SimState::to_world): a node with the same name
+/// and arguments must be there, with at least the expected properties, and
+/// each node in the expected block must hold, the same way, in its block.
+/// Each one that does not adds a [`Failure`] at its line.
+///
+/// This is the default check for every simulated part.
+pub fn check_subset(actual: &[Node], expected: &Node, failures: &mut Vec<Failure>) {
+    let same_name = || actual.iter().filter(|a| a.name == expected.name);
+    let props_hold = |a: &Node| {
+        expected
+            .props
+            .iter()
+            .all(|(key, want)| a.prop(key) == Some(want))
+    };
+    let matching = same_name().find(|a| a.args == expected.args && props_hold(a));
+    match matching {
+        Some(found) => {
+            for child in &expected.children {
+                check_subset(&found.children, child, failures);
+            }
+        }
+        None => {
+            // The closest: one with the same first argument, if any.
+            let near = same_name()
+                .find(|a| a.args.first() == expected.args.first())
+                .or_else(|| same_name().next().filter(|_| expected.args.is_empty()));
+            let message = match near {
+                Some(near) => format!("expected `{}`, found `{}`", expected.head(), near.head()),
+                None => format!("expected `{}`, found nothing", expected.head()),
+            };
+            failures.push(expected.failure(message));
+        }
+    }
+}
+
 /// Sets up one part from a world file, outside a root: each block must be
 /// one of its [`World::BLOCKS`]. [`Sim::load_world`] is this.
 pub fn load<W: World>(part: &mut W, text: &str) -> core::result::Result<(), WorldError> {
@@ -513,12 +700,24 @@ pub fn check<W: World>(part: &W, text: &str) -> core::result::Result<(), WorldMi
 
 /// Expectations that cannot be read, as a mismatch.
 fn invalid(e: WorldError) -> WorldMismatch {
-    WorldMismatch {
-        failures: std::vec![Failure {
-            line: e.line,
-            message: format!("invalid expectations (column {}): {}", e.column, e.message),
-        }],
+    WorldMismatch::invalid(e)
+}
+
+impl WorldMismatch {
+    /// Expectations that cannot be read, as one failure at their line.
+    pub(crate) fn invalid(e: WorldError) -> Self {
+        WorldMismatch {
+            failures: std::vec![Failure {
+                line: e.line,
+                message: format!("invalid expectations (column {}): {}", e.column, e.message),
+            }],
+        }
     }
+}
+
+/// Parses a world file into its top-level nodes.
+pub(crate) fn parse_world(text: &str) -> Result<Vec<Node>> {
+    parse(text)
 }
 
 /// Parses a world file holding one node, for testing a [`World`] part on

@@ -150,6 +150,8 @@ pub mod rt;
 #[cfg(feature = "signal")]
 mod signal;
 #[cfg(feature = "std")]
+pub mod sim;
+#[cfg(feature = "std")]
 mod sim_world;
 #[cfg(feature = "io-std")]
 pub mod stdio;

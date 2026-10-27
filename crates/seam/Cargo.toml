@@ -12,6 +12,7 @@ categories.workspace = true
 
 [dependencies]
 seam-core = { workspace = true }
+seam-futures = { workspace = true, optional = true }
 seam-std = { workspace = true, optional = true }
 seam-test = { workspace = true, optional = true }
 seam-tokio = { workspace = true, optional = true }
@@ -33,32 +34,33 @@ docs = []
 # happen is always the end user's choice.
 std = ["dep:seam-std"]
 tokio = ["dep:seam-tokio"]
+futures = ["dep:seam-futures"]
 test = ["dep:seam-test"]
 
 # Capability groups. Each enables its operation types and, in whichever
 # backends are on, their implementations. None of them enables a backend.
 # Those whose types need std (`io::Error`, `Path`, ...) link std, but a
 # core using only them still performs no effects of its own.
-fs = ["seam-core/fs", "seam-std?/fs", "seam-tokio?/fs", "seam-test?/fs"]
-net = ["seam-core/net", "seam-std?/net", "seam-tokio?/net", "seam-test?/net"]
-process = ["seam-core/process", "seam-std?/process", "seam-tokio?/process", "seam-test?/process"]
+fs = ["seam-core/fs", "seam-std?/fs", "seam-tokio?/fs", "seam-test?/fs", "seam-futures?/fs"]
+net = ["seam-core/net", "seam-std?/net", "seam-tokio?/net", "seam-test?/net", "seam-futures?/net"]
+process = ["seam-core/process", "seam-std?/process", "seam-tokio?/process", "seam-test?/process", "seam-futures?/process"]
 env = ["seam-core/env", "seam-std?/env", "seam-test?/env"]
 io-std = ["seam-core/io-std", "seam-std?/io-std", "seam-tokio?/io-std", "seam-test?/io-std"]
 signal = ["seam-core/signal", "seam-tokio?/signal", "seam-test?/signal"]
 # Channels and shared cells. No std needed for the operation types.
-sync = ["seam-core/sync", "seam-std?/sync", "seam-tokio?/sync", "seam-test?/sync"]
+sync = ["seam-core/sync", "seam-std?/sync", "seam-tokio?/sync", "seam-test?/sync", "seam-futures?/sync"]
 # Usable without std: `Sleep`, `Now`, `RandomU64`, `FillRandom`, and the
 # task operations (`Spawn`, `Join`, ...). In the Tokio backend, `rt` also
 # turns on Tokio's runtime, as in Tokio; with `test`, it adds the simulated
 # runtime, which needs std.
-time = ["seam-core/time", "seam-std?/time", "seam-tokio?/time", "seam-test?/time"]
+time = ["seam-core/time", "seam-std?/time", "seam-tokio?/time", "seam-test?/time", "seam-futures?/time"]
 random = ["seam-core/random", "seam-std?/random", "seam-test?/random"]
-rt = ["seam-core/rt", "seam-std?/rt", "seam-tokio?/rt", "seam-test?/rt"]
+rt = ["seam-core/rt", "seam-std?/rt", "seam-tokio?/rt", "seam-test?/rt", "seam-futures?/rt"]
 # `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type.
 alloc = ["seam-core/alloc"]
 # Handle-level read/write operations alone; `fs`, `net` and `process` pull
 # them in.
-io = ["seam-core/io"]
+io = ["seam-core/io", "seam-futures?/io"]
 
 # Every capability group. Still no backend.
 full = ["fs", "net", "process", "env", "io-std", "signal", "time", "random", "rt", "sync", "alloc"]

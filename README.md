@@ -8,8 +8,8 @@ seam = { package = "seam-rs", version = "0.5", features = ["fs", "std"] }
 ```
 
 The crates are published as `seam-rs`, `seam-rs-core`, `seam-rs-std`,
-`seam-rs-tokio` and `seam-rs-test`; in code they are still `seam`,
-`seam_core`, and so on.
+`seam-rs-tokio`, `seam-rs-futures` and `seam-rs-test`; in code they are
+still `seam`, `seam_core`, and so on.
 
 Sans-IO pulls I/O out of protocol logic. `seam` pulls out **every** effect:
 I/O, time, randomness, shared state. The core of your program is written
@@ -86,6 +86,7 @@ where
 | [`seam-core`](https://github.com/parzivale/seam/tree/main/crates/seam-core) (`seam-rs-core`) | The traits (`Operation`, `Query`, `Inspect`, `Perform`, `Provide`/`Lend` and their async forms, `block_on`), the operation and acquisition types, and a `prelude`. `no_std`. |
 | [`seam-std`](https://github.com/parzivale/seam/tree/main/crates/seam-std) (`seam-rs-std`) | The std backend: a `Std` capability (used alone, or as a part of a `Root`) and newtype handles (`File`, `TcpStream`, ...) that expose no std I/O traits. |
 | [`seam-tokio`](https://github.com/parzivale/seam/tree/main/crates/seam-tokio) (`seam-rs-tokio`) | The Tokio backend: a `Tokio` capability implementing the async and `Send` capability traits, for time, files, the network, stdio, processes, signals, tasks and channels. |
+| [`seam-futures`](https://github.com/parzivale/seam/tree/main/crates/seam-futures) (`seam-rs-futures`) | The futures-rs backend: `Futures` (channels and shared cells that need no runtime) and `Executor` (tasks on any futures-rs executor), futures-io adapters both ways, `Stream`s of messages, lines and directory entries, and helpers that need concurrency within a task (`within`, `copy_bidirectional`, `pipe_through`). |
 | [`seam-test`](https://github.com/parzivale/seam/tree/main/crates/seam-test) (`seam-rs-test`) | The pure test backend: a `Sim` world with a virtual clock, seeded randomness, in-memory filesystem and network, scripted commands and captured stdio. Its only real effect is allocation. |
 | [`seam`](https://github.com/parzivale/seam/tree/main/crates/seam) (`seam-rs`) | Re-exports everything, behind feature flags. `no_std` by default. |
 
@@ -113,6 +114,7 @@ and only the binary (or its tests) picks a backend.
 |---|---|
 | `std` | The std backend, `seam::stdlib`. |
 | `tokio` | The Tokio backend, `seam::tokio`. |
+| `futures` | The futures-rs backend, `seam::futures`. |
 | `test` | The pure test backend, `seam::test`. No std on its own. |
 | `rt-multi-thread`, `test-util` | Tokio runtime options, named as in Tokio. Only with `tokio`. |
 

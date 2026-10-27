@@ -1,0 +1,54 @@
+[package]
+name = "seam-rs-futures"
+description = "futures-rs backend for seam: channels, shared cells and tasks on any executor, futures-io and Stream adapters, and concurrent async helpers."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+seam-core = { workspace = true, features = ["std"] }
+futures = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+futures = { workspace = true, features = ["std", "executor", "thread-pool"] }
+seam-test = { workspace = true, features = ["full"] }
+seam-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util"] }
+
+# Each feature turns on the matching seam-core operation types.
+[features]
+default = []
+full = ["sync", "rt", "io", "fs", "net", "process", "time"]
+
+# `Futures`: channels (`futures::channel::mpsc`) and shared cells
+# (`futures::lock::Mutex`). `time` too, as in seam-core: `try_send` and
+# `try_recv` are a timeout of zero.
+sync = ["time", "seam-core/sync"]
+# `Executor`: spawning tasks on any futures-rs executor.
+rt = ["seam-core/rt"]
+# `io::Compat`, `io::AsyncReader` and `io::AsyncWriter`, and the `lines`
+# stream.
+io = ["seam-core/io"]
+# The `entries` stream.
+fs = ["io", "seam-core/fs"]
+# `copy_bidirectional`.
+net = ["io", "seam-core/net"]
+# `pipe_through`.
+process = ["io", "seam-core/process"]
+# `within`.
+time = ["seam-core/time"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+# Published as `seam-rs-futures`; code still refers to it as `seam_futures`.
+[lib]
+name = "seam_futures"
+
+[lints]
+workspace = true

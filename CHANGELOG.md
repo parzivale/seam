@@ -63,6 +63,27 @@ failed scope drops them: std and the simulation lose nothing, Tokio closes
 the stream (it fails with `NotConnected` after). The simulated child still
 runs when its output is first read, on the input written by then.
 
+### futures-rs backend
+
+A new crate, `seam-futures` (`seam-rs-futures`, `seam::futures` with the
+`futures` feature), wraps futures-rs as `seam-tokio` wraps Tokio:
+
+- `Futures`: channels (`futures::channel::mpsc`) and shared cells
+  (`futures::lock::Mutex`). They need no runtime, so they also run on the
+  simulated runtime. `try_send` and `try_recv` work; futures-rs has no
+  clock, so a `Timeout` that would wait panics, pointing at `within`.
+- `Executor<S>`: `Spawn` and `SpawnSet` on any `futures::task::Spawn`
+  (`ThreadPool`, a `LocalPool`'s spawner, ...), with `Join`, `Abort`,
+  `Detach`, `IsFinished`, `JoinNext` and `YieldNow`.
+- `io::Compat` makes a futures-io type a seam handle; `io::AsyncReader`
+  and `io::AsyncWriter` make a seam handle a futures-io one.
+- `stream::messages`, `stream::lines` and `stream::entries`, as `Stream`s.
+- Helpers that run several operations at once, so are async only (each
+  with a `_send` form): `time::within` (race any future against a clock's
+  `Sleep`), `net::copy_bidirectional_async` (a proxy, over split streams)
+  and `process::pipe_through_async` (`RunCommand` with input, over a split
+  child).
+
 ### Documentation
 
 - A `docs` feature adds `seam::_docs`: what seam is, usage guides, the

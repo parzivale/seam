@@ -275,3 +275,8 @@ pub use seam_test as test;
 /// The Tokio backend.
 #[cfg(feature = "tokio")]
 pub use seam_tokio as tokio;
+
+/// The futures-rs backend: channels, cells and tasks on any executor,
+/// futures-io and `Stream` adapters, and concurrent async helpers.
+#[cfg(feature = "futures")]
+pub use seam_futures as futures;

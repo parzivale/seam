@@ -15,6 +15,7 @@ seam-core = { workspace = true, features = ["std", "fs", "time"] }
 notify = { workspace = true, optional = true }
 
 [dev-dependencies]
+seam-tokio = { workspace = true, features = ["rt"] }
 seam-std = { workspace = true, features = ["fs", "time"] }
 seam-test = { workspace = true, features = ["std", "fs", "time"] }
 seam-smol = { workspace = true, features = ["time"] }

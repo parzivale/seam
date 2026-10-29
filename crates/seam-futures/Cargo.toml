@@ -15,6 +15,7 @@ seam-core = { workspace = true, features = ["std"] }
 futures = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
+seam-smol = { workspace = true, features = ["time"] }
 futures = { workspace = true, features = ["std", "executor", "thread-pool"] }
 seam-test = { workspace = true, features = ["full"] }
 seam-tokio = { workspace = true, features = ["full"] }

@@ -1851,6 +1851,7 @@ dependencies = [
  "naga",
  "rustix",
  "seam-rs-core",
+ "seam-rs-smol",
  "tokio",
 ]
 
@@ -1863,6 +1864,7 @@ name = "seam-rs-dirs"
 version = "0.6.0"
 dependencies = [
  "seam-rs-core",
+ "seam-rs-std",
  "seam-rs-test",
 ]
 
@@ -1872,6 +1874,7 @@ version = "0.6.0"
 dependencies = [
  "futures",
  "seam-rs-core",
+ "seam-rs-smol",
  "seam-rs-test",
  "seam-rs-tokio",
  "tokio",
@@ -1884,6 +1887,7 @@ dependencies = [
  "jiff",
  "jiff-tzdb",
  "seam-rs-core",
+ "seam-rs-smol",
  "seam-rs-std",
  "seam-rs-test",
 ]
@@ -1895,6 +1899,7 @@ dependencies = [
  "nix",
  "seam-rs-core",
  "seam-rs-rustix",
+ "seam-rs-std",
  "seam-rs-unix",
 ]
 
@@ -1907,6 +1912,7 @@ dependencies = [
  "seam-rs-smol",
  "seam-rs-std",
  "seam-rs-test",
+ "seam-rs-tokio",
  "smol",
 ]
 
@@ -1916,6 +1922,7 @@ version = "0.6.0"
 dependencies = [
  "rand",
  "seam-rs-core",
+ "seam-rs-std",
  "seam-rs-test",
 ]
 
@@ -1939,6 +1946,7 @@ version = "0.6.0"
 dependencies = [
  "rustix",
  "seam-rs-core",
+ "seam-rs-std",
  "seam-rs-unix",
 ]
 
@@ -1990,6 +1998,7 @@ version = "0.6.0"
 dependencies = [
  "seam-rs-core",
  "seam-rs-test",
+ "seam-rs-tokio",
  "tracing",
 ]
 
@@ -2006,7 +2015,9 @@ name = "seam-rs-uuid"
 version = "0.6.0"
 dependencies = [
  "seam-rs-core",
+ "seam-rs-std",
  "seam-rs-test",
+ "seam-rs-tokio",
  "uuid",
 ]
 

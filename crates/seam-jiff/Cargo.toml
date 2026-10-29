@@ -18,6 +18,7 @@ jiff = { workspace = true, features = ["std"] }
 jiff-tzdb = { workspace = true, optional = true }
 
 [dev-dependencies]
+seam-smol = { workspace = true, features = ["time"] }
 jiff-tzdb = { workspace = true }
 seam-std = { workspace = true, features = ["fs", "env", "time"] }
 seam-test = { workspace = true, features = ["fs", "env", "time", "rt"] }

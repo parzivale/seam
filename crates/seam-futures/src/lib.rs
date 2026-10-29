@@ -3,7 +3,8 @@
 //! futures-rs is the runtime-agnostic half of async Rust: channels, locks,
 //! executors, the `AsyncRead`/`AsyncWrite` traits and `Stream`. This crate
 //! wraps those pieces the way `seam-tokio` wraps Tokio, so they work under
-//! any executor: Tokio, futures-rs's own, or seam's simulated runtime.
+//! any executor: Tokio, smol, futures-rs's own, or seam's simulated
+//! runtime.
 //!
 //! - [`Futures`] (`sync`): channels from `futures::channel::mpsc` and shared
 //!   cells behind `futures::lock::Mutex`, as `seam::root![Futures<fx::Channel,
@@ -22,8 +23,8 @@
 //!   [`process::pipe_through_async`], each with a `_send` form.
 //!
 //! futures-rs has no clock, network or filesystem, so neither does this
-//! backend: take those from `Tokio`, `Std` or the simulation in the same
-//! root.
+//! backend: take those from `Tokio`, `Smol`, `Std` or the simulation in
+//! the same root.
 //!
 //! ```
 //! # #[cfg(feature = "sync")] {
@@ -46,6 +47,76 @@
 //! assert_eq!(futures::executor::block_on(relay(&mut root)), 7);
 //! # }
 //! ```
+//! # In a program
+//!
+//! Futures' parts sit beside a backend that has the rest. Here, smol gives
+//! the clock, and [`time::within`] races a channel receive against it:
+//!
+//! ```no_run
+//! # #[cfg(all(feature = "sync", feature = "time"))] {
+//! use seam_core::effects as fx;
+//! use seam_core::ops::sync::{Channel, RecvMsg, SendMsg};
+//! use seam_core::prelude::*;
+//! use seam_futures::Futures;
+//! use seam_futures::sync::{Receiver, Sender};
+//! use std::time::Duration;
+//!
+//! seam_smol::block_on(async {
+//!     let mut root = seam_core::root![Futures<fx::Channel>, seam_smol::Smol<fx::Sleep>];
+//!     let (mut tx, mut rx): (Sender<u32>, Receiver<u32>) = root.perform(Channel::unbounded());
+//!     tx.perform_async(SendMsg(1)).await.unwrap();
+//!     let got = seam_futures::time::within(&mut root, Duration::from_secs(1), rx.perform_async(RecvMsg::new())).await;
+//!     println!("{got:?}");
+//! });
+//! # }
+//! ```
+//!
+//! [`Executor`] spawns on any futures-rs executor:
+//! `seam_core::root![Executor<fx::Spawn, fx::SpawnSet>(pool), ..]` with a
+//! `futures::executor::ThreadPool`, say.
+//!
+//! Through the `seam` crate, this crate is `seam::futures` (feature
+//! `futures`), with the capability groups enabled there.
+//!
+//! # Features
+//!
+//! | Feature | Gives |
+//! |---|---|
+//! | `sync` | [`Futures`]: channels and shared cells |
+//! | `rt` | [`Executor`]: tasks on any futures-rs executor |
+//! | `io` | [`io`]: futures-io adapters, both ways |
+//! | `time` | [`time::within`] |
+//! | `net` | [`net::copy_bidirectional_async`] |
+//! | `process` | [`process::pipe_through_async`] |
+//! | `fs` | directory entries as a `Stream` |
+//! | `full` | all of the above |
+//!
+//! None is on by default.
+//!
+#![cfg_attr(
+    not(feature = "rt"),
+    doc = "[`Executor`]: https://docs.rs/seam-rs-futures/latest/seam_futures/struct.Executor.html"
+)]
+#![cfg_attr(
+    not(feature = "io"),
+    doc = "[`io`]: https://docs.rs/seam-rs-futures/latest/seam_futures/io/index.html"
+)]
+#![cfg_attr(
+    not(feature = "time"),
+    doc = "[`time::within`]: https://docs.rs/seam-rs-futures/latest/seam_futures/time/fn.within.html"
+)]
+#![cfg_attr(
+    not(feature = "net"),
+    doc = "[`net::copy_bidirectional_async`]: https://docs.rs/seam-rs-futures/latest/seam_futures/net/fn.copy_bidirectional_async.html"
+)]
+#![cfg_attr(
+    not(feature = "process"),
+    doc = "[`process::pipe_through_async`]: https://docs.rs/seam-rs-futures/latest/seam_futures/process/fn.pipe_through_async.html"
+)]
+#![cfg_attr(
+    not(feature = "sync"),
+    doc = "[`Futures`]: https://docs.rs/seam-rs-futures/latest/seam_futures/struct.Futures.html"
+)]
 #![forbid(unsafe_code)]
 
 /// futures-rs's runtime-agnostic pieces, as a capability: channels and

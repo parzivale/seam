@@ -18,6 +18,8 @@ seam-unix = { workspace = true }
 nix = { workspace = true, features = ["fs", "mount", "user", "signal", "hostname", "process"] }
 
 [dev-dependencies]
+seam-core = { workspace = true, features = ["env"] }
+seam-std = { workspace = true, features = ["env"] }
 seam-rustix = { workspace = true }
 
 [package.metadata.docs.rs]

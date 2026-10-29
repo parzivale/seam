@@ -10,10 +10,14 @@
 //!   database with real SQL, that touches nothing outside the process and
 //!   starts empty every time.
 //!
+//! `Sqlx` is async only. It runs on Tokio (feature `tokio`, on by default)
+//! inside a Tokio runtime, and on smol (feature `smol`) anywhere else, so
+//! it works under smol and futures-rs' executors with `smol` on.
 //! A transaction is a scope, as everything that must be closed is in seam:
 //! closing it commits, and a scope that fails, panics or is cancelled
 //! rolls it back.
 //!
+//! # In tests
 //! ```
 //! use seam_core::prelude::*;
 //! use seam_sqlx::{Begin, Sqlx, Value, execute_async, fetch_all_async};
@@ -38,6 +42,58 @@
 //! every value as a parameter, never formatted into the SQL: this crate
 //! hands the SQL to sqlx as trusted (`AssertSqlSafe`). sqlx's `query!` macros check SQL against a live database at compile
 //! time, which a seam core cannot route; use them in the edge if wanted.
+//! # In a program
+//!
+//! ```no_run
+//! use seam_core::io;
+//! use seam_core::prelude::*;
+//! use seam_sqlx::{Execute, Fetch, Sqlx, Value, execute_send, fetch_optional_send};
+//!
+//! /// The core: counts a visit, and says how many there have been.
+//! async fn visit<C>(c: &mut C, page: &str) -> io::Result<i64>
+//! where
+//!     C: for<'a> SendPerform<Execute<'a>> + for<'a> SendPerform<Fetch<'a>> + Send,
+//! {
+//!     execute_send(c, "INSERT INTO visits (page) VALUES (?)", &[page.into()]).await?;
+//!     let row = fetch_optional_send(c, "SELECT COUNT(*) AS n FROM visits WHERE page = ?", &[page.into()])
+//!         .await?
+//!         .expect("a count");
+//!     match row.get("n") {
+//!         Some(Value::Int(n)) => Ok(*n),
+//!         _ => Err(io::ErrorKind::InvalidData.into()),
+//!     }
+//! }
+//!
+//! seam_tokio::block_on(async {
+//!     let mut db = Sqlx::connect("sqlite://visits.db?mode=rwc").await?;
+//!     execute_send(&mut db, "CREATE TABLE IF NOT EXISTS visits (page TEXT)", &[]).await?;
+//!     println!("{} visits", visit(&mut db, "/").await?);
+//!     io::Result::Ok(())
+//! })?;
+//! # Ok::<(), io::Error>(())
+//! ```
+//!
+//! In a root, `Sqlx` routes [`effects::Execute`], [`effects::Fetch`],
+//! [`effects::Begin`] and [`effects::Acquire`].
+//!
+//! Through the `seam` crate, this crate is `seam::sqlx` (feature `sqlx`,
+//! which brings in SQLite on Tokio; `smol` adds smol). For Postgres or
+//! MySQL, add `seam-rs-sqlx` with that feature alongside `seam`.
+//!
+//! # Features
+//!
+//! | Feature | Default | Gives |
+//! |---|---|---|
+//! | `sqlite` | yes | `sqlite://` URLs, and [`Sqlx::memory`] |
+//! | `postgres` | no | `postgres://` URLs |
+//! | `mysql` | no | `mysql://` URLs |
+//! | `tokio` | yes | runs on Tokio, inside a Tokio runtime |
+//! | `smol` | no | runs on smol, outside a Tokio runtime |
+//!
+#![cfg_attr(
+    not(feature = "sqlite"),
+    doc = "[`Sqlx::memory`]: https://docs.rs/seam-rs-sqlx/latest/seam_sqlx/struct.Sqlx.html#method.memory"
+)]
 #![forbid(unsafe_code)]
 
 use std::string::String;

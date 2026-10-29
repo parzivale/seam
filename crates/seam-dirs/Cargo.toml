@@ -14,6 +14,7 @@ categories.workspace = true
 seam-core = { workspace = true, features = ["env"] }
 
 [dev-dependencies]
+seam-std = { workspace = true, features = ["env"] }
 seam-test = { workspace = true, features = ["env"] }
 
 [package.metadata.docs.rs]

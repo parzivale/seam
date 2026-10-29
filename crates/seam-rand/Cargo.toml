@@ -17,6 +17,8 @@ seam-core = { workspace = true, features = ["random"] }
 rand = { workspace = true }
 
 [dev-dependencies]
+seam-core = { workspace = true, features = ["random"] }
+seam-std = { workspace = true, features = ["random"] }
 rand = { workspace = true, features = ["std_rng"] }
 seam-test = { workspace = true, features = ["random"] }
 

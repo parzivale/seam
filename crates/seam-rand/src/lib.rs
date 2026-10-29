@@ -11,6 +11,19 @@
 //!   with a single `FillRandom`, and then draws without effects: faster
 //!   for many draws, and still reproducible under a `Sim`.
 //!
+//! # Where the randomness comes from
+//!
+//! Anything that performs `FillRandom`: `Std` (the operating system's
+//! randomness) in a program, a seeded `Sim` in tests, or a root with either
+//! as a part. Tokio and smol have no randomness of their own; a program on
+//! them puts `Std` in its root for it.
+//!
+//! `FillRandom` never waits, so the RNG is sync even in async code: an
+//! async core bounds on `Perform<FillRandom>` (not its async form) and
+//! calls [`rng`] as here. The root a Tokio or smol program builds with
+//! `Std` in it performs both.
+//!
+//! # In tests
 //! ```
 //! use rand::RngExt;
 //! use rand::seq::SliceRandom;
@@ -31,6 +44,24 @@
 //! assert_eq!(deal(&mut a), deal(&mut b)); // seeded: the same every run
 //! ```
 //!
+//! # In a program
+//!
+//! ```no_run
+//! use rand::RngExt;
+//! use seam_core::effects as fx;
+//! use seam_std::Std;
+//!
+//! let mut root = seam_core::root![Std<fx::FillRandom>];
+//! let roll: u8 = seam_rand::rng(&mut root).random_range(1..=6);
+//! // Or one generator, seeded once, for many draws.
+//! let mut fast: rand::rngs::StdRng = seam_rand::seeded(&mut root);
+//! let coin: bool = fast.random();
+//! println!("{roll} {coin}");
+//! ```
+//!
+//! Through the `seam` crate, this crate is `seam::rand` (feature `rand`).
+//!
+//! # Notes
 //! The RNG is not marked `CryptoRng`: whether seam's randomness is fit for
 //! cryptography depends on the backend (a `Sim`'s is not).
 //!

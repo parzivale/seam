@@ -10,10 +10,13 @@
 //!   `check_world` can check what a core logged.
 //! - [`Discard`] drops them.
 //!
+//! All three are sync, and async through the lifts: logging never waits, so
+//! they serve sync and async cores alike, under any executor.
 //! The macros [`error!`], [`warn!`], [`info!`], [`debug!`] and [`trace!`]
 //! format a message and perform it, tagged with the calling module; for
 //! async cores, [`log_async`] and [`log_send`].
 //!
+//! # In tests
 //! ```
 //! use seam_core::Perform;
 //! use seam_tracing::{Captured, Level, Log, info, warn};
@@ -34,6 +37,54 @@
 //! assert_eq!(logs.records()[1].message, "giving up after 3 attempts");
 //! ```
 //!
+//! In a world file, the `logs` block (feature `test`) lists the records,
+//! and `check_world` finds each one expected:
+//!
+//! ```text
+//! logs {
+//!     record "giving up after 3 attempts" level="warn"
+//! }
+//! ```
+//!
+//! # In a program
+//!
+//! `Tracing` is a part like any other: the program installs a subscriber
+//! as usual (`tracing-subscriber`, say), and the root sends `Log` there,
+//! next to whatever backends the rest of the core needs:
+//!
+//! ```no_run
+//! use seam_core::effects as fx;
+//! use seam_core::ops::time::Sleep;
+//! use seam_core::prelude::*;
+//! use seam_tracing::{Log, Tracing, effects as log, log_send};
+//! use std::time::Duration;
+//!
+//! /// An async core that logs and waits.
+//! async fn warm_up<C>(c: &mut C)
+//! where
+//!     C: for<'a> SendPerform<Log<'a>> + SendPerform<Sleep> + Send,
+//! {
+//!     log_send(c, seam_tracing::Level::INFO, module_path!(), "warming up").await;
+//!     c.perform_send(Sleep(Duration::from_millis(100))).await;
+//! }
+//!
+//! // The program: tracing for the logs, Tokio for the time.
+//! seam_tokio::block_on(async {
+//!     let mut root = seam_core::root![Tracing<log::Log>, seam_tokio::Tokio<fx::Sleep>];
+//!     warm_up(&mut root).await;
+//! });
+//! ```
+//!
+//! Through the `seam` crate, this crate is `seam::tracing` (feature
+//! `tracing`; with `test`, the `logs` block).
+//!
+//! # Features
+//!
+//! | Feature | Default | Gives |
+//! |---|---|---|
+//! | `test` | no | `World` for [`Captured`]: the `logs` world-file block |
+//!
+//! # Notes
 //! Logging this way is a choice: it puts logging in a core's bounds. A
 //! core that would rather log as a side channel can keep using tracing's
 //! own macros, which seam does not ban.

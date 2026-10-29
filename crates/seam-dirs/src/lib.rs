@@ -28,6 +28,15 @@
 //! [`ProjectDirs`] gives a program its own directories inside those, named
 //! as `directories` names them.
 //!
+//! # Where the environment comes from
+//!
+//! Anything that inspects `Var`: `Std` in a program (Tokio and smol have no
+//! environment of their own: put `Std` in the root), a `Sim` in tests.
+//! [`dir`] and [`ProjectDirs::dir`] answer for the platform the program was
+//! built for; the `_on` forms for any platform, which is how a test checks
+//! another platform's rules.
+//!
+//! # In tests
 //! ```
 //! use seam_dirs::{Dir, ProjectDirs, Platform, dir_on};
 //! use seam_test::Sim;
@@ -47,6 +56,21 @@
 //!     std::path::Path::new("/home/ada/Library/Application Support/org.Example-Corp.Frobnicator"),
 //! );
 //! ```
+//! # In a program
+//!
+//! ```no_run
+//! use seam_core::effects as fx;
+//! use seam_dirs::{Dir, ProjectDirs};
+//! use seam_std::Std;
+//!
+//! let root = seam_core::root![Std<fx::Var>];
+//! let app = ProjectDirs::new("org", "Example Corp", "Frobnicator");
+//! if let Some(config) = app.dir(&root, Dir::Config) {
+//!     println!("settings go in {}", config.display());
+//! }
+//! ```
+//!
+//! Through the `seam` crate, this crate is `seam::dirs` (feature `dirs`).
 #![forbid(unsafe_code)]
 
 use std::ffi::OsString;

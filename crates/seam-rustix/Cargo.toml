@@ -17,6 +17,10 @@ seam-unix = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["std", "fs", "mount", "process", "system"] }
 
+[dev-dependencies]
+seam-core = { workspace = true, features = ["env"] }
+seam-std = { workspace = true, features = ["env"] }
+
 [package.metadata.docs.rs]
 all-features = true
 

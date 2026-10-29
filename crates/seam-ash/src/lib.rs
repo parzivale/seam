@@ -75,6 +75,47 @@
 //! });
 //! assert_eq!(double(&mut gpu, &[], &[1, 2, 21]).unwrap(), [2, 4, 42]);
 //! ```
+//! # In a program
+//!
+//! `Ash` is a part like any other: tuned with [`AshOptions`], it serves the
+//! GPU keys of [`effects`] it is listed for, and every clone is the same
+//! device, so tasks share it. The async form waits without blocking, under
+//! any executor:
+//!
+//! ```no_run
+//! # #[cfg(feature = "ash")] {
+//! use core::time::Duration;
+//! use seam_ash::{effects as gpu, *};
+//! use seam_core::prelude::*;
+//!
+//! let options = AshOptions {
+//!     spin: Duration::from_micros(100),
+//!     ..AshOptions::default()
+//! };
+//! let mut root = seam_core::root![
+//!     Ash<gpu::CreateBuffer, gpu::Upload, gpu::Download>::with(&options)?,
+//! ];
+//! let out = seam_smol::block_on(root.acquire_send(
+//!     CreateBuffer::new(4, BufferUsage::STORAGE),
+//!     async |root, buf| {
+//!         root.perform_send(Upload::new(*buf, &[1, 2, 3, 4])).await?;
+//!         let mut out = [0; 4];
+//!         root.perform_send(Download::new(*buf, &mut out)).await?;
+//!         Ok::<_, GpuError>(out)
+//!     },
+//! ))?;
+//! assert_eq!(out, [1, 2, 3, 4]);
+//! # }
+//! # Ok::<(), seam_ash::GpuError>(())
+//! ```
+//!
+//! Through the `seam` crate, this crate is `seam::ash` (feature `ash`).
+//!
+//! # Features
+//!
+//! | Feature | Default | Gives |
+//! |---|---|---|
+//! | `ash` | yes | [`Ash`]: real Vulkan, through ash (the loader is opened at run time; building needs no SDK). Without it: the operations, [`SimGpu`] and the import types, with no `unsafe` |
 //!
 #![cfg_attr(
     feature = "ash",

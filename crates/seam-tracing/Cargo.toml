@@ -16,6 +16,8 @@ tracing = { workspace = true, features = ["std"] }
 seam-test = { workspace = true, optional = true, features = ["std"] }
 
 [dev-dependencies]
+seam-core = { workspace = true, features = ["time"] }
+seam-tokio = { workspace = true, features = ["rt", "time"] }
 seam-test = { workspace = true, features = ["std", "time"] }
 
 

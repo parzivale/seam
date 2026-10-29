@@ -216,10 +216,28 @@
 //!
 //! | Backend | Gives you |
 //! |---|---|
-//! | `std` | the std backend, `seam::stdlib` |
+//! | `std` | the std backend, `seam::stdlib`: the environment, randomness, and sync files, network, processes |
 //! | `tokio` | the Tokio backend, `seam::tokio` |
-//! | `test` | the pure test backend, `seam::test`: a simulated world |
+//! | `smol` | the smol backend, `seam::smol` |
+//! | `futures` | the futures-rs backend, `seam::futures`: channels, locks and tasks on any executor |
+//! | `test` | the pure test backend, `seam::test`: a simulated world (and the wrappers' world-file blocks) |
 //! | `rt-multi-thread`, `test-util` | Tokio runtime options, as in Tokio; only with `tokio` |
+//!
+//! | Wrapper | Gives you |
+//! |---|---|
+//! | `jiff`, `jiff-bundled` | time zones over jiff, `seam::jiff`; `jiff-bundled` adds the compiled-in tz database |
+//! | `rand`, `uuid`, `dirs` | rand on seam's randomness, UUIDs, platform directories |
+//! | `tracing` | logging as an effect, `seam::tracing` |
+//! | `notify` | file watching, `seam::notify` |
+//! | `reqwest` | HTTP, `seam::reqwest`, with reqwest and rustls |
+//! | `sqlx` | SQL, `seam::sqlx`: SQLite on Tokio; with `smol`, on smol too |
+//! | `ash` | the GPU over Vulkan, `seam::ash` |
+//! | `unix`, `rustix`, `nix` | Unix effects, `seam::unix`, performed with rustix or nix |
+//!
+//! A program on Tokio or smol takes the environment and randomness from
+//! `std`, in the same root: `seam::root![Std<fx::Var>, Smol<fx::Sleep>]`.
+//! Every wrapper works on every backend; each one's docs show it in a
+//! program.
 //!
 //! Each backend implements exactly the capability groups that are enabled.
 //! A typical split:

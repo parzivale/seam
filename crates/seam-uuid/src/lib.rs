@@ -12,6 +12,14 @@
 //!
 //! Each comes in sync, `_async` and `_send` forms.
 //!
+//! # Where the randomness and clock come from
+//!
+//! `FillRandom` and `WallClock`: `Std` has both; Tokio and smol have
+//! `WallClock` but no randomness, so a program on them puts `Std` in its
+//! root (or uses `Std` for both). In tests, a seeded `Sim` with its wall
+//! clock set makes the IDs the same every run.
+//!
+//! # In tests
 //! ```
 //! use seam_test::Sim;
 //! use std::time::{Duration, UNIX_EPOCH};
@@ -27,6 +35,23 @@
 //! }));
 //! ```
 //!
+//! # In a program
+//!
+//! ```no_run
+//! use seam_core::effects as fx;
+//! use seam_std::Std;
+//!
+//! let mut root = seam_core::root![Std<fx::FillRandom, fx::WallClock>];
+//! println!("{}", seam_uuid::new_v4(&mut root));
+//!
+//! // From async code: the `_send` form, here under Tokio.
+//! let id = seam_tokio::block_on(seam_uuid::new_v7_send(&mut root));
+//! println!("{id}");
+//! ```
+//!
+//! Through the `seam` crate, this crate is `seam::uuid` (feature `uuid`).
+//!
+//! # Notes
 //! Cores should not call `Uuid::new_v4` or `Uuid::now_v7`; seam's
 //! `templates/clippy.toml` bans them.
 #![forbid(unsafe_code)]

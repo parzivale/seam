@@ -12,6 +12,17 @@
 //!   `Sim` it watches the simulated filesystem, on the virtual clock, so a
 //!   test drives a watcher by changing files.
 //!
+//! | Handler | Feature | Sync | Async |
+//! |---|---|---|---|
+//! | [`Notify`] | `notify` (default) | blocks until an event | waits without blocking, under any executor: notify's own thread wakes the task |
+//! | [`Polling`] | none | sleeps between scans, through its capability | through the lifts: the same sleeps, so it blocks a real executor |
+//!
+//! So in a program use `Notify`, sync or async. `Polling` is for tests over
+//! a `Sim` (where its sleeps are on the virtual clock), and for sync
+//! programs on filesystems the OS does not report (some network mounts),
+//! over `Std`.
+//!
+//! # In tests
 //! ```
 //! use core::time::Duration;
 //! use seam_core::prelude::*;
@@ -37,6 +48,50 @@
 //!     Ok::<_, seam_core::io::Error>(())
 //! }).unwrap();
 //! ```
+//! # In a program
+//!
+//! ```no_run
+//! use seam_core::io;
+//! use seam_core::ops::time::Timeout;
+//! use seam_core::prelude::*;
+//! use seam_notify::{Event, NextEvent, Notify, Watch};
+//! use std::time::Duration;
+//!
+//! /// The core: waits for the config to change, for up to a minute.
+//! async fn config_changed<C, W>(c: &mut C) -> io::Result<Option<Event>>
+//! where
+//!     C: for<'a> AsyncProvide<Watch<'a, W>>,
+//!     W: SendPerform<Timeout<NextEvent>>,
+//! {
+//!     c.acquire_async(Watch::flat("/etc/myapp"), async |_, watcher| {
+//!         match watcher.perform_send(Timeout::new(Duration::from_secs(60), NextEvent)).await {
+//!             Ok(event) => Ok(Some(event)),
+//!             Err(e) if e.kind() == io::ErrorKind::TimedOut => Ok(None),
+//!             Err(e) => Err(e),
+//!         }
+//!     })
+//!     .await
+//! }
+//!
+//! // Any executor: Tokio here; smol, or futures-rs', the same.
+//! let changed = seam_tokio::block_on(config_changed::<_, seam_notify::NotifyWatcher>(&mut Notify))?;
+//! println!("{changed:?}");
+//! # Ok::<(), io::Error>(())
+//! ```
+//!
+//! Through the `seam` crate, this crate is `seam::notify` (feature `notify`,
+//! which brings in [`Notify`]).
+//!
+//! # Features
+//!
+//! | Feature | Default | Gives |
+//! |---|---|---|
+//! | `notify` | yes | [`Notify`]: the operating system's events, through the notify crate |
+//!
+#![cfg_attr(
+    not(feature = "notify"),
+    doc = "[`Notify`]: https://docs.rs/seam-rs-notify/latest/seam_notify/struct.Notify.html"
+)]
 #![forbid(unsafe_code)]
 
 use core::marker::PhantomData;

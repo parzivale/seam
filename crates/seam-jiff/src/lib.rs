@@ -14,10 +14,22 @@
 //! - [`Bundled`] (feature `bundled`) answers `TimeZoneFor` from the
 //!   database compiled into the program, performing no effect at all.
 //!
+//! # Handlers
+//!
+//! | Handler | Answers | Forms | Reads |
+//! |---|---|---|---|
+//! | [`TzDb`] | [`TimeZoneFor`], [`SystemTimeZone`] | sync, and async through the lifts | TZif files through its capability's `View`; `TZ` through its `Var` |
+//! | [`Bundled`] (feature `bundled`) | [`TimeZoneFor`] | sync, and async through the lifts | nothing: the database is compiled in |
+//!
+//! The helpers also need `WallClock`, which every backend has: `Std`,
+//! `Tokio`, `Smol` and a `Sim`.
 //! The helpers read the wall clock through seam too: [`timestamp`],
 //! [`now_zoned`], [`now_in`] and [`now_local`], each in sync, `_async` and
 //! `_send` forms.
 //!
+//! # In tests
+//!
+//! A `Sim`'s files are the tz database, and its wall clock the time:
 //! ```
 //! use seam_core::effects as fx;
 //! use seam_jiff::{TzDb, now_in};
@@ -38,10 +50,49 @@
 //! assert_eq!(now.to_string(), "2023-11-14T23:13:20+01:00[Europe/Paris]");
 //! ```
 //!
+//! # In a program
+//!
+//! `TzDb` reads a few small files synchronously, so give it `Std`, which
+//! has a sync filesystem (Tokio's and smol's are async). The root then
+//! works the same in a sync program and under any executor:
+//!
+//! ```no_run
+//! use seam_core::effects as fx;
+//! use seam_jiff::{TzDb, effects as tz, now_in, now_local_send};
+//! use seam_std::Std;
+//!
+//! // The clock from std; the zones from the system's tz database, read
+//! // through std's filesystem.
+//! let root = seam_core::root![
+//!     Std<fx::WallClock>,
+//!     TzDb<tz::TimeZoneFor, tz::SystemTimeZone>::new(Std),
+//! ];
+//! println!("in Tokyo: {}", now_in(&root, "Asia/Tokyo")?);
+//!
+//! // The same root from async code, here under smol.
+//! let local = seam_smol::block_on(now_local_send(&root))?;
+//! println!("here: {local}");
+//! # Ok::<(), seam_core::io::Error>(())
+//! ```
+//!
+//! Through the `seam` crate, this crate is `seam::jiff` (feature `jiff`).
+//!
+//! # Features
+//!
+//! | Feature | Default | Gives |
+//! |---|---|---|
+//! | `bundled` | no | [`Bundled`], the tz database compiled in (from `jiff-tzdb`), for systems without one; add `seam-rs-jiff` with it alongside `seam` |
+//!
+//! # Keeping cores honest
 //! Cores should not call jiff's own `Zoned::now`, `Timestamp::now`,
 //! `TimeZone::system` or `TimeZone::get`, which reach the system directly;
 //! seam's `templates/clippy.toml` bans them. Built without jiff's default
 //! features, as here, jiff has no database of its own to find.
+//!
+#![cfg_attr(
+    not(feature = "bundled"),
+    doc = "[`Bundled`]: https://docs.rs/seam-rs-jiff/latest/seam_jiff/struct.Bundled.html"
+)]
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};

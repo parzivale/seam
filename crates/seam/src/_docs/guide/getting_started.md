@@ -6,8 +6,8 @@ a simulated one.
 ## Dependencies
 
 Pick the capability groups the core uses (`env`, `io-std`, ...), and
-separately the backends: `std` (or `tokio`) for the program, `test` for its
-tests. No capability group turns a backend on, so a library holding a core
+separately the backends: `std` for the program (with `tokio` or `smol`
+beside it if the core is async), `test` for its tests. No capability group turns a backend on, so a library holding a core
 depends on the groups alone.
 
 ```toml
@@ -78,7 +78,7 @@ fn main() -> seam::io::Result<()> {
 ```
 
 For an async program, write the core with the async traits and pass
-`seam::tokio::Tokio` (see [the async guide](crate::_docs::guide::async_and_concurrency)).
+`seam::tokio::Tokio` or `seam::smol::Smol` (see [the async guide](crate::_docs::guide::async_and_concurrency)).
 For a program that takes different effects from different backends, or
 has effects of its own, pass a [root](crate::_docs::guide::roots).
 

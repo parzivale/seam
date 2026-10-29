@@ -14,6 +14,30 @@
 //! println!("on {}", unix.inspect(Hostname).unwrap());
 //! unix.perform(Kill { pid: 4242, signal: signals::SIGTERM }).unwrap();
 //! ```
+//! # In a program
+//!
+//! [`Nix`] is sync: these calls return at once (a mount, at worst, after a
+//! moment), so the lifts make it async too, for any executor. In a root, it
+//! serves the keys of `seam_unix::effects` it is listed for, beside the
+//! backends for the rest:
+//!
+//! ```no_run
+//! use seam_core::effects as fx;
+//! use seam_core::prelude::*;
+//! use seam_std::Std;
+//! use seam_unix::{Chmod, effects as unix};
+//!
+//! let mut root = seam_core::root![
+//!     Std<fx::Var>,
+//!     seam_nix::Nix<unix::Chmod, unix::Hostname>,
+//! ];
+//! root.perform(Chmod::new("/srv/data/report.txt", 0o640))?;
+//! # Ok::<(), seam_core::io::Error>(())
+//! ```
+//!
+//! In tests, `seam_unix::SimUnix` takes its place, with the same keys.
+//!
+//! Through the `seam` crate, this crate is `seam::nix` (feature `nix`).
 #![forbid(unsafe_code)]
 
 /// Performs `seam-unix`'s operations with nix.

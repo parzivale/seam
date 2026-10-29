@@ -116,7 +116,7 @@ and only the binary (or its tests) picks a backend.
 | Capability group | Gives you |
 |---|---|
 | `time`, `random` | `Sleep`, `Now`, `FillRandom`, `random_u64`. No std needed. |
-| `rt` | `Spawn`, `SpawnSet`, `SpawnWith`, `Join`, `Detach`, `YieldNow`, `AvailableParallelism`. No std or alloc needed. On `std` the tasks are closures on OS threads; on Tokio and the simulated runtime, futures. |
+| `rt` | `Spawn`, `SpawnSet`, `SpawnWith`, `Join`, `Detach`, `YieldNow`, `AvailableParallelism`. No std or alloc needed. On `std` the tasks are closures on OS threads; on Tokio, smol, futures-rs' executors and the simulated runtime, futures. |
 | `sync` | Channels (`Channel`, `SendMsg`, `RecvMsg`, `try_send`, `try_recv`) and shared cells (`Share`, `Load`, `Update`, `store`). No std or alloc needed. Turns on `time`: the `try_` helpers are a timeout of zero. |
 | `alloc` | `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type; the helpers that return owned data (`read_to_end`, `read_file`, `resolve`, ...). Each has a primitive beneath it that fills a buffer you pass. |
 | `io`, `net`, `io-std`, `signal` | Those operation types. No std needed. |
@@ -139,6 +139,39 @@ and only the binary (or its tests) picks a backend.
 A backend implements exactly the capability groups that are enabled, so
 `features = ["tokio", "rt", "net", "time"]` gives you Tokio-backed
 networking and clocks and nothing else.
+
+## Backends
+
+A program picks one backend for what waits (or none, if it is sync) and
+puts `Std` beside it for the environment and randomness; the wrapper
+crates' handlers sit next to them in the same root.
+
+| Backend | Forms | Covers |
+|---|---|---|
+| `Std` (`seam::stdlib`) | sync, and async through the lifts (blocking) | the environment, arguments, randomness, clocks, files, the network, stdio, processes, threads, channels |
+| `Tokio` (`seam::tokio`) | async, `Send` | time, files, the network, stdio, processes, signals, tasks, channels |
+| `Smol` (`seam::smol`) | async, `Send` | time, files, the network, stdio, processes, Ctrl-C (Unix), tasks, channels |
+| `Futures`, `Executor` (`seam::futures`) | async, any executor | channels and locks that need no runtime, tasks on any futures-rs executor, futures-io adapters, `within` |
+| `Sim` (`seam::test`) | sync and async | the whole world, simulated: for tests |
+
+Every wrapper crate works with every backend:
+
+| Crate | Real handler | Forms | Needs in the root |
+|---|---|---|---|
+| `seam::jiff` | `TzDb` (`Bundled`) | sync; async through the lifts | `WallClock` (any backend); `TzDb` reads through `Std`'s filesystem |
+| `seam::rand` | none: an RNG over the capability | sync (`FillRandom` never waits, so async cores use it too) | `FillRandom` from `Std` |
+| `seam::uuid` | none: helpers | sync, async, `Send` | `FillRandom` from `Std`, and `WallClock` for v7 |
+| `seam::dirs` | none: helpers | all three | `Var` from `Std` |
+| `seam::tracing` | `Tracing` | sync; async through the lifts | nothing else |
+| `seam::notify` | `Notify` | sync; async without blocking, any executor | nothing else |
+| `seam::reqwest` | `Reqwest` | async, any executor (it brings its own Tokio runtime where there is none) | nothing else |
+| `seam::sqlx` | `Sqlx` | async: on Tokio, or on smol with `smol` on | nothing else |
+| `seam::rustix`, `seam::nix` | `Rustix`, `Nix` | sync; async through the lifts | nothing else |
+| `seam::ash` | `Ash` | sync and async from one implementation; any executor | nothing else |
+
+Each has its handler for tests too (`Scripted`, `Captured`, `Polling`
+over a `Sim`, `Sqlx::memory`, `SimUnix`, `SimGpu`), and each crate's docs
+show it in a program and in a test.
 
 ## Roots
 
@@ -170,8 +203,9 @@ A core asking for an effect the root does not list fails to compile: "the
 root `Parts<..>` has no part for `fx::Open<WriteOnly>`". `Open` is keyed by
 its mode, so a part can be granted reading without writing.
 
-Each backend covers only what it is for: Tokio has no environment or
-randomness, so a Tokio program takes those from `Std`. `Std` and `Tokio`
+Each backend covers only what it is for: Tokio and smol have no
+environment or randomness, so a Tokio or smol program takes those from
+`Std` (see [Backends](#backends)). `Std` and `Tokio`
 are zero-sized, and so is a root of them. `Std` only reads the
 environment; to change it (`SetVar`, `RemoveVar`), serve `fx::SetVar` and
 `fx::RemoveVar` with `seam_std::env::WritableEnv`, which is `unsafe` to

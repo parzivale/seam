@@ -62,6 +62,23 @@
 //! `Tokio` (or a root with it as a part) inside, as inside any
 //! runtime you already have.
 //!
+//! # With the other crates
+//!
+//! A program on Tokio takes what Tokio does not have from the other
+//! backends, in the same root, and the wrapper crates' handlers sit beside
+//! them:
+//!
+//! | For | Use |
+//! |---|---|
+//! | the environment, arguments, randomness | `seam-std`'s `Std` |
+//! | channels, locks and tasks on any executor, futures-io adapters, `within` | `seam-futures` |
+//! | time zones, UUIDs, platform directories | `seam-jiff`, `seam-uuid`, `seam-dirs`, over `Std` |
+//! | logging | `seam-tracing`'s `Tracing` |
+//! | file watching | `seam-notify`'s `Notify`, which waits without blocking under any executor |
+//! | HTTP | `seam-reqwest`'s `Reqwest` |
+//! | SQL | `seam-sqlx`'s `Sqlx` |
+//! | Unix calls | `seam-rustix`'s `Rustix` or `seam-nix`'s `Nix` |
+//! | the GPU | `seam-ash`'s `Ash`, which waits without blocking under any executor |
 //! # Tasks
 //!
 //! With `rt`, `Tokio` provides `Spawn` (a `task::JoinHandle`) and

@@ -123,6 +123,21 @@ bans each library's own direct calls.
 Each is on the latest release of its library: uuid 1.29, sqlx 0.9,
 reqwest 0.13 (rustls by default), nix 0.31, rustix 1.1.
 
+They work on every async backend, not only Tokio:
+
+- `Reqwest` runs under any executor: on the current Tokio runtime inside
+  one, and otherwise on a one-thread runtime of its own, started on first
+  use (`Reqwest::on` picks one; `Reqwest::with_client` takes a configured
+  client).
+- `Sqlx` runs on Tokio (feature `tokio`, default) or smol (feature `smol`;
+  the `seam` feature `smol` turns it on).
+- `Notify`'s async waits (`NextEvent`, `Timeout<NextEvent>`) do not block
+  the executor.
+
+The `seam` features `reqwest`, `sqlx` and `notify` bring in the real
+handlers (`Reqwest` with rustls, `Sqlx` with SQLite on Tokio, `Notify`),
+and `test` turns on the wrappers' world-file blocks.
+
 ### The GPU over Vulkan
 
 A new crate, `seam-ash` (`seam-rs-ash`, `seam::ash` with the `ash`
@@ -191,6 +206,11 @@ among others, and every dependency is on its newest release.
 - A `docs` feature adds `seam::_docs`: what seam is, usage guides, the
   world-file format and implementation notes. Off by default, so it costs
   nothing to build; docs.rs builds it.
+- Every wrapper crate's docs list its handlers (sync or async, under which
+  executors), what else a root needs for it, a program using it beside
+  real backends (compiled as a doctest) and its features. The README has
+  a Backends section: what each backend covers, and what each wrapper
+  needs, on every backend.
 
 ## 0.5.0
 

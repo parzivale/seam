@@ -47,6 +47,37 @@
 //! let refused = unix.perform(Mount::bind("/data", "/mnt"));
 //! assert_eq!(refused.unwrap_err().kind(), seam_core::io::ErrorKind::PermissionDenied);
 //! ```
+//! # Handlers
+//!
+//! | Handler | Crate | Use it for |
+//! |---|---|---|
+//! | `Rustix` | `seam-rustix` | a program, through rustix |
+//! | `Nix` | `seam-nix` | a program, through nix (the same operations; pick the crate the program already uses) |
+//! | [`SimUnix`] | this one | tests: permissions checked as Unix does, over a `Sim`'s filesystem |
+//!
+//! All are sync and return at once, so the lifts make them async for any
+//! executor. In a root, each serves the keys of [`effects`] it is listed for.
+//!
+//! With the `test` feature, `SimUnix` reads and writes a `unix` world-file
+//! block:
+//!
+//! ```text
+//! unix {
+//!     user uid=1000 gid=1000
+//!     hostname "box"
+//!     mount "/mnt" source="/data" fstype="ext4" flags="bind,rdonly"
+//!     mode "/etc/app" 420
+//! }
+//! ```
+//!
+//! Through the `seam` crate, this crate is `seam::unix` (feature `unix`;
+//! `rustix` and `nix` bring in the handlers).
+//!
+//! # Features
+//!
+//! | Feature | Default | Gives |
+//! |---|---|---|
+//! | `test` | no | `World` for [`SimUnix`]: the `unix` world-file block |
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};

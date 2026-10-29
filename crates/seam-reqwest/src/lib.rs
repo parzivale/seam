@@ -5,7 +5,10 @@
 //! and the edge decides where requests go:
 //!
 //! - [`Reqwest`] (feature `reqwest`, on by default): real requests, with a
-//!   `reqwest::Client`, from async code on a Tokio runtime.
+//!   `reqwest::Client`, from async code under any executor: Tokio, smol,
+//!   futures-rs'. Outside a Tokio runtime the requests run on one of this
+//!   crate's (reqwest needs Tokio), started on first use;
+//!   [`Reqwest::on`] picks the runtime.
 //! - [`Scripted`]: answers from responses and handlers a test sets per
 //!   method and URL, and records every request. With the `test` feature it
 //!   reads and writes an `http` world-file block.
@@ -13,6 +16,7 @@
 //! Helpers build the common requests: [`get`], [`get_text`] and [`post`],
 //! in sync, `_async` and `_send` forms (`Reqwest` is async only).
 //!
+//! # In tests
 //! ```
 //! use seam_reqwest::{Scripted, get_text};
 //!
@@ -28,6 +32,68 @@
 //! assert_eq!(latest_version(&mut http).unwrap(), "1.4.2");
 //! assert_eq!(http.requests()[0].uri, "https://example.com/version");
 //! ```
+//! A world file (feature `test`) sets the routes, and records the requests
+//! for `check_world` to check:
+//!
+//! ```text
+//! http {
+//!     route "GET" "https://example.com/version" status=200 body="1.4.2\n"
+//! }
+//! ```
+//!
+//! # In a program
+//!
+//! `Reqwest` is async only, so the core is async: the `_async` and `_send`
+//! helpers, or `perform_send(Fetch(..))` for any request.
+//!
+//! ```no_run
+//! use seam_core::io;
+//! use seam_reqwest::{Fetch, Reqwest, get_text_send};
+//!
+//! /// The core.
+//! async fn latest_version<C>(c: &mut C) -> io::Result<String>
+//! where
+//!     C: seam_core::future::SendPerform<Fetch> + Send,
+//! {
+//!     Ok(get_text_send(c, "https://example.com/version").await?.trim().to_owned())
+//! }
+//!
+//! // Under Tokio...
+//! let mut http = Reqwest::new();
+//! println!("{}", seam_tokio::block_on(latest_version(&mut http))?);
+//! // ...or under smol, the same handler.
+//! println!("{}", seam_smol::block_on(latest_version(&mut http))?);
+//! # Ok::<(), io::Error>(())
+//! ```
+//!
+//! A configured client (timeouts, proxies, headers) goes in with
+//! [`Reqwest::with_client`]. In a root, `Reqwest` routes
+//! [`effects::Fetch`].
+//!
+//! Through the `seam` crate, this crate is `seam::reqwest` (feature
+//! `reqwest`, which brings in [`Reqwest`] with rustls; with `test`, the
+//! `http` block).
+//!
+//! # Features
+//!
+//! | Feature | Default | Gives |
+//! |---|---|---|
+//! | `reqwest` | yes | [`Reqwest`] |
+//! | `rustls` | yes | HTTPS for `Reqwest`, with rustls |
+//! | `test` | no | `World` for [`Scripted`]: the `http` world-file block |
+//!
+#![cfg_attr(
+    not(feature = "reqwest"),
+    doc = "[`Reqwest`]: https://docs.rs/seam-rs-reqwest/latest/seam_reqwest/struct.Reqwest.html"
+)]
+#![cfg_attr(
+    not(feature = "reqwest"),
+    doc = "[`Reqwest::on`]: https://docs.rs/seam-rs-reqwest/latest/seam_reqwest/struct.Reqwest.html#method.on"
+)]
+#![cfg_attr(
+    not(feature = "reqwest"),
+    doc = "[`Reqwest::with_client`]: https://docs.rs/seam-rs-reqwest/latest/seam_reqwest/struct.Reqwest.html#method.with_client"
+)]
 #![forbid(unsafe_code)]
 
 use std::boxed::Box;

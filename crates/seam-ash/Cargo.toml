@@ -21,6 +21,7 @@ ash = { workspace = true, features = ["std", "loaded", "debug"], optional = true
 rustix = { workspace = true, features = ["std", "event", "fs"], optional = true }
 
 [dev-dependencies]
+seam-smol = { workspace = true }
 naga = { workspace = true, features = ["wgsl-in", "spv-out"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 

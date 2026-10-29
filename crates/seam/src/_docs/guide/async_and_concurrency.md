@@ -5,7 +5,7 @@
 An async core uses the async forms of the capability traits:
 `AsyncInspect` and `AsyncPerform`, with `inspect_async` and
 `perform_async`. Every sync capability is also an async one, so the same
-core runs on Tokio, and on `Std` or `Sim` through
+core runs on Tokio or smol, and on `Std` or `Sim` through
 [`block_on`](crate::future::block_on):
 
 ```rust
@@ -66,6 +66,15 @@ fn main() {
 Tokio covers what waits (time, files, the network, stdio, processes,
 signals, tasks, channels) but has no environment or randomness; a Tokio
 program takes those from `Std` in the same [root](crate::_docs::guide::roots).
+smol (`seam::smol::Smol`, run with `seam::smol::block_on`) covers the
+same, with Ctrl-C for signals, and pairs with `Std` the same way.
+futures-rs (`seam::futures`) adds what needs no runtime at all: channels
+and locks, tasks on any futures-rs executor, and `within` to race a
+future against a backend's clock.
+
+The wrapper crates' async handlers (`Reqwest`, `Sqlx`, `Notify`, `Ash`)
+work under any of them; see the [README](https://github.com/parzivale/seam#backends)
+for what each needs.
 
 A sync operation raised to async still blocks: a `Std` file read inside an
 async core blocks the runtime's thread. That is sometimes what a program
@@ -76,8 +85,8 @@ documented rather than prevented.
 
 Spawning is an acquisition. The scope gets a handle to the task, and
 waits for it if it succeeds or aborts it if not. Tasks are `'static`, so
-each takes its own clone of the capability (`Std`, `Tokio` and roots of
-them are `Copy`; the simulated capabilities are `Clone`).
+each takes its own clone of the capability (`Std`, `Tokio`, `Smol` and
+roots of them are `Copy`; the simulated capabilities are `Clone`).
 
 ## Testing concurrent async cores
 

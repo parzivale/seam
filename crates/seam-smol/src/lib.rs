@@ -32,6 +32,23 @@
 //! # }
 //! ```
 //!
+//! # With the other crates
+//!
+//! A program on smol takes what smol does not have from the other
+//! backends, in the same root, and the wrapper crates' handlers sit beside
+//! them:
+//!
+//! | For | Use |
+//! |---|---|
+//! | the environment, arguments, randomness | `seam-std`'s `Std` |
+//! | channels, locks and tasks on any executor, futures-io adapters, `within` | `seam-futures` |
+//! | time zones, UUIDs, platform directories | `seam-jiff`, `seam-uuid`, `seam-dirs`, over `Std` |
+//! | logging | `seam-tracing`'s `Tracing` |
+//! | file watching | `seam-notify`'s `Notify`, which waits without blocking under any executor |
+//! | HTTP | `seam-reqwest`'s `Reqwest`, which runs its requests on a Tokio runtime of its own (reqwest needs one) |
+//! | SQL | `seam-sqlx`'s `Sqlx`, with its `smol` feature |
+//! | Unix calls | `seam-rustix`'s `Rustix` or `seam-nix`'s `Nix` |
+//! | the GPU | `seam-ash`'s `Ash`, which waits without blocking under any executor |
 //! # Runtime
 //!
 //! smol needs no runtime object: [`block_on`] runs a future on the current
@@ -46,6 +63,21 @@
 //! a stream's write half is shut down; when it fails, panics or is
 //! cancelled, they are dropped. `Split` lends a stream as two clones of it
 //! (smol's streams are shared handles), so a failed split loses nothing.
+//! # Features
+//!
+//! | Feature | Gives |
+//! |---|---|
+//! | `time` | `Now`, `WallClock`, `Sleep`; and `Timeout` on the waiting operations |
+//! | `fs` | files and directories, on smol's blocking pool |
+//! | `net` | TCP, UDP, name resolution |
+//! | `process` | child processes |
+//! | `io-std` | stdin, stdout, stderr |
+//! | `signal` | Ctrl-C, on Unix |
+//! | `sync` | channels and shared cells |
+//! | `rt` | `Spawn`, `SpawnSet` and friends, on smol's global executor |
+//! | `full` | all of the above |
+//!
+//! None is on by default.
 #![forbid(unsafe_code)]
 
 use core::future::Future;

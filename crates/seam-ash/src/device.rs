@@ -40,8 +40,8 @@ use crate::validate::{self, Lookup};
 use crate::{
     AttrFormat, Bind, BindingKind, Blend, Buffer, BufferUsage, CopyBuffer, CreateBuffer,
     CreateImage, CreateProgram, DeviceInfo, Dispatch, Download, DownloadImage, Draw, Finish,
-    Format, GpuError, GpuInfo, GpuKind, Image, ImageUsage, IsDone, Program, ProgramKind, ResInfo,
-    Submit, Upload, UploadImage,
+    Format, GpuError, GpuInfo, GpuKind, Image, ImageUsage, Import, IsDone, Program, ProgramKind,
+    ResInfo, Submit, Upload, UploadImage,
 };
 
 /// How [`Ash::with`] sets Vulkan up.
@@ -211,12 +211,29 @@ enum Kind {
         memory: vk::DeviceMemory,
         view: vk::ImageView,
         layout: vk::ImageLayout,
+        foreign: Foreign,
     },
     Program {
         pipeline: vk::Pipeline,
         layout: vk::PipelineLayout,
         set_layout: vk::DescriptorSetLayout,
     },
+}
+
+/// Whether an image's memory belongs to something outside this device (an
+/// import), which Vulkan has hand over by a queue family ownership
+/// transfer: acquired before the first use, released before the owner gets
+/// it back.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(any(drm, windows)), allow(dead_code))]
+enum Foreign {
+    /// Ours alone.
+    No,
+    /// Imported from this queue family (`QUEUE_FAMILY_FOREIGN_EXT` or
+    /// `QUEUE_FAMILY_EXTERNAL`), not yet acquired.
+    Acquire(u32),
+    /// Acquired from this family; released back to it when the scope ends.
+    Held(u32),
 }
 
 /// What has happened to a resource since its last write, for barriers.
@@ -280,6 +297,47 @@ struct Pending {
     staging: Option<Staging>,
 }
 
+/// Optional device extensions, on where the device has them.
+#[derive(Default)]
+#[allow(clippy::struct_excessive_bools)]
+struct Extensions {
+    /// `VK_KHR_external_memory_fd` and `VK_EXT_external_memory_dma_buf`.
+    #[cfg(drm)]
+    dmabuf: Option<ash::khr::external_memory_fd::Device>,
+    /// `VK_EXT_image_drm_format_modifier`: dmabufs imported as images,
+    /// without a copy.
+    #[cfg(drm)]
+    modifiers: bool,
+    /// `VK_EXT_queue_family_foreign`.
+    #[cfg(drm)]
+    foreign: bool,
+    /// `VK_KHR_external_memory_win32`.
+    #[cfg(windows)]
+    win32: Option<ash::khr::external_memory_win32::Device>,
+    /// `VK_EXT_metal_objects`.
+    #[cfg(target_vendor = "apple")]
+    metal: bool,
+}
+
+/// The optional device extensions wanted, by name, for this platform.
+fn wanted_extensions() -> Vec<&'static core::ffi::CStr> {
+    // A portability implementation (MoltenVK) must have this turned on.
+    #[allow(unused_mut)]
+    let mut names = std::vec![vk::KHR_PORTABILITY_SUBSET_NAME];
+    #[cfg(drm)]
+    names.extend([
+        vk::KHR_EXTERNAL_MEMORY_FD_NAME,
+        vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME,
+        vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_NAME,
+        vk::EXT_QUEUE_FAMILY_FOREIGN_NAME,
+    ]);
+    #[cfg(windows)]
+    names.push(vk::KHR_EXTERNAL_MEMORY_WIN32_NAME);
+    #[cfg(target_vendor = "apple")]
+    names.push(vk::EXT_METAL_OBJECTS_NAME);
+    names
+}
+
 /// How many descriptor sets one pool holds.
 const SETS_PER_POOL: u32 = 64;
 
@@ -293,6 +351,10 @@ struct Dev {
     physical: vk::PhysicalDevice,
     device: ash::Device,
     queue: vk::Queue,
+    /// The queue's family, for ownership transfers.
+    family: u32,
+    /// The optional extensions turned on, for imports.
+    ext: Extensions,
     mem: vk::PhysicalDeviceMemoryProperties,
     pool: vk::CommandPool,
     sampler: vk::Sampler,
@@ -441,6 +503,18 @@ impl Dev {
             extensions.push(vk::EXT_DEBUG_UTILS_NAME.as_ptr());
             extensions.push(vk::EXT_VALIDATION_FEATURES_NAME.as_ptr());
         }
+        // SAFETY: a plain query.
+        let instance_extensions =
+            unsafe { entry.enumerate_instance_extension_properties(None) }.map_err(vk_error)?;
+        // Lists portability implementations (MoltenVK) too, where the
+        // loader has them.
+        let portability = instance_extensions.iter().any(|e| {
+            e.extension_name_as_c_str()
+                .is_ok_and(|n| n == vk::KHR_PORTABILITY_ENUMERATION_NAME)
+        });
+        if portability {
+            extensions.push(vk::KHR_PORTABILITY_ENUMERATION_NAME.as_ptr());
+        }
         let app = vk::ApplicationInfo::default()
             .application_name(c"seam")
             .api_version(vk::API_VERSION_1_3);
@@ -451,6 +525,9 @@ impl Dev {
             .application_info(&app)
             .enabled_layer_names(&layers)
             .enabled_extension_names(&extensions);
+        if portability {
+            create = create.flags(vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR);
+        }
         if options.validation {
             create = create.push_next(&mut features);
         }
@@ -513,8 +590,21 @@ impl Dev {
         let mut f13 = vk::PhysicalDeviceVulkan13Features::default()
             .dynamic_rendering(true)
             .synchronization2(true);
+        // SAFETY: a plain query.
+        let available =
+            unsafe { instance.enumerate_device_extension_properties(physical) }.unwrap_or_default();
+        let has = |name: &core::ffi::CStr| {
+            available
+                .iter()
+                .any(|e| e.extension_name_as_c_str().is_ok_and(|n| n == name))
+        };
+        let enabled: Vec<&core::ffi::CStr> =
+            wanted_extensions().into_iter().filter(|n| has(n)).collect();
+        let enabled_ptrs: Vec<*const core::ffi::c_char> =
+            enabled.iter().map(|n| n.as_ptr()).collect();
         let device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queues)
+            .enabled_extension_names(&enabled_ptrs)
             .push_next(&mut f13);
         // SAFETY: `physical` came from this instance, and supports the
         // features requested (checked in `pick`).
@@ -527,6 +617,30 @@ impl Dev {
         };
         // SAFETY: queue 0 of the family was requested above.
         let queue = unsafe { device.get_device_queue(family, 0) };
+        let on = |name: &core::ffi::CStr| enabled.contains(&name);
+        #[allow(unused_mut)]
+        let mut ext = Extensions::default();
+        #[cfg(drm)]
+        {
+            if on(vk::KHR_EXTERNAL_MEMORY_FD_NAME) && on(vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME) {
+                ext.dmabuf = Some(ash::khr::external_memory_fd::Device::new(
+                    &instance, &device,
+                ));
+            }
+            ext.modifiers = on(vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_NAME);
+            ext.foreign = on(vk::EXT_QUEUE_FAMILY_FOREIGN_NAME);
+        }
+        #[cfg(windows)]
+        if on(vk::KHR_EXTERNAL_MEMORY_WIN32_NAME) {
+            ext.win32 = Some(ash::khr::external_memory_win32::Device::new(
+                &instance, &device,
+            ));
+        }
+        #[cfg(target_vendor = "apple")]
+        {
+            ext.metal = on(vk::EXT_METAL_OBJECTS_NAME);
+        }
+        let _ = on;
         // SAFETY: plain queries and creations on the new device.
         let (mem, pool, sampler) = unsafe {
             let mem = instance.get_physical_device_memory_properties(physical);
@@ -571,6 +685,8 @@ impl Dev {
             physical,
             device,
             queue,
+            family,
+            ext,
             mem,
             pool,
             sampler,
@@ -826,6 +942,7 @@ impl Dev {
         }
         let mut buffer_barriers = Vec::new();
         let mut image_barriers = Vec::new();
+        let family = self.family;
         for u in &merged {
             let res = self.res.get_mut(&u.id).expect("validated");
             res.last_use = seq;
@@ -833,10 +950,25 @@ impl Dev {
             let prior_stage = t.write.map_or(vk::PipelineStageFlags2::NONE, |w| w.0) | t.reads;
             let prior_access = t.write.map_or(vk::AccessFlags2::NONE, |w| w.1);
             match &mut res.kind {
-                Kind::Image { image, layout, .. } => {
+                Kind::Image {
+                    image,
+                    layout,
+                    foreign,
+                    ..
+                } => {
                     let want = u.layout.expect("an image use names its layout");
+                    // An import's first use takes it over from its owner.
+                    let (src_family, dst_family) = match *foreign {
+                        Foreign::Acquire(from) => {
+                            *foreign = Foreign::Held(from);
+                            (from, family)
+                        }
+                        _ => (vk::QUEUE_FAMILY_IGNORED, vk::QUEUE_FAMILY_IGNORED),
+                    };
+                    let acquire = src_family != vk::QUEUE_FAMILY_IGNORED;
                     let transition = *layout != want;
-                    let needed = transition
+                    let needed = acquire
+                        || transition
                         || u.write && (t.write.is_some() || !t.reads.is_empty())
                         || !u.write && t.write.is_some() && !t.visible.contains(u.stage);
                     if needed {
@@ -848,8 +980,8 @@ impl Dev {
                                 .dst_access_mask(u.access)
                                 .old_layout(*layout)
                                 .new_layout(want)
-                                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                .src_queue_family_index(src_family)
+                                .dst_queue_family_index(dst_family)
                                 .image(*image)
                                 .subresource_range(COLOR),
                         );
@@ -1212,10 +1344,35 @@ impl Dev {
     }
 
     fn create_image(&mut self, op: CreateImage) -> Result<Image, GpuError> {
-        validate::create_image(&op)?;
-        self.retire();
-        let format = vk_format(op.format);
-        let mut usage = vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST;
+        self.create_image_as(op, false)
+    }
+
+    /// A view of all of `image`; `opaque` reads alpha as 1 (for formats
+    /// with an unused alpha), where the view is only sampled.
+    fn view(
+        &self,
+        image: vk::Image,
+        format: vk::Format,
+        usage: ImageUsage,
+        opaque: bool,
+    ) -> Result<vk::ImageView, GpuError> {
+        let mut components = vk::ComponentMapping::default();
+        if opaque && usage == ImageUsage::SAMPLED {
+            components.a = vk::ComponentSwizzle::ONE;
+        }
+        let info = vk::ImageViewCreateInfo::default()
+            .image(image)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(format)
+            .components(components)
+            .subresource_range(COLOR);
+        // SAFETY: a live image, created with this format.
+        unsafe { self.device.create_image_view(&info, None) }.map_err(vk_error)
+    }
+
+    /// The image usage and format features for `usage`.
+    fn image_usage(usage: ImageUsage) -> (vk::ImageUsageFlags, vk::FormatFeatureFlags) {
+        let mut flags = vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST;
         let mut features =
             vk::FormatFeatureFlags::TRANSFER_SRC | vk::FormatFeatureFlags::TRANSFER_DST;
         for (ours, theirs, feature) in [
@@ -1235,11 +1392,19 @@ impl Dev {
                 vk::FormatFeatureFlags::STORAGE_IMAGE,
             ),
         ] {
-            if op.usage.contains(ours) {
-                usage |= theirs;
+            if usage.contains(ours) {
+                flags |= theirs;
                 features |= feature;
             }
         }
+        (flags, features)
+    }
+
+    fn create_image_as(&mut self, op: CreateImage, opaque: bool) -> Result<Image, GpuError> {
+        validate::create_image(&op)?;
+        self.retire();
+        let format = vk_format(op.format);
+        let (usage, features) = Self::image_usage(op.usage);
         // SAFETY: a plain query.
         let props = unsafe {
             self.instance
@@ -1287,17 +1452,12 @@ impl Dev {
                 self.device.free_memory(memory, None);
                 return Err(vk_error(e));
             }
-            let view_info = vk::ImageViewCreateInfo::default()
-                .image(image)
-                .view_type(vk::ImageViewType::TYPE_2D)
-                .format(format)
-                .subresource_range(COLOR);
-            match self.device.create_image_view(&view_info, None) {
+            match self.view(image, format, op.usage, opaque) {
                 Ok(v) => (image, memory, v),
                 Err(e) => {
                     self.device.destroy_image(image, None);
                     self.device.free_memory(memory, None);
-                    return Err(vk_error(e));
+                    return Err(e);
                 }
             }
         };
@@ -1313,6 +1473,7 @@ impl Dev {
                 memory,
                 view,
                 layout: vk::ImageLayout::UNDEFINED,
+                foreign: Foreign::No,
             },
         );
         Ok(Image(id))
@@ -2213,22 +2374,22 @@ impl Drop for InProgress<'_> {
 /// Implements an operation that never waits, in every form, from one sync
 /// body run under the lock.
 macro_rules! now {
-    ($([$($l:lifetime)?] $op:ty => $out:ty, |$dev:ident, $o:pat_param| $body:expr;)*) => {$(
-        impl<$($l)?> Perform<$op> for Ash {
+    ($([$($l:lifetime),*] $op:ty => $out:ty, |$dev:ident, $o:pat_param| $body:expr;)*) => {$(
+        impl<$($l),*> Perform<$op> for Ash {
             fn perform(&mut self, $o: $op) -> $out {
                 let $dev = &mut *self.dev();
                 $body
             }
         }
 
-        impl<$($l)?> seam_core::future::AsyncPerform<$op> for Ash {
+        impl<$($l),*> seam_core::future::AsyncPerform<$op> for Ash {
             async fn perform_async(&mut self, $o: $op) -> $out {
                 let $dev = &mut *self.dev();
                 $body
             }
         }
 
-        impl<$($l)?> seam_core::future::SendPerform<$op> for Ash {
+        impl<$($l),*> seam_core::future::SendPerform<$op> for Ash {
             async fn perform_send(&mut self, $o: $op) -> $out {
                 let $dev = &mut *self.dev();
                 $body
@@ -2682,3 +2843,6 @@ impl seam_core::future::SendInspect<DeviceInfo> for Ash {
         self.shared.info.clone()
     }
 }
+
+// After `now!`, which it uses.
+mod import;

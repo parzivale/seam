@@ -11,8 +11,8 @@ use seam_core::{Closing, Inspect, Opening, Perform};
 use crate::validate::{self, Lookup};
 use crate::{
     Bind, Buffer, CopyBuffer, CreateBuffer, CreateImage, CreateProgram, DeviceInfo, Dispatch,
-    Download, DownloadImage, Draw, Finish, Format, GpuError, GpuInfo, GpuKind, Image, IsDone,
-    Program, ProgramKind, ResInfo, Submit, Upload, UploadImage,
+    Download, DownloadImage, Draw, Finish, Format, GpuError, GpuInfo, GpuKind, Image, Import,
+    IsDone, Program, ProgramKind, ResInfo, Submit, Upload, UploadImage,
 };
 
 /// What [`SimGpu`] was asked to do, in order: for tests to assert on.
@@ -22,6 +22,8 @@ pub enum Recorded {
     CreateBuffer(Buffer),
     /// An image was created.
     CreateImage(Image),
+    /// An image was imported.
+    Import(Image),
     /// A program was created, with its label.
     CreateProgram(Program, String),
     /// A resource's scope closed.
@@ -413,6 +415,88 @@ closing! {
     CreateBuffer => Buffer;
     CreateImage => Image;
     CreateProgram<'_> => Program;
+}
+
+impl<B> Perform<Closing<Import<B>>> for SimGpu {
+    fn perform(&mut self, Closing(image, _): Closing<Import<B>>) -> Result<(), GpuError> {
+        let mut state = self.lock();
+        state.res.remove(&image.raw());
+        state.log.push(Recorded::Destroy(image.raw()));
+        Ok(())
+    }
+}
+
+/// Dmabufs, read through their descriptors: so a test's fake dmabufs are
+/// memfds (or files) holding linear pixels. Real dmabufs cannot be read so,
+/// and fail to import.
+#[cfg(drm)]
+mod dmabuf {
+    use std::os::unix::fs::FileExt;
+
+    use super::*;
+    use crate::drm::{Dmabuf, DmabufFormat, DmabufFormats, Fourcc, Modifier};
+    use crate::invalid;
+
+    impl<'a> Perform<Opening<Import<&'a Dmabuf>>> for SimGpu {
+        fn perform(
+            &mut self,
+            Opening(op, _): Opening<Import<&'a Dmabuf>>,
+        ) -> Result<Image, GpuError> {
+            let buf = op.source;
+            validate::dmabuf(buf, op.usage)?;
+            if buf.modifier != Modifier::LINEAR {
+                return Err(GpuError::Unsupported(format!(
+                    "{:?} dmabufs with modifier {:#x} on the simulated GPU; see DmabufFormats",
+                    buf.format, buf.modifier.0
+                )));
+            }
+            let (format, opaque) = buf.format.format().expect("validated");
+            let plane = &buf.planes[0];
+            let file = plane
+                .fd
+                .try_clone()
+                .map(std::fs::File::from)
+                .map_err(|e| invalid(format!("the dmabuf's descriptor: {e}")))?;
+            let bpp = format.bytes_per_pixel() as usize;
+            let row = buf.width as usize * bpp;
+            let mut pixels = std::vec![0; row * buf.height as usize];
+            for (y, out) in pixels.chunks_exact_mut(row).enumerate() {
+                let at = u64::from(plane.offset) + y as u64 * u64::from(plane.stride);
+                file.read_exact_at(out, at)
+                    .map_err(|e| invalid(format!("reading the dmabuf's row {y}: {e}")))?;
+            }
+            if opaque {
+                // The unused alpha reads as 1, as on a GPU.
+                let one: &[u8] = if bpp == 8 { &[0x00, 0x3c] } else { &[0xff] };
+                for px in pixels.chunks_exact_mut(bpp) {
+                    px[bpp - one.len()..].copy_from_slice(one);
+                }
+            }
+            let mut state = self.lock();
+            let info = ResInfo::Image {
+                width: buf.width,
+                height: buf.height,
+                format,
+                usage: op.usage,
+            };
+            let id = state.add(info, 0);
+            *state.data(id) = pixels;
+            state.log.push(Recorded::Import(Image(id)));
+            Ok(Image(id))
+        }
+    }
+
+    impl Inspect<DmabufFormats> for SimGpu {
+        fn inspect(&self, _: DmabufFormats) -> Result<Vec<DmabufFormat>, GpuError> {
+            Ok(Fourcc::SUPPORTED
+                .into_iter()
+                .map(|fourcc| DmabufFormat {
+                    fourcc,
+                    modifier: Modifier::LINEAR,
+                })
+                .collect())
+        }
+    }
 }
 
 impl Perform<Upload<'_>> for SimGpu {

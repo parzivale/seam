@@ -16,17 +16,26 @@ seam-core = { workspace = true, features = ["std"] }
 # Vulkan SDK.
 ash = { workspace = true, features = ["std", "loaded", "debug"], optional = true }
 
+[target.'cfg(unix)'.dependencies]
+# Waiting on a dmabuf's implicit fences (`poll`), and its size.
+rustix = { workspace = true, features = ["std", "event", "fs"], optional = true }
+
 [dev-dependencies]
 naga = { workspace = true, features = ["wgsl-in", "spv-out"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 
+[target.'cfg(unix)'.dev-dependencies]
+# memfds as fake dmabufs.
+rustix = { workspace = true, features = ["std", "fs"] }
+
 [features]
 default = ["ash"]
 # `Ash`: real Vulkan, through ash.
-ash = ["dep:ash"]
+ash = ["dep:ash", "dep:rustix"]
 
 [package.metadata.docs.rs]
 all-features = true
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "x86_64-apple-darwin"]
 
 [lib]
 name = "seam_ash"

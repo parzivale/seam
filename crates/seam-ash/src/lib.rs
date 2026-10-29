@@ -15,7 +15,12 @@
 //!   the work before them; nothing else does.
 //! - **Submitting without waiting**: [`Submit`] is a scope that sends the
 //!   work so far to the GPU and lends a submission: [`IsDone`] says
-//!   whether it has finished, and closing the scope waits for it. So the CPU does other work while the GPU runs.
+//!   whether it has finished, and closing the scope waits for it. So the
+//!   CPU does other work while the GPU runs.
+//! - **Images from elsewhere**: [`Import`] lends a Wayland client's
+//!   dmabuf ([`drm`], Linux and the BSDs), a shared Direct3D texture
+//!   ([`win32`], Windows) or an IOSurface ([`metal`], Apple systems) as an
+//!   [`Image`], without a copy on the CPU.
 //!
 //! Synchronization is the handler's business: it tracks what each step
 //! reads and writes, and inserts the barriers and image layout changes
@@ -80,7 +85,19 @@
     doc = "[`Ash`]: https://docs.rs/seam-rs-ash/latest/seam_ash/struct.Ash.html\n\
            [`AshOptions`]: https://docs.rs/seam-rs-ash/latest/seam_ash/struct.AshOptions.html"
 )]
-#![cfg_attr(not(feature = "ash"), forbid(unsafe_code))]
+#![cfg_attr(
+    not(drm),
+    doc = "[`drm`]: https://docs.rs/seam-rs-ash/latest/seam_ash/drm/index.html"
+)]
+#![cfg_attr(
+    not(windows),
+    doc = "[`win32`]: https://docs.rs/seam-rs-ash/latest/x86_64-pc-windows-msvc/seam_ash/win32/index.html"
+)]
+#![cfg_attr(
+    not(target_vendor = "apple"),
+    doc = "[`metal`]: https://docs.rs/seam-rs-ash/latest/x86_64-apple-darwin/seam_ash/metal/index.html"
+)]
+#![cfg_attr(not(feature = "ash"), deny(unsafe_code))]
 
 use std::string::String;
 use std::vec::Vec;
@@ -92,6 +109,13 @@ use seam_core::{Acquisition, Effect, Operation, Query};
 mod device;
 mod sim;
 mod validate;
+
+#[cfg(drm)]
+pub mod drm;
+#[cfg(target_vendor = "apple")]
+pub mod metal;
+#[cfg(windows)]
+pub mod win32;
 
 #[cfg(feature = "ash")]
 pub use device::{Ash, AshOptions, Submission};
@@ -655,6 +679,57 @@ impl<S> Acquisition for Submit<S> {
     type Error = GpuError;
 }
 
+/// Use an image that lives outside this handler (a Wayland client's
+/// buffer, a texture another API shares) for a scope, without copying it
+/// on the CPU, lending it as an [`Image`] like [`CreateImage`] does.
+///
+/// `B` describes it, by platform: [`drm::Dmabuf`] on Linux and the BSDs,
+/// [`win32::SharedHandle`] on Windows, [`metal::IoSurface`] on Apple
+/// systems; a handler implements `Import<&B>` for the kinds it takes.
+/// How it gets the image onto the GPU is the handler's business.
+///
+/// Opening waits until whoever writes the image has finished, where the
+/// platform says (a dmabuf's implicit fences); closing waits until the GPU
+/// no longer uses it, after which its owner may change or reuse it (for a
+/// Wayland client, release the buffer).
+///
+#[cfg_attr(
+    not(drm),
+    doc = "[`drm::Dmabuf`]: https://docs.rs/seam-rs-ash/latest/seam_ash/drm/struct.Dmabuf.html"
+)]
+#[cfg_attr(
+    not(windows),
+    doc = "[`win32::SharedHandle`]: https://docs.rs/seam-rs-ash/latest/x86_64-pc-windows-msvc/seam_ash/win32/struct.SharedHandle.html"
+)]
+#[cfg_attr(
+    not(target_vendor = "apple"),
+    doc = "[`metal::IoSurface`]: https://docs.rs/seam-rs-ash/latest/x86_64-apple-darwin/seam_ash/metal/struct.IoSurface.html"
+)]
+#[derive(Debug, Clone, Copy)]
+pub struct Import<B> {
+    /// What to import.
+    pub source: B,
+    /// What it is for: [`ImageUsage::SAMPLED`] unless set.
+    pub usage: ImageUsage,
+}
+
+impl<B> Import<B> {
+    /// Describes importing `source`, to sample.
+    pub const fn new(source: B) -> Self {
+        Self {
+            source,
+            usage: ImageUsage::SAMPLED,
+        }
+    }
+
+    /// Sets what it is for.
+    #[must_use]
+    pub const fn usage(mut self, usage: ImageUsage) -> Self {
+        self.usage = usage;
+        self
+    }
+}
+
 /// Whether a submission's work has finished, without waiting. Inspected on
 /// the submission.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -767,6 +842,15 @@ impl<S> Effect for Submit<S> {
     type Key = effects::Submit;
 }
 
+impl<B> Acquisition for Import<B> {
+    type Resource = Image;
+    type Error = GpuError;
+}
+
+impl<B> Effect for Import<B> {
+    type Key = effects::Import;
+}
+
 impl Acquisition for CreateProgram<'_> {
     type Resource = Program;
     type Error = GpuError;
@@ -794,8 +878,13 @@ pub mod effects {
         DownloadImage,
         Finish,
         DeviceInfo,
-        Submit
+        Submit,
+        Import
     );
+    /// Routes [`DmabufFormats`](crate::drm::DmabufFormats).
+    #[cfg(drm)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct DmabufFormats;
 }
 
 macro_rules! keyed {

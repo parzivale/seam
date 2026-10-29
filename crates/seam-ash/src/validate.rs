@@ -264,3 +264,37 @@ pub(crate) fn draw(l: &impl Lookup, op: &Draw<'_>) -> Result<(), GpuError> {
     }
     bindings(l, &p, op.bindings, op.push)
 }
+
+/// A dmabuf to import: a format this crate reads, one plane, and rows at
+/// least an image's width apart, a whole number of pixels.
+#[cfg(drm)]
+pub(crate) fn dmabuf(buf: &crate::drm::Dmabuf, usage: ImageUsage) -> Result<(), GpuError> {
+    let Some((format, _)) = buf.format.format() else {
+        return Err(GpuError::Unsupported(format!(
+            "dmabufs in {:?}; see Fourcc::SUPPORTED",
+            buf.format
+        )));
+    };
+    create_image(&CreateImage::new(buf.width, buf.height, format, usage))?;
+    let [plane] = buf.planes.as_slice() else {
+        return Err(GpuError::Invalid(format!(
+            "a {:?} dmabuf has one plane, not {}",
+            buf.format,
+            buf.planes.len()
+        )));
+    };
+    let bpp = format.bytes_per_pixel();
+    if u64::from(plane.stride) < u64::from(buf.width) * u64::from(bpp) {
+        return Err(GpuError::Invalid(format!(
+            "a dmabuf's stride of {} is shorter than a row of {} pixels",
+            plane.stride, buf.width
+        )));
+    }
+    if !plane.stride.is_multiple_of(bpp) {
+        return Err(GpuError::Invalid(format!(
+            "a dmabuf's stride of {} is not a whole number of {bpp}-byte pixels",
+            plane.stride
+        )));
+    }
+    Ok(())
+}

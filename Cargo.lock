@@ -1849,6 +1849,7 @@ version = "0.6.0"
 dependencies = [
  "ash",
  "naga",
+ "rustix",
  "seam-rs-core",
  "tokio",
 ]

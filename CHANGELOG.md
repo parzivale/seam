@@ -137,6 +137,20 @@ feature), makes the GPU effects:
   downloads and `Finish` wait.
 - `Submit`: a scope that sends the work so far without waiting, lending a
   submission to inspect `IsDone` on; closing the scope is the wait.
+- `Import<B>`: an image from outside the handler, lent as an `Image`
+  without a CPU copy. The source is per platform: `drm::Dmabuf` (Linux
+  and the BSDs: a Wayland client's or GBM's buffer, by fd, fourcc and
+  modifier), `win32::SharedHandle` (Windows: a Direct3D 11 or 12 texture,
+  or Vulkan memory, by NT handle) and `metal::IoSurface` (Apple systems,
+  through MoltenVK). Opening waits for a dmabuf's writers (its implicit
+  fences, by `poll`); closing hands the memory back to its owner and
+  waits until the GPU is done with it, so a Wayland client's buffer can be
+  released once the scope has closed. `drm::DmabufFormats` lists the
+  format and modifier pairs a GPU imports, for linux-dmabuf feedback.
+  `Ash` imports a dmabuf as the image itself where the device has
+  `VK_EXT_image_drm_format_modifier`, and otherwise copies a linear one
+  into an image on the GPU; `SimGpu` reads fake dmabufs (memfds).
+  `Ash` also now finds portability implementations such as MoltenVK.
 - The handler tracks what each operation reads and writes and inserts the
   barriers and image layout transitions; a core never mentions
   synchronization. The tests run with the Khronos validation layer's

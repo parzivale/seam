@@ -153,3 +153,26 @@ fn in_a_root() {
         assert_eq!(row.get("v").and_then(Value::as_text), Some("in a root"));
     });
 }
+
+/// With the `smol` feature, the same core runs under smol, which has no
+/// Tokio runtime.
+#[cfg(feature = "smol")]
+#[test]
+fn under_smol() {
+    seam_smol::block_on(async {
+        let mut db = Sqlx::memory().await?;
+        execute_async(
+            &mut db,
+            "CREATE TABLE accounts (id INTEGER, balance INTEGER)",
+            &[],
+        )
+        .await?;
+        execute_async(&mut db, "INSERT INTO accounts VALUES (1, 10), (2, 0)", &[]).await?;
+        transfer(&mut db, 1, 2, 4).await?;
+        let rows =
+            fetch_all_async(&mut db, "SELECT balance FROM accounts ORDER BY id", &[]).await?;
+        assert_eq!(rows[1].get("balance"), Some(&Value::from(4_i64)));
+        io::Result::Ok(())
+    })
+    .unwrap();
+}

@@ -276,8 +276,8 @@ pub struct Sqlx(pub sqlx::AnyPool);
 
 impl Sqlx {
     /// Connects to the database at `url` (`sqlite://..`, `postgres://..`,
-    /// `mysql://..`, with the matching feature). Must run on a Tokio
-    /// runtime, as everything else here.
+    /// `mysql://..`, with the matching feature). Runs on Tokio inside a
+    /// Tokio runtime, and on smol (feature `smol`) anywhere else.
     pub async fn connect(url: &str) -> io::Result<Self> {
         sqlx::any::install_default_drivers();
         sqlx::AnyPool::connect(url).await.map(Self).map_err(error)

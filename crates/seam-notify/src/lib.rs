@@ -374,7 +374,12 @@ pub use os::{Notify, NotifyWatcher};
 
 #[cfg(feature = "notify")]
 mod os {
-    use std::sync::mpsc;
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll, Waker};
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+    use std::time::Instant;
 
     use notify::Watcher as _;
 
@@ -387,15 +392,53 @@ mod os {
 
     /// A watcher from [`Notify`]. Access events (a file opened or closed)
     /// are not reported.
+    ///
+    /// Waiting for an event blocks in the sync form; the async forms wait
+    /// without blocking, under any executor (notify's own thread wakes
+    /// them), and a `Timeout` on them is kept by a thread of the
+    /// watcher's, started on the first async timeout.
     pub struct NotifyWatcher {
         // Kept alive for the scope: dropping it stops the events.
         _watcher: notify::RecommendedWatcher,
-        events: mpsc::Receiver<notify::Result<notify::Event>>,
+        shared: Arc<Shared>,
     }
 
     impl core::fmt::Debug for NotifyWatcher {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             f.debug_struct("NotifyWatcher").finish_non_exhaustive()
+        }
+    }
+
+    /// What notify's thread, the timer thread and the waiter share.
+    #[derive(Default)]
+    struct Shared {
+        state: Mutex<State>,
+        /// Signalled on each event, a new deadline, and the end.
+        changed: Condvar,
+    }
+
+    #[derive(Default)]
+    struct State {
+        events: VecDeque<notify::Result<notify::Event>>,
+        /// The async waiter, woken on an event or its deadline.
+        waker: Option<Waker>,
+        /// An async waiter's deadline, kept by the timer thread.
+        deadline: Option<Instant>,
+        expired: bool,
+        timer: bool,
+        closed: bool,
+    }
+
+    impl Shared {
+        fn lock(&self) -> MutexGuard<'_, State> {
+            self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+    }
+
+    impl Drop for NotifyWatcher {
+        fn drop(&mut self) {
+            self.shared.lock().closed = true;
+            self.shared.changed.notify_all();
         }
     }
 
@@ -421,29 +464,158 @@ mod os {
         })
     }
 
-    impl NotifyWatcher {
-        /// The next event that is not an access, waiting up to `left` for
-        /// each (`None`: no limit).
-        fn next(&self, deadline: Option<std::time::Instant>) -> io::Result<Event> {
-            loop {
-                let received = match deadline {
-                    None => self.events.recv().map_err(|_| {
-                        io::Error::new(io::ErrorKind::BrokenPipe, "the watcher stopped")
-                    }),
-                    Some(at) => {
-                        let left = at.saturating_duration_since(std::time::Instant::now());
-                        self.events.recv_timeout(left).map_err(|e| match e {
-                            mpsc::RecvTimeoutError::Timeout => io::ErrorKind::TimedOut.into(),
-                            mpsc::RecvTimeoutError::Disconnected => {
-                                io::Error::new(io::ErrorKind::BrokenPipe, "the watcher stopped")
-                            }
-                        })
+    /// The next reportable event queued, if any.
+    fn take(state: &mut State) -> Option<io::Result<Event>> {
+        while let Some(received) = state.events.pop_front() {
+            match received {
+                Ok(e) => {
+                    if let Some(e) = event(e) {
+                        return Some(Ok(e));
                     }
-                }?;
-                if let Some(event) = event(received.map_err(error)?) {
-                    return Ok(event);
                 }
+                Err(e) => return Some(Err(error(e))),
             }
+        }
+        None
+    }
+
+    impl NotifyWatcher {
+        /// The next event, blocking until `deadline` (`None`: no limit).
+        fn next(&self, deadline: Option<Instant>) -> io::Result<Event> {
+            let mut state = self.shared.lock();
+            loop {
+                if let Some(e) = take(&mut state) {
+                    return e;
+                }
+                state = match deadline {
+                    None => self
+                        .shared
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(PoisonError::into_inner),
+                    Some(at) => {
+                        let left = at.saturating_duration_since(Instant::now());
+                        if left.is_zero() {
+                            return Err(io::ErrorKind::TimedOut.into());
+                        }
+                        self.shared
+                            .changed
+                            .wait_timeout(state, left)
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .0
+                    }
+                };
+            }
+        }
+
+        /// Starts the thread that keeps async deadlines, once.
+        fn start_timer(&self) -> io::Result<()> {
+            let mut state = self.shared.lock();
+            if state.timer {
+                return Ok(());
+            }
+            let shared = Arc::clone(&self.shared);
+            std::thread::Builder::new()
+                .name("seam-notify timer".into())
+                .stack_size(64 * 1024)
+                .spawn(move || timer(&shared))
+                .map_err(io::Error::from)?;
+            state.timer = true;
+            Ok(())
+        }
+    }
+
+    /// Wakes the async waiter when its deadline passes, until the watcher
+    /// is dropped.
+    fn timer(shared: &Shared) {
+        let mut state = shared.lock();
+        while !state.closed {
+            state = match state.deadline {
+                Some(at) if Instant::now() >= at => {
+                    state.deadline = None;
+                    state.expired = true;
+                    if let Some(w) = state.waker.take() {
+                        w.wake();
+                    }
+                    continue;
+                }
+                Some(at) => {
+                    let left = at.saturating_duration_since(Instant::now());
+                    shared
+                        .changed
+                        .wait_timeout(state, left)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0
+                }
+                None => shared
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner),
+            };
+        }
+    }
+
+    /// Waits for the next event without blocking, until an optional
+    /// deadline. Dropping it gives up the wait.
+    struct NextFuture<'w> {
+        shared: &'w Shared,
+        timed: bool,
+    }
+
+    impl Future for NextFuture<'_> {
+        type Output = io::Result<Event>;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let mut state = self.shared.lock();
+            if let Some(e) = take(&mut state) {
+                state.deadline = None;
+                return Poll::Ready(e);
+            }
+            if self.timed && state.expired {
+                return Poll::Ready(Err(io::ErrorKind::TimedOut.into()));
+            }
+            if state.closed {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "the watcher stopped",
+                )));
+            }
+            match &state.waker {
+                Some(w) if w.will_wake(cx.waker()) => {}
+                _ => state.waker = Some(cx.waker().clone()),
+            }
+            Poll::Pending
+        }
+    }
+
+    impl Drop for NextFuture<'_> {
+        fn drop(&mut self) {
+            let mut state = self.shared.lock();
+            state.waker = None;
+            if self.timed {
+                state.deadline = None;
+                state.expired = false;
+            }
+        }
+    }
+
+    impl NotifyWatcher {
+        async fn next_async(&self, after: Option<core::time::Duration>) -> io::Result<Event> {
+            if let Some(after) = after {
+                self.start_timer()?;
+                let mut state = self.shared.lock();
+                state.expired = false;
+                state.deadline = Some(Instant::now().checked_add(after).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "the timeout is too long")
+                })?);
+                drop(state);
+                self.shared.changed.notify_all();
+            }
+            NextFuture {
+                shared: &self.shared,
+                timed: after.is_some(),
+            }
+            .await
         }
     }
 
@@ -452,9 +624,16 @@ mod os {
             &mut self,
             Opening(op, _): Opening<Watch<'w, NotifyWatcher>>,
         ) -> io::Result<NotifyWatcher> {
-            let (tx, events) = mpsc::channel();
+            let shared = Arc::new(Shared::default());
+            let sender = Arc::clone(&shared);
             let mut watcher = notify::recommended_watcher(move |event| {
-                let _ = tx.send(event);
+                let mut state = sender.lock();
+                state.events.push_back(event);
+                if let Some(w) = state.waker.take() {
+                    w.wake();
+                }
+                drop(state);
+                sender.changed.notify_all();
             })
             .map_err(error)?;
             let mode = if op.recursive {
@@ -465,7 +644,7 @@ mod os {
             watcher.watch(op.path, mode).map_err(error)?;
             Ok(NotifyWatcher {
                 _watcher: watcher,
-                events,
+                shared,
             })
         }
     }
@@ -484,10 +663,32 @@ mod os {
 
     impl Perform<Timeout<NextEvent>> for NotifyWatcher {
         fn perform(&mut self, op: Timeout<NextEvent>) -> io::Result<Event> {
-            self.next(std::time::Instant::now().checked_add(op.after))
+            self.next(Instant::now().checked_add(op.after))
         }
     }
 
+    macro_rules! async_forms {
+        ($($method:ident: $trait:ident;)*) => {$(
+            impl seam_core::future::$trait<NextEvent> for NotifyWatcher {
+                async fn $method(&mut self, _: NextEvent) -> io::Result<Event> {
+                    self.next_async(None).await
+                }
+            }
+
+            impl seam_core::future::$trait<Timeout<NextEvent>> for NotifyWatcher {
+                async fn $method(&mut self, op: Timeout<NextEvent>) -> io::Result<Event> {
+                    self.next_async(Some(op.after)).await
+                }
+            }
+        )*};
+    }
+
+    async_forms! {
+        perform_async: AsyncPerform;
+        perform_send: SendPerform;
+    }
+
+    // Opening a watch never waits: its async forms are the lifted sync
+    // ones. The watcher's are its own, above.
     impl seam_core::Capability for Notify {}
-    impl seam_core::Capability for NotifyWatcher {}
 }

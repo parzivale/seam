@@ -14,16 +14,20 @@ categories.workspace = true
 seam-core = { workspace = true, features = ["std"] }
 http = { workspace = true, features = ["std"] }
 reqwest = { workspace = true, optional = true }
+# The runtime requests run on outside Tokio (reqwest needs one).
+tokio = { workspace = true, optional = true, features = ["rt-multi-thread"] }
 seam-test = { workspace = true, optional = true, features = ["std"] }
 
 [dev-dependencies]
 seam-test = { workspace = true, features = ["std"] }
 seam-tokio = { workspace = true, features = ["rt"] }
+seam-smol = { workspace = true }
+futures = { workspace = true, features = ["executor"] }
 
 [features]
 default = ["reqwest", "rustls"]
-# `Reqwest`: real requests, with reqwest (which needs a Tokio runtime).
-reqwest = ["dep:reqwest"]
+# `Reqwest`: real requests, with reqwest, under any executor.
+reqwest = ["dep:reqwest", "dep:tokio"]
 # HTTPS for `Reqwest`, with rustls.
 rustls = ["reqwest", "reqwest?/rustls"]
 # `World` for `Scripted`: an `http` block in world files.

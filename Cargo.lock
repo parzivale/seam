@@ -1904,8 +1904,10 @@ version = "0.6.0"
 dependencies = [
  "notify",
  "seam-rs-core",
+ "seam-rs-smol",
  "seam-rs-std",
  "seam-rs-test",
+ "smol",
 ]
 
 [[package]]
@@ -1921,11 +1923,14 @@ dependencies = [
 name = "seam-rs-reqwest"
 version = "0.6.0"
 dependencies = [
+ "futures",
  "http",
  "reqwest",
  "seam-rs-core",
+ "seam-rs-smol",
  "seam-rs-test",
  "seam-rs-tokio",
+ "tokio",
 ]
 
 [[package]]
@@ -1952,6 +1957,7 @@ name = "seam-rs-sqlx"
 version = "0.6.0"
 dependencies = [
  "seam-rs-core",
+ "seam-rs-smol",
  "seam-rs-tokio",
  "sqlx",
 ]
@@ -2220,6 +2226,9 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05b44e85bf579a8eeb4ceaa77a3a523baf2bf0e9bac7e40f405d537b5d2d5ccb"
 dependencies = [
+ "async-fs",
+ "async-io",
+ "async-task",
  "base64 0.22.1",
  "bytes",
  "cfg-if",
@@ -2241,6 +2250,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "smallvec",
+ "smol",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -2277,6 +2287,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "smol",
  "sqlx-core",
  "sqlx-mysql",
  "sqlx-postgres",

@@ -303,15 +303,86 @@ pub use real::Reqwest;
 mod real {
     use super::*;
 
-    /// Sends requests with a `reqwest::Client`, which must run on a Tokio
-    /// runtime. Async only: `AsyncPerform<Fetch>` and `SendPerform<Fetch>`.
+    /// Sends requests with a `reqwest::Client`. Async only:
+    /// `AsyncPerform<Fetch>` and `SendPerform<Fetch>`, under any executor.
+    ///
+    /// reqwest needs a Tokio runtime. Inside one, requests run on it
+    /// directly; outside one (smol, futures-rs' executors, `block_on`),
+    /// they run on a small runtime of this crate's, one thread, started on
+    /// first use. [`on`](Self::on) picks the runtime instead.
     #[derive(Debug, Clone, Default)]
-    pub struct Reqwest(pub reqwest::Client);
+    pub struct Reqwest {
+        client: reqwest::Client,
+        runtime: Option<tokio::runtime::Handle>,
+    }
 
     impl Reqwest {
         /// A client with reqwest's defaults.
         pub fn new() -> Self {
             Self::default()
+        }
+
+        /// Sends with `client`, configured as wanted.
+        pub fn with_client(client: reqwest::Client) -> Self {
+            Self {
+                client,
+                runtime: None,
+            }
+        }
+
+        /// Always runs requests on `runtime`, wherever they are awaited.
+        #[must_use]
+        pub fn on(mut self, runtime: tokio::runtime::Handle) -> Self {
+            self.runtime = Some(runtime);
+            self
+        }
+
+        /// The client.
+        pub fn client(&self) -> &reqwest::Client {
+            &self.client
+        }
+
+        async fn send(&self, request: Request<Vec<u8>>) -> io::Result<Response<Vec<u8>>> {
+            let runtime = match &self.runtime {
+                Some(r) => r.clone(),
+                None => match tokio::runtime::Handle::try_current() {
+                    Ok(_) => return fetch(&self.client, request).await,
+                    Err(_) => own_runtime()?,
+                },
+            };
+            let client = self.client.clone();
+            let mut task = Abort(runtime.spawn(async move { fetch(&client, request).await }));
+            match (&mut task.0).await {
+                Ok(out) => out,
+                Err(e) => Err(dynamic(std::io::ErrorKind::Other, e)),
+            }
+        }
+    }
+
+    /// This crate's runtime, for requests awaited outside one.
+    fn own_runtime() -> io::Result<tokio::runtime::Handle> {
+        static RUNTIME: std::sync::OnceLock<Result<tokio::runtime::Runtime, String>> =
+            std::sync::OnceLock::new();
+        RUNTIME
+            .get_or_init(|| {
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(1)
+                    .thread_name("seam-reqwest")
+                    .enable_all()
+                    .build()
+                    .map_err(|e| e.to_string())
+            })
+            .as_ref()
+            .map(|r| r.handle().clone())
+            .map_err(|e| dynamic(std::io::ErrorKind::Other, e.clone()))
+    }
+
+    /// A request on another runtime, stopped if its future is dropped.
+    struct Abort<T>(tokio::task::JoinHandle<T>);
+
+    impl<T> Drop for Abort<T> {
+        fn drop(&mut self) {
+            self.0.abort();
         }
     }
 
@@ -352,13 +423,13 @@ mod real {
 
     impl seam_core::future::AsyncPerform<Fetch> for Reqwest {
         async fn perform_async(&mut self, op: Fetch) -> io::Result<Response<Vec<u8>>> {
-            fetch(&self.0, op.0).await
+            self.send(op.0).await
         }
     }
 
     impl seam_core::future::SendPerform<Fetch> for Reqwest {
         async fn perform_send(&mut self, op: Fetch) -> io::Result<Response<Vec<u8>>> {
-            fetch(&self.0, op.0).await
+            self.send(op.0).await
         }
     }
 }

@@ -17,6 +17,8 @@ notify = { workspace = true, optional = true }
 [dev-dependencies]
 seam-std = { workspace = true, features = ["fs", "time"] }
 seam-test = { workspace = true, features = ["std", "fs", "time"] }
+seam-smol = { workspace = true, features = ["time"] }
+smol = { workspace = true }
 
 [features]
 default = ["notify"]

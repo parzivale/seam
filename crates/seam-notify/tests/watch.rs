@@ -110,3 +110,50 @@ fn the_os_reports_a_new_file() -> io::Result<()> {
     assert!(result?.iter().any(|p| p.ends_with("hello")));
     Ok(())
 }
+
+/// The async form waits without blocking its executor: on one thread, the
+/// task writing the file runs while the watch waits.
+#[test]
+fn async_waits_leave_the_executor_free() -> io::Result<()> {
+    use seam_notify::Notify;
+
+    let dir = std::env::temp_dir().join(format!("seam-notify-async-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(io::Error::from)?;
+    let ex = smol::LocalExecutor::new();
+    let result = smol::block_on(ex.run(async {
+        let writer = ex.spawn({
+            let dir = dir.clone();
+            async move {
+                smol::Timer::after(Duration::from_millis(50)).await;
+                std::fs::write(dir.join("hello"), "hi").unwrap();
+            }
+        });
+        let seen = Notify
+            .acquire_async(Watch::recursive(&dir), async |_, watcher| {
+                loop {
+                    let event = watcher
+                        .perform_async(Timeout::new(Duration::from_secs(10), NextEvent))
+                        .await?;
+                    if event.kind == EventKind::Create {
+                        return io::Result::Ok(event.paths);
+                    }
+                }
+            })
+            .await;
+        writer.await;
+        // And a timeout with nothing happening times out.
+        let quiet = Notify
+            .acquire_async(Watch::recursive(&dir), async |_, watcher| {
+                watcher
+                    .perform_async(Timeout::new(Duration::from_millis(100), NextEvent))
+                    .await
+                    .map(drop)
+            })
+            .await;
+        assert_eq!(quiet.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        seen
+    }));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(result?.iter().any(|p| p.ends_with("hello")));
+    Ok(())
+}

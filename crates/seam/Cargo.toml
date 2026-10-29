@@ -55,16 +55,16 @@ jiff = ["dep:seam-jiff", "fs", "env", "time"]
 jiff-bundled = ["jiff", "seam-jiff?/bundled"]
 # The smol backend, `seam::smol`: like `tokio`, an async backend for time,
 # files, the network, stdio, processes, Ctrl-C, tasks and channels.
-smol = ["dep:seam-smol"]
+smol = ["dep:seam-smol", "seam-sqlx?/smol"]
 # Wrappers of popular crates, each its own effects with a real handler
 # and one for tests. Each brings in the operation types it is built on.
 rand = ["dep:seam-rand", "random"]
 uuid = ["dep:seam-uuid", "random", "time", "std"]
 dirs = ["dep:seam-dirs", "env"]
 tracing = ["dep:seam-tracing"]
-notify = ["dep:seam-notify", "fs", "time"]
-reqwest = ["dep:seam-reqwest"]
-sqlx = ["dep:seam-sqlx"]
+notify = ["dep:seam-notify", "seam-notify?/notify", "fs", "time"]
+reqwest = ["dep:seam-reqwest", "seam-reqwest?/reqwest", "seam-reqwest?/rustls"]
+sqlx = ["dep:seam-sqlx", "seam-sqlx?/sqlite", "seam-sqlx?/tokio"]
 # The GPU as effects, over Vulkan (`seam::ash`): buffers, images and
 # programs as scopes, uploads, draws and dispatches, synchronization worked
 # out by the handler. `SimGpu` simulates it.
@@ -73,7 +73,7 @@ ash = ["dep:seam-ash", "seam-ash?/ash"]
 unix = ["dep:seam-unix", "fs"]
 rustix = ["unix", "dep:seam-rustix"]
 nix = ["unix", "dep:seam-nix"]
-test = ["dep:seam-test"]
+test = ["dep:seam-test", "seam-tracing?/test", "seam-unix?/test", "seam-reqwest?/test"]
 
 # Capability groups. Each enables its operation types and, in whichever
 # backends are on, their implementations. None of them enables a backend.

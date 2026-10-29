@@ -12,13 +12,18 @@ categories.workspace = true
 
 [dependencies]
 seam-core = { workspace = true, features = ["std"] }
-sqlx = { workspace = true, features = ["any", "runtime-tokio", "macros"] }
+sqlx = { workspace = true, features = ["any", "macros"] }
 
 [dev-dependencies]
 seam-tokio = { workspace = true, features = ["rt"] }
+seam-smol = { workspace = true }
 
 [features]
-default = ["sqlite"]
+default = ["sqlite", "tokio"]
+# The async runtimes `Sqlx` runs on: with both, Tokio's inside a Tokio
+# runtime and smol's anywhere else.
+tokio = ["sqlx/runtime-tokio"]
+smol = ["sqlx/runtime-smol"]
 # The drivers `Sqlx` can connect with, by URL scheme.
 sqlite = ["sqlx/sqlite"]
 postgres = ["sqlx/postgres"]

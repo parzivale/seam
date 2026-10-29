@@ -15,8 +15,7 @@
 //!   the work before them; nothing else does.
 //! - **Submitting without waiting**: [`Submit`] is a scope that sends the
 //!   work so far to the GPU and lends a submission: [`IsDone`] says
-//!   whether it has finished, [`Wait`] waits for it, and closing the scope
-//!   waits too. So the CPU does other work while the GPU runs.
+//!   whether it has finished, and closing the scope waits for it. So the CPU does other work while the GPU runs.
 //!
 //! Synchronization is the handler's business: it tracks what each step
 //! reads and writes, and inserts the barriers and image layout changes
@@ -619,9 +618,8 @@ impl<'a> DownloadImage<'a> {
 }
 
 /// Send everything performed so far to the GPU without waiting, lending a
-/// submission of type `S` for a scope: perform [`Wait`] on it, or inspect
-/// [`IsDone`]. Closing the scope waits for the work, so it has finished
-/// once the scope returns; a scope that fails or is cancelled lets go
+/// submission of type `S` for a scope, to inspect [`IsDone`] on. Closing
+/// the scope is the wait: the work has finished once the scope returns; a scope that fails or is cancelled lets go
 /// without waiting, and the work runs to its end on its own (GPU work
 /// cannot be stopped).
 ///
@@ -656,10 +654,6 @@ impl<S> Acquisition for Submit<S> {
     type Resource = S;
     type Error = GpuError;
 }
-
-/// Wait for a submission's work to finish. Performed on the submission.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Wait;
 
 /// Whether a submission's work has finished, without waiting. Inspected on
 /// the submission.
@@ -752,7 +746,6 @@ outcomes! {
     Download<'_> => Result<(), GpuError>;
     DownloadImage<'_> => Result<(), GpuError>;
     Finish => Result<(), GpuError>;
-    Wait => Result<(), GpuError>;
     IsDone => Result<bool, GpuError>;
     DeviceInfo => GpuInfo;
 }

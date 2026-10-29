@@ -136,7 +136,7 @@ feature), makes the GPU effects:
   `Download`, `DownloadImage`, `Finish`, and the `DeviceInfo` query. Only
   downloads and `Finish` wait.
 - `Submit`: a scope that sends the work so far without waiting, lending a
-  submission to perform `Wait` on or inspect `IsDone`; closing it waits.
+  submission to inspect `IsDone` on; closing the scope is the wait.
 - The handler tracks what each operation reads and writes and inserts the
   barriers and image layout transitions; a core never mentions
   synchronization. The tests run with the Khronos validation layer's

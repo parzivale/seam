@@ -452,8 +452,8 @@ fn mistakes_fail_the_same_way_on_both() {
     clean(&gpu);
 }
 
-/// Work submitted without waiting: the submission says whether it is done,
-/// waits when asked, and closing its scope waits too.
+/// Work submitted without waiting: the submission says whether it is
+/// done, and closing its scope waits.
 #[test]
 fn submitting_without_waiting() {
     let Some(mut gpu) = gpu() else { return };
@@ -464,15 +464,15 @@ fn submitting_without_waiting() {
             gpu.acquire(CreateBuffer::new(16, BufferUsage::STORAGE), |gpu, buf| {
                 gpu.perform(Upload::new(*buf, &u32_bytes(&[1, 2, 3, 4])))?;
                 gpu.perform(Dispatch::new(*program, &[Bind::Storage(*buf)], [4, 1, 1]))?;
+                // Asking does not wait: keep asking until it is done.
                 gpu.acquire(Submit::<Submission>::new(), |_, submission| {
-                    // Done or not, asking does not wait.
-                    submission.inspect(IsDone)?;
-                    submission.perform(Wait)?;
-                    assert!(submission.inspect(IsDone)?);
+                    while !submission.inspect(IsDone)? {
+                        std::hint::spin_loop();
+                    }
                     Ok::<_, GpuError>(())
                 })?;
-                // A second submission's scope closes without an explicit
-                // wait, and waits.
+                // A second submission's scope closes before it is done, and
+                // waits.
                 gpu.perform(Dispatch::new(*program, &[Bind::Storage(*buf)], [4, 1, 1]))?;
                 gpu.acquire(Submit::<Submission>::new(), |_, _| Ok::<_, GpuError>(()))?;
                 // Nothing performed since: it lends a finished one.

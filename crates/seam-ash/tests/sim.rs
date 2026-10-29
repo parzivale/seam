@@ -131,7 +131,7 @@ fn submissions_on_the_simulation_are_done_at_once() {
     let mut gpu = SimGpu::new();
     gpu.acquire(Submit::<SimSubmission>::new(), |_, submission| {
         assert!(submission.inspect(IsDone)?);
-        submission.perform(Wait)
+        Ok::<_, GpuError>(())
     })
     .unwrap();
     assert!(gpu.log().iter().any(|r| matches!(r, Recorded::Submit)));

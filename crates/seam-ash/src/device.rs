@@ -41,7 +41,7 @@ use crate::{
     AttrFormat, Bind, BindingKind, Blend, Buffer, BufferUsage, CopyBuffer, CreateBuffer,
     CreateImage, CreateProgram, DeviceInfo, Dispatch, Download, DownloadImage, Draw, Finish,
     Format, GpuError, GpuInfo, GpuKind, Image, ImageUsage, IsDone, Program, ProgramKind, ResInfo,
-    Submit, Upload, UploadImage, Wait,
+    Submit, Upload, UploadImage,
 };
 
 /// How [`Ash::with`] sets Vulkan up.
@@ -2557,8 +2557,9 @@ waiting_async! {
     perform_send: SendPerform;
 }
 
-/// Work submitted with [`Submit`] on [`Ash`]: perform [`Wait`] on it, or
-/// inspect [`IsDone`]. It keeps its batch's fence alive while it lives.
+/// Work submitted with [`Submit`] on [`Ash`]: inspect [`IsDone`] on it;
+/// closing its scope waits for it. It keeps its batch's fence alive while
+/// it lives.
 pub struct Submission {
     ash: Ash,
     /// The batch, and its fence; `None` when there was nothing to submit.
@@ -2617,18 +2618,11 @@ impl Perform<Opening<Submit<Submission>>> for Ash {
 }
 
 impl Perform<Closing<Submit<Submission>>> for Ash {
-    fn perform(&mut self, Closing(mut s, _): Closing<Submit<Submission>>) -> Result<(), GpuError> {
-        s.perform(Wait)
-    }
-}
-
-impl Perform<Wait> for Submission {
-    fn perform(&mut self, _: Wait) -> Result<(), GpuError> {
-        if let (false, Some((_, fence))) = (self.done, self.batch) {
-            self.ash.block(fence)?;
-            self.done = true;
+    fn perform(&mut self, Closing(s, _): Closing<Submit<Submission>>) -> Result<(), GpuError> {
+        match (s.done, s.batch) {
+            (false, Some((_, fence))) => self.block(fence),
+            _ => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -2650,18 +2644,11 @@ macro_rules! submission_async {
         }
 
         impl seam_core::future::$trait<Closing<Submit<Submission>>> for Ash {
-            async fn $method(&mut self, Closing(mut s, _): Closing<Submit<Submission>>) -> Result<(), GpuError> {
-                s.$method(Wait).await
-            }
-        }
-
-        impl seam_core::future::$trait<Wait> for Submission {
-            async fn $method(&mut self, _: Wait) -> Result<(), GpuError> {
-                if let (false, Some((seq, fence))) = (self.done, self.batch) {
-                    self.ash.wait(seq, fence).await?;
-                    self.done = true;
+            async fn $method(&mut self, Closing(s, _): Closing<Submit<Submission>>) -> Result<(), GpuError> {
+                match (s.done, s.batch) {
+                    (false, Some((seq, fence))) => self.wait(seq, fence).await,
+                    _ => Ok(()),
                 }
-                Ok(())
             }
         }
 

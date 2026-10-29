@@ -12,7 +12,7 @@ use crate::validate::{self, Lookup};
 use crate::{
     Bind, Buffer, CopyBuffer, CreateBuffer, CreateImage, CreateProgram, DeviceInfo, Dispatch,
     Download, DownloadImage, Draw, Finish, Format, GpuError, GpuInfo, GpuKind, Image, IsDone,
-    Program, ProgramKind, ResInfo, Submit, Upload, UploadImage, Wait,
+    Program, ProgramKind, ResInfo, Submit, Upload, UploadImage,
 };
 
 /// What [`SimGpu`] was asked to do, in order: for tests to assert on.
@@ -608,12 +608,6 @@ impl Perform<Opening<Submit<SimSubmission>>> for SimGpu {
 
 impl Perform<Closing<Submit<SimSubmission>>> for SimGpu {
     fn perform(&mut self, _: Closing<Submit<SimSubmission>>) -> Result<(), GpuError> {
-        Ok(())
-    }
-}
-
-impl Perform<Wait> for SimSubmission {
-    fn perform(&mut self, _: Wait) -> Result<(), GpuError> {
         Ok(())
     }
 }

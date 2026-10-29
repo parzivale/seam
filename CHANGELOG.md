@@ -1,31 +1,21 @@
 # Changelog
 
-## 0.5.0
+## 0.6.0
 
-Every root part is built the way Rust builds its type, a simulated world
-is shared by cloning it, and world files can write a world out as well as
-read it. All of these are breaking.
+Split handles, a helper for most everyday tasks, and backends and
+wrappers for the crates programs use most: smol, futures-rs, jiff, rand,
+uuid, dirs, tracing, notify, reqwest, sqlx, rustix and nix. Rust 1.99 is
+now required.
 
-### Building roots
+### Breaking
 
-A part is written as Rust builds a value of its type, with the effects it
-serves in brackets after the type's name, and in no other way:
-
-| Form | Example |
-|---|---|
-| unit struct | `Std<fx::Args, fx::View>` |
-| tuple struct | `Pool<fx::Query>(4)` |
-| struct literal | `Pool<fx::Query> { size: 4 }` |
-| constructor, with or without `?` | `Sim<fx::Now>::from_world(W)?` |
-
-| Removed | Use |
-|---|---|
-| `Sim<fx::Now> = sim` | a constructor: `Sim<fx::Now>::clone(&sim)` |
-| `name: value => [keys]` | one of the four forms |
-| a bare part keyed by `Effect` (`mounts::Bind`) | its keys in brackets: `mounts::Bind<BindMount>` |
-
-The named form is `root! { struct App { clock: Clock<fx::Now> } }`.
-Anything else is a compile error naming the four forms.
+- `World` (seam-test's world-file trait) gains a required method,
+  `to_world`, which writes a part's state out as world-file nodes; an
+  implementation must add it. In return `check` now has a default, a
+  subset of `to_world` (`world_file::check_subset`), so most
+  implementations can drop theirs.
+- `Sim::script_command` returns `&mut Sim`, for chaining.
+- The minimum Rust version is 1.99 (it was 1.85).
 
 ### Helpers
 
@@ -133,17 +123,54 @@ bans each library's own direct calls.
 Each is on the latest release of its library: uuid 1.29, sqlx 0.9,
 reqwest 0.13 (rustls by default), nix 0.31, rustix 1.1.
 
+### Simulation
+
+- `Sim::to_world` and `seam::test::to_world::<(K, ..), _>(&root)`
+  write a whole world out, and it loads back to the same world.
+- `Node` builders (`Node::new`, `with_arg`, `with_prop`, `with_child`,
+  `with_bytes`), `Node::contents`, KDL output (`Display`), and
+  `world_file::show`. `World` is also exported from `world_file`.
+- World files: `net`, `seed`, `parallelism` and `signal` can be checked
+  (as a subset); `process` loads `ran` lines into the log; `stdio` loads
+  `stdout` and `stderr`; `clock` takes `now-ns=` and `wall-ns=`. Files a
+  world file creates are stamped at the Unix epoch.
+
 ### Rust 1.99
 
-The minimum Rust version is now 1.99, the latest stable (it was 1.85),
-and the code uses what that allows: let-chains and `is_multiple_of`,
-among others. Dependencies move to their newest releases with it.
+With 1.99 as the minimum, the code uses let-chains and `is_multiple_of`,
+among others, and every dependency is on its newest release.
 
 ### Documentation
 
 - A `docs` feature adds `seam::_docs`: what seam is, usage guides, the
   world-file format and implementation notes. Off by default, so it costs
   nothing to build; docs.rs builds it.
+
+## 0.5.0
+
+Every root part is built the way Rust builds its type, and a simulated
+world is shared by cloning it. All of these are breaking.
+
+### Building roots
+
+A part is written as Rust builds a value of its type, with the effects it
+serves in brackets after the type's name, and in no other way:
+
+| Form | Example |
+|---|---|
+| unit struct | `Std<fx::Args, fx::View>` |
+| tuple struct | `Pool<fx::Query>(4)` |
+| struct literal | `Pool<fx::Query> { size: 4 }` |
+| constructor, with or without `?` | `Sim<fx::Now>::from_world(W)?` |
+
+| Removed | Use |
+|---|---|
+| `Sim<fx::Now> = sim` | a constructor: `Sim<fx::Now>::clone(&sim)` |
+| `name: value => [keys]` | one of the four forms |
+| a bare part keyed by `Effect` (`mounts::Bind`) | its keys in brackets: `mounts::Bind<BindMount>` |
+
+The named form is `root! { struct App { clock: Clock<fx::Now> } }`.
+Anything else is a compile error naming the four forms.
 
 ### Simulation
 
@@ -153,21 +180,11 @@ among others. Dependencies move to their newest releases with it.
   Without std, `Sim` holds its world itself and is not `Clone`.
 - `Sim::invocations` returns a `Vec<Invocation>`, since the log lives
   behind the world's lock.
-- `World` (a handler's world-file blocks) gains `to_world`, which writes
-  the state out as world-file nodes, and `check` now defaults to a subset
-  of it (`world_file::check_subset`), so a fake gets expectations with no
-  more code. `Sim::to_world` and `seam::test::to_world::<(K, ..), _>(&root)`
-  write a whole world out, and it loads back to the same world.
-- `Node` builders (`Node::new`, `with_arg`, `with_prop`, `with_child`,
-  `with_bytes`), `Node::contents`, KDL output (`Display`), and
-  `world_file::show`. `World` is also exported from `world_file`.
-- World files: `net`, `seed`, `parallelism` and `signal` can be checked
-  (as a subset); `process` loads `ran` lines into the log; `stdio` loads
-  `stdout` and `stderr`; `clock` takes `now-ns=` and `wall-ns=`. Files a
-  world file creates are stamped at the Unix epoch.
-- `world_file::load` and `world_file::check` set up and check one part
-  outside a root (`Sim::load_world` and `Sim::check_world` are these).
-  `Sim::script_command` is public, and returns `&mut Sim`.
+- `Sim`'s world-file blocks are an ordinary `World` impl over public API
+  only, and a test compiles it outside the crate to keep it so.
+- New for every part: `world_file::load` and `world_file::check` set up
+  and check one part outside a root (`Sim::load_world` and
+  `Sim::check_world` are these). `Sim::script_command` is public.
 
 ## 0.4.0
 

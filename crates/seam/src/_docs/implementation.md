@@ -315,6 +315,9 @@ a program copies it into each crate that should stay sans-effect.
 - **Semver:** each release is checked with `cargo-semver-checks` against
   the last one published. It does not see changes to what a `macro_rules!`
   macro accepts, or most return-type changes, so those are reviewed by
-  hand.
+  hand, and it missed a required trait method added in 0.6 (`World::to_world`),
+  so new trait methods are too. Run it once the version is bumped: it caches
+  each crate by name and version, so a local version equal to the published
+  one compares the published crate with itself and reports nothing.
 - **`unsafe`:** forbidden in every crate but seam-std, which allows it on
   `WritableEnv` alone.

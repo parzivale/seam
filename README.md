@@ -4,7 +4,7 @@ Sans-effect programming for Rust.
 
 ```toml
 [dependencies]
-seam = { package = "seam-rs", version = "0.5", features = ["fs", "std"] }
+seam = { package = "seam-rs", version = "0.6", features = ["fs", "std"] }
 ```
 
 The crates are published as `seam-rs`, `seam-rs-core`, `seam-rs-std`,

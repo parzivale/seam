@@ -114,22 +114,22 @@ mod with_std {
 
         fn check(&self, node: &Node, failures: &mut Vec<Failure>) -> world_file::Result<()> {
             clock_props(node)?;
-            if let Some(want) = read_duration(node, "now")? {
-                if self.now != want {
-                    failures.push(node.failure(format!(
-                        "clock: expected {want:?} since the start, found {:?}",
-                        self.now
-                    )));
-                }
+            if let Some(want) = read_duration(node, "now")?
+                && self.now != want
+            {
+                failures.push(node.failure(format!(
+                    "clock: expected {want:?} since the start, found {:?}",
+                    self.now
+                )));
             }
-            if let Some(want) = read_duration(node, "wall")? {
-                if self.wall != want {
-                    failures.push(node.failure(format!(
-                        "wall clock: expected {} seconds after the epoch, found {}",
-                        want.as_secs(),
-                        self.wall.as_secs()
-                    )));
-                }
+            if let Some(want) = read_duration(node, "wall")?
+                && self.wall != want
+            {
+                failures.push(node.failure(format!(
+                    "wall clock: expected {} seconds after the epoch, found {}",
+                    want.as_secs(),
+                    self.wall.as_secs()
+                )));
             }
             Ok(())
         }

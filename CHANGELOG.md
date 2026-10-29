@@ -130,8 +130,14 @@ bans each library's own direct calls.
 | `seam-sqlx` | `Execute`, `Fetch`, `Begin` (a transaction scope), `Acquire` | `Sqlx` (an `AnyPool`) | `Sqlx::memory` (in-memory SQLite) |
 | `seam-unix` | `Mount`, `Unmount`, `Chmod`, `Chown`, `Symlink`, `ReadLink`, `Ids`, `ProcessId`, `Hostname`, `Kill`, `SetUmask` | `seam-rustix`'s `Rustix`, `seam-nix`'s `Nix` | `SimUnix` (world-file `unix` block) |
 
-All of them build on Rust 1.85: the resolver picks the newest release of
-each library that does (uuid 1.26, sqlx 0.8, reqwest 0.12).
+Each is on the latest release of its library: uuid 1.29, sqlx 0.9,
+reqwest 0.13 (rustls by default), nix 0.31, rustix 1.1.
+
+### Rust 1.99
+
+The minimum Rust version is now 1.99, the latest stable (it was 1.85),
+and the code uses what that allows: let-chains and `is_multiple_of`,
+among others. Dependencies move to their newest releases with it.
 
 ### Documentation
 

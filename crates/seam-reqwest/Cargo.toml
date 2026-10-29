@@ -25,7 +25,7 @@ default = ["reqwest", "rustls"]
 # `Reqwest`: real requests, with reqwest (which needs a Tokio runtime).
 reqwest = ["dep:reqwest"]
 # HTTPS for `Reqwest`, with rustls.
-rustls = ["reqwest", "reqwest?/rustls-tls"]
+rustls = ["reqwest", "reqwest?/rustls"]
 # `World` for `Scripted`: an `http` block in world files.
 test = ["dep:seam-test"]
 

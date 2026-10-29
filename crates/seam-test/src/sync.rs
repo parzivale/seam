@@ -86,10 +86,10 @@ impl<T> Sender<T> {
     pub(crate) fn poll_send(&self, value: T, waker: &Waker) -> Result<(), SendError<T>> {
         let mut chan = lock(&self.0);
         let result = chan.try_send(value);
-        if let Err(SendError::Full(_)) = &result {
-            if !chan.send_waiters.iter().any(|w| w.will_wake(waker)) {
-                chan.send_waiters.push(waker.clone());
-            }
+        if let Err(SendError::Full(_)) = &result
+            && !chan.send_waiters.iter().any(|w| w.will_wake(waker))
+        {
+            chan.send_waiters.push(waker.clone());
         }
         result
     }

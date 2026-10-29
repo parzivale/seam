@@ -310,8 +310,8 @@ a program copies it into each crate that should stay sans-effect.
 
 ## Support policy
 
-- **Rust version:** 1.85 or later (`rust-version` in the workspace), on
-  stable.
+- **Rust version:** 1.99 or later (`rust-version` in the workspace), on
+  stable: the latest stable release, raised as new ones come out.
 - **Semver:** each release is checked with `cargo-semver-checks` against
   the last one published. It does not see changes to what a `macro_rules!`
   macro accepts, or most return-type changes, so those are reviewed by

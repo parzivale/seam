@@ -34,8 +34,9 @@
 //! });
 //! ```
 //!
-//! Queries are runtime SQL with `?` placeholders (`$1` on Postgres).
-//! sqlx's `query!` macros check SQL against a live database at compile
+//! Queries are runtime SQL with `?` placeholders (`$1` on Postgres). Pass
+//! every value as a parameter, never formatted into the SQL: this crate
+//! hands the SQL to sqlx as trusted (`AssertSqlSafe`). sqlx's `query!` macros check SQL against a live database at compile
 //! time, which a seam core cannot route; use them in the edge if wanted.
 #![forbid(unsafe_code)]
 
@@ -308,19 +309,23 @@ pub struct Transaction(sqlx::Transaction<'static, sqlx::Any>);
 pub struct Connection(sqlx::pool::PoolConnection<sqlx::Any>);
 
 /// The query, with `params` bound.
+///
+/// sqlx accepts runtime SQL only through `AssertSqlSafe`, to keep values
+/// out of SQL text. Here the SQL is the core's own and every value is a
+/// bound parameter, never spliced in, which is what that asks.
 fn bind<'q>(
-    sql: &'q str,
-    params: &'q [Value],
-) -> sqlx::query::Query<'q, sqlx::Any, sqlx::any::AnyArguments<'q>> {
-    let mut query = sqlx::query(sql);
+    sql: &str,
+    params: &[Value],
+) -> sqlx::query::Query<'q, sqlx::Any, sqlx::any::AnyArguments> {
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
     for param in params {
         query = match param {
             Value::Null => query.bind(None::<i64>),
             Value::Bool(b) => query.bind(*b),
             Value::Int(n) => query.bind(*n),
             Value::Float(x) => query.bind(*x),
-            Value::Text(s) => query.bind(s.as_str()),
-            Value::Bytes(b) => query.bind(b.as_slice()),
+            Value::Text(s) => query.bind(s.clone()),
+            Value::Bytes(b) => query.bind(b.clone()),
         };
     }
     query

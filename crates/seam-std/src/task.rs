@@ -109,10 +109,10 @@ impl<T> JoinHandle<T> {
 /// the thread unless it was detached. A thread cannot be aborted.
 impl<T> Drop for JoinHandle<T> {
     fn drop(&mut self) {
-        if !self.detached {
-            if let Some(thread) = self.thread.take() {
-                let _ = thread.join();
-            }
+        if !self.detached
+            && let Some(thread) = self.thread.take()
+        {
+            let _ = thread.join();
         }
     }
 }

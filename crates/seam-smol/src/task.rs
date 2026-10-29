@@ -72,10 +72,10 @@ impl<T> JoinHandle<T> {
 /// Dropping a handle cancels the task unless it was detached.
 impl<T> Drop for JoinHandle<T> {
     fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
-            if self.detached {
-                task.detach();
-            }
+        if let Some(task) = self.task.take()
+            && self.detached
+        {
+            task.detach();
         }
     }
 }

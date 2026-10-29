@@ -130,10 +130,10 @@ impl AtomicFile {
 /// Makes a rename durable by syncing the directory that holds it. Best
 /// effort: not every platform can open a directory for syncing.
 fn sync_parent(path: &Path) {
-    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        if let Ok(dir) = std::fs::File::open(dir) {
-            let _ = dir.sync_all();
-        }
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
+        && let Ok(dir) = std::fs::File::open(dir)
+    {
+        let _ = dir.sync_all();
     }
 }
 

@@ -672,7 +672,7 @@ fn hex(v: &Value) -> Result<Vec<u8>> {
         .chars()
         .filter(|c| !c.is_whitespace() && *c != '_')
         .collect();
-    if digits.len() % 2 != 0 {
+    if !digits.len().is_multiple_of(2) {
         return Err(v.error("`hex` needs an even number of digits"));
     }
     digits

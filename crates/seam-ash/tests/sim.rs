@@ -125,3 +125,14 @@ fn async_cores_run_on_it_through_the_lifts() {
     .unwrap();
     assert_eq!(out, [7; 4]);
 }
+
+#[test]
+fn submissions_on_the_simulation_are_done_at_once() {
+    let mut gpu = SimGpu::new();
+    gpu.acquire(Submit::<SimSubmission>::new(), |_, submission| {
+        assert!(submission.inspect(IsDone)?);
+        submission.perform(Wait)
+    })
+    .unwrap();
+    assert!(gpu.log().iter().any(|r| matches!(r, Recorded::Submit)));
+}

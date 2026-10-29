@@ -135,6 +135,8 @@ feature), makes the GPU effects:
   (with clears, vertex buffers, instances, bindings and push constants),
   `Download`, `DownloadImage`, `Finish`, and the `DeviceInfo` query. Only
   downloads and `Finish` wait.
+- `Submit`: a scope that sends the work so far without waiting, lending a
+  submission to perform `Wait` on or inspect `IsDone`; closing it waits.
 - The handler tracks what each operation reads and writes and inserts the
   barriers and image layout transitions; a core never mentions
   synchronization. The tests run with the Khronos validation layer's
@@ -143,7 +145,12 @@ feature), makes the GPU effects:
   implementation gives both forms: blocking (`Perform`) waits on the
   calling thread, async (`AsyncPerform`, `SendPerform`) awaits a waiter
   thread under any executor. A scope closed while the GPU still uses its
-  resource defers the destruction.
+  resource defers the destruction; a download cancelled mid-flight frees
+  its staging memory once the GPU is done with it. Programs compile
+  outside the device lock (on their own thread in the async form).
+  `AshOptions` sets how long waits spin before sleeping (`spin`, 20 µs by
+  default; spinning removes most of the async form's wake-up latency) and
+  the waiter thread's stack size.
 - `SimGpu`: buffers and images as bytes in memory, the same checks as
   `Ash`, clears applied, and programs run by CPU functions given per
   label, for testing a core's data flow without a GPU.

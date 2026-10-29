@@ -4,6 +4,7 @@
 //! device, or no validation layer, say so and pass.
 #![cfg(feature = "ash")]
 
+use core::time::Duration;
 use seam_ash::*;
 use seam_core::future::block_on;
 use seam_core::prelude::*;
@@ -448,5 +449,225 @@ fn mistakes_fail_the_same_way_on_both() {
     assert!(matches!(real, GpuError::Invalid(_)), "{real}");
     let info = gpu.inspect(DeviceInfo);
     assert!(info.api_version >= (1, 3, 0));
+    clean(&gpu);
+}
+
+/// Work submitted without waiting: the submission says whether it is done,
+/// waits when asked, and closing its scope waits too.
+#[test]
+fn submitting_without_waiting() {
+    let Some(mut gpu) = gpu() else { return };
+    let shader = wgsl(DOUBLE);
+    let program = CreateProgram::compute("double", &shader, "main", &[BindingKind::StorageBuffer]);
+    let out = gpu
+        .acquire(program, |gpu, program| {
+            gpu.acquire(CreateBuffer::new(16, BufferUsage::STORAGE), |gpu, buf| {
+                gpu.perform(Upload::new(*buf, &u32_bytes(&[1, 2, 3, 4])))?;
+                gpu.perform(Dispatch::new(*program, &[Bind::Storage(*buf)], [4, 1, 1]))?;
+                gpu.acquire(Submit::<Submission>::new(), |_, submission| {
+                    // Done or not, asking does not wait.
+                    submission.inspect(IsDone)?;
+                    submission.perform(Wait)?;
+                    assert!(submission.inspect(IsDone)?);
+                    Ok::<_, GpuError>(())
+                })?;
+                // A second submission's scope closes without an explicit
+                // wait, and waits.
+                gpu.perform(Dispatch::new(*program, &[Bind::Storage(*buf)], [4, 1, 1]))?;
+                gpu.acquire(Submit::<Submission>::new(), |_, _| Ok::<_, GpuError>(()))?;
+                // Nothing performed since: it lends a finished one.
+                gpu.acquire(Submit::<Submission>::new(), |_, submission| {
+                    assert!(submission.inspect(IsDone)?);
+                    Ok::<_, GpuError>(())
+                })?;
+                let mut out = [0; 16];
+                gpu.perform(Download::new(*buf, &mut out))?;
+                Ok::<_, GpuError>(bytes_u32(&out))
+            })
+        })
+        .unwrap();
+    assert_eq!(out, [4, 8, 12, 16]);
+    assert_eq!(gpu.pending_counts(), (0, 0));
+    clean(&gpu);
+}
+
+/// Spinning is a setting: none, the default, or a long one all give the
+/// same results, sync and async.
+#[test]
+fn any_spin_gives_the_same_results() {
+    let shader = wgsl(DOUBLE);
+    for spin in [
+        Duration::ZERO,
+        AshOptions::default().spin,
+        Duration::from_millis(5),
+    ] {
+        let Ok(mut gpu) = Ash::with(&AshOptions {
+            validation: true,
+            spin,
+            ..AshOptions::default()
+        }) else {
+            return;
+        };
+        assert_eq!(double(&mut gpu, &shader, &[1, 2]).unwrap(), [2, 4]);
+        let out = block_on(async {
+            let mut gpu = gpu.clone();
+            gpu.acquire_async(
+                CreateBuffer::new(4, BufferUsage::STORAGE),
+                async |gpu, buf| {
+                    gpu.perform_async(Upload::new(*buf, &[3; 4])).await?;
+                    let mut out = [0; 4];
+                    gpu.perform_async(Download::new(*buf, &mut out)).await?;
+                    Ok::<_, GpuError>(out)
+                },
+            )
+            .await
+        })
+        .unwrap();
+        assert_eq!(out, [3; 4]);
+        clean(&gpu);
+    }
+}
+
+/// Many tasks on a multithreaded runtime share one device; each gets its
+/// own numbers back.
+#[test]
+fn tasks_on_tokio_share_one_device() {
+    let Some(gpu) = gpu() else { return };
+    let shader = std::sync::Arc::new(wgsl(DOUBLE));
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let tasks: Vec<_> = (0..16u32)
+            .map(|i| {
+                let mut gpu = gpu.clone();
+                let shader = shader.clone();
+                tokio::spawn(async move {
+                    let program = CreateProgram::compute(
+                        "double",
+                        &shader,
+                        "main",
+                        &[BindingKind::StorageBuffer],
+                    );
+                    gpu.acquire_send(program, async |gpu, program| {
+                        gpu.acquire_send(
+                            CreateBuffer::new(8, BufferUsage::STORAGE),
+                            async |gpu, buf| {
+                                let mut out = vec![0; 8];
+                                for _ in 0..4 {
+                                    gpu.perform_send(Upload::new(*buf, &u32_bytes(&[i, i + 1])))
+                                        .await?;
+                                    gpu.perform_send(Dispatch::new(
+                                        *program,
+                                        &[Bind::Storage(*buf)],
+                                        [2, 1, 1],
+                                    ))
+                                    .await?;
+                                    gpu.perform_send(Download::new(*buf, &mut out)).await?;
+                                }
+                                Ok::<_, GpuError>((i, bytes_u32(&out)))
+                            },
+                        )
+                        .await
+                    })
+                    .await
+                })
+            })
+            .collect();
+        for task in tasks {
+            let (i, out) = task.await.unwrap().unwrap();
+            assert_eq!(out, [2 * i, 2 * (i + 1)]);
+        }
+    });
+    let mut gpu = gpu;
+    gpu.perform(Finish).unwrap();
+    assert_eq!(gpu.pending_counts(), (0, 0));
+    clean(&gpu);
+}
+
+/// A download dropped before the GPU finishes leaves its staging memory to
+/// be freed once the batch is done, not in use and not leaked.
+#[test]
+fn cancelled_downloads_free_their_staging() {
+    let Ok(gpu) = Ash::with(&AshOptions {
+        validation: true,
+        spin: Duration::ZERO,
+        ..AshOptions::default()
+    }) else {
+        return;
+    };
+    let shader = wgsl(DOUBLE);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let cancelled = runtime.block_on(async {
+        let mut gpu = gpu.clone();
+        let program =
+            CreateProgram::compute("double", &shader, "main", &[BindingKind::StorageBuffer]);
+        gpu.acquire_send(program, async |gpu, program| {
+            gpu.acquire_send(
+                CreateBuffer::new(1 << 20, BufferUsage::STORAGE),
+                async |gpu, buf| {
+                    let mut cancelled = 0;
+                    for _ in 0..8 {
+                        gpu.perform_send(Dispatch::new(
+                            *program,
+                            &[Bind::Storage(*buf)],
+                            [65535, 1, 1],
+                        ))
+                        .await?;
+                        let mut out = vec![0; 1 << 20];
+                        let download = gpu.perform_send(Download::new(*buf, &mut out));
+                        tokio::select! {
+                            biased;
+                            done = download => done?,
+                            () = std::future::ready(()) => cancelled += 1,
+                        }
+                    }
+                    gpu.perform_send(Finish).await?;
+                    Ok::<_, GpuError>(cancelled)
+                },
+            )
+            .await
+        })
+        .await
+        .unwrap()
+    });
+    // At least one was dropped mid-flight on llvmpipe; either way nothing
+    // is left once everything finished.
+    eprintln!("{cancelled} of 8 downloads cancelled");
+    assert_eq!(gpu.pending_counts(), (0, 0));
+    clean(&gpu);
+}
+
+/// Programs compile off the calling thread in the async form; a creation
+/// dropped part way leaves nothing behind.
+#[test]
+fn async_program_creation_and_abandoning_it() {
+    let Some(gpu) = gpu() else { return };
+    let shader = wgsl(DOUBLE);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for _ in 0..4 {
+            let mut gpu = gpu.clone();
+            let program =
+                CreateProgram::compute("double", &shader, "main", &[BindingKind::StorageBuffer]);
+            let create = gpu.acquire_send(program, async |_, _| Ok::<_, GpuError>(()));
+            tokio::select! {
+                biased;
+                done = create => done.unwrap(),
+                () = std::future::ready(()) => {}
+            }
+        }
+    });
+    // Abandoned programs are destroyed once their compiles finish; give
+    // them the time.
+    std::thread::sleep(Duration::from_millis(500));
+    let mut gpu = gpu;
+    assert_eq!(double(&mut gpu, &shader, &[21]).unwrap(), [42]);
     clean(&gpu);
 }

@@ -25,6 +25,7 @@ use core::ffi::c_void;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
+use core::time::Duration;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::CString;
 use std::format;
@@ -39,12 +40,12 @@ use crate::validate::{self, Lookup};
 use crate::{
     AttrFormat, Bind, BindingKind, Blend, Buffer, BufferUsage, CopyBuffer, CreateBuffer,
     CreateImage, CreateProgram, DeviceInfo, Dispatch, Download, DownloadImage, Draw, Finish,
-    Format, GpuError, GpuInfo, GpuKind, Image, ImageUsage, Program, ProgramKind, ResInfo, Upload,
-    UploadImage,
+    Format, GpuError, GpuInfo, GpuKind, Image, ImageUsage, IsDone, Program, ProgramKind, ResInfo,
+    Submit, Upload, UploadImage, Wait,
 };
 
 /// How [`Ash::with`] sets Vulkan up.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AshOptions {
     /// Turn on the Khronos validation layer, with synchronization
     /// validation, and keep what it reports for
@@ -54,6 +55,27 @@ pub struct AshOptions {
     /// Prefer this kind of GPU, when there is a choice. Without it, a
     /// discrete GPU is preferred, then integrated, virtual and software.
     pub prefer: Option<GpuKind>,
+    /// How long a wait keeps checking whether the GPU has finished before
+    /// it goes to sleep (blocking) or hands the wait to the waiter thread
+    /// (async). Checking notices completion at once, where a sleeping
+    /// thread must be woken; it costs the CPU it spins for. Set it near
+    /// the time of the GPU work you wait on to cut waiting latency, or to
+    /// zero to never spin. 20 µs by default.
+    pub spin: Duration,
+    /// The stack size of the thread that waits for async operations: it
+    /// only waits on fences, so it needs little. 64 KiB by default.
+    pub waiter_stack: usize,
+}
+
+impl Default for AshOptions {
+    fn default() -> Self {
+        Self {
+            validation: false,
+            prefer: None,
+            spin: Duration::from_micros(20),
+            waiter_stack: 64 * 1024,
+        }
+    }
 }
 
 /// Real Vulkan 1.3, through ash.
@@ -88,6 +110,8 @@ struct Shared {
     info: GpuInfo,
     messages: Arc<Mutex<Vec<String>>>,
     waiter: OnceLock<Waiter>,
+    spin: Duration,
+    waiter_stack: usize,
 }
 
 /// The thread that waits on fences for async operations.
@@ -101,7 +125,8 @@ struct Job {
     signal: Arc<Signal>,
 }
 
-/// An async wait: done, and the waker to call when it is.
+/// The async waits on one batch: whether it is done, and the wakers to
+/// call when it is. One per batch, made by its first async wait.
 #[derive(Default)]
 struct Signal {
     state: Mutex<SignalState>,
@@ -110,7 +135,7 @@ struct Signal {
 #[derive(Default)]
 struct SignalState {
     done: Option<Result<(), GpuError>>,
-    waker: Option<Waker>,
+    wakers: Vec<Waker>,
 }
 
 impl Signal {
@@ -123,12 +148,12 @@ impl Signal {
     }
 
     fn complete(&self, result: Result<(), GpuError>) {
-        let waker = {
+        let wakers = {
             let mut state = self.lock();
             state.done = Some(result);
-            state.waker.take()
+            core::mem::take(&mut state.wakers)
         };
-        if let Some(waker) = waker {
+        for waker in wakers {
             waker.wake();
         }
     }
@@ -145,7 +170,10 @@ impl Future for FenceWait {
         match &state.done {
             Some(result) => Poll::Ready(result.clone()),
             None => {
-                state.waker = Some(cx.waker().clone());
+                let waker = cx.waker();
+                if !state.wakers.iter().any(|w| w.will_wake(waker)) {
+                    state.wakers.push(waker.clone());
+                }
                 Poll::Pending
             }
         }
@@ -235,13 +263,17 @@ struct InFlight {
     fence: vk::Fence,
     staging: Vec<Staging>,
     pools: Vec<vk::DescriptorPool>,
-    /// Blocking callers waiting on the fence, outside the lock.
+    /// Blocking callers and submissions waiting on the fence, outside the
+    /// lock.
     holds: usize,
-    /// Async waits on the fence, by the waiter thread.
-    signals: Vec<Arc<Signal>>,
+    /// The async waits on the fence, through the waiter thread.
+    signal: Option<Arc<Signal>>,
 }
 
 /// A download submitted: its fence to wait on, then its staging to read.
+/// Its batch is held from the moment it is made, under the same lock, so
+/// the fence outlives the wait; [`Dev::end_wait`] (or dropping the
+/// [`InProgress`] around it) lets go.
 struct Pending {
     seq: u64,
     fence: vk::Fence,
@@ -270,6 +302,9 @@ struct Dev {
     in_flight: VecDeque<InFlight>,
     /// Resources whose scopes closed, destroyed once their last batch is.
     dead: Vec<(u64, Kind)>,
+    /// Staging of downloads whose futures were dropped mid-wait, freed once
+    /// their batch is done.
+    orphans: Vec<(u64, Staging)>,
     next_seq: u64,
     completed: u64,
 }
@@ -544,6 +579,7 @@ impl Dev {
             batch: None,
             in_flight: VecDeque::new(),
             dead: Vec::new(),
+            orphans: Vec::new(),
             next_seq: 1,
             completed: 0,
         };
@@ -678,36 +714,43 @@ impl Dev {
     }
 
     fn destroy_kind(&self, kind: Kind) {
-        // SAFETY: called only once no submitted work uses it.
-        unsafe {
-            match kind {
-                Kind::Buffer { buffer, memory } => {
-                    self.device.destroy_buffer(buffer, None);
-                    self.device.free_memory(memory, None);
-                }
-                Kind::Image {
-                    image,
-                    memory,
-                    view,
-                    ..
-                } => {
-                    self.device.destroy_image_view(view, None);
-                    self.device.destroy_image(image, None);
-                    self.device.free_memory(memory, None);
-                }
-                Kind::Program {
-                    pipeline,
-                    layout,
-                    set_layout,
-                } => {
-                    self.device.destroy_pipeline(pipeline, None);
-                    self.device.destroy_pipeline_layout(layout, None);
-                    self.device.destroy_descriptor_set_layout(set_layout, None);
-                }
+        destroy_kind(&self.device, kind);
+    }
+}
+
+/// Destroys a resource's Vulkan objects.
+fn destroy_kind(device: &ash::Device, kind: Kind) {
+    // SAFETY: called only once no submitted work uses it.
+    unsafe {
+        match kind {
+            Kind::Buffer { buffer, memory } => {
+                device.destroy_buffer(buffer, None);
+                device.free_memory(memory, None);
+            }
+            Kind::Image {
+                image,
+                memory,
+                view,
+                ..
+            } => {
+                device.destroy_image_view(view, None);
+                device.destroy_image(image, None);
+                device.free_memory(memory, None);
+            }
+            Kind::Program {
+                pipeline,
+                layout,
+                set_layout,
+            } => {
+                device.destroy_pipeline(pipeline, None);
+                device.destroy_pipeline_layout(layout, None);
+                device.destroy_descriptor_set_layout(set_layout, None);
             }
         }
     }
+}
 
+impl Dev {
     fn add(&mut self, info: ResInfo, kind: Kind) -> u64 {
         self.next_id += 1;
         self.res.insert(
@@ -1074,7 +1117,7 @@ impl Dev {
             staging: batch.staging,
             pools: batch.pools,
             holds: 0,
-            signals: Vec::new(),
+            signal: None,
         });
         Ok(Some((batch.seq, fence)))
     }
@@ -1089,7 +1132,8 @@ impl Dev {
         while let Some(front) = self.in_flight.front() {
             // SAFETY: the fence is alive: it is destroyed only here.
             let signaled = unsafe { self.device.get_fence_status(front.fence) }.unwrap_or(false);
-            if !signaled || front.holds > 0 || !front.signals.iter().all(|s| s.is_done()) {
+            let waited = front.signal.as_ref().is_none_or(|s| s.is_done());
+            if !signaled || front.holds > 0 || !waited {
                 break;
             }
             let done = self.in_flight.pop_front().expect("checked");
@@ -1114,6 +1158,13 @@ impl Dev {
         self.dead = waiting;
         for (_, kind) in ready {
             self.destroy_kind(kind);
+        }
+        let (ready, waiting): (Vec<_>, Vec<_>) = core::mem::take(&mut self.orphans)
+            .into_iter()
+            .partition(|(seq, _)| *seq <= completed);
+        self.orphans = waiting;
+        for (_, staging) in ready {
+            self.free_staging(staging);
         }
     }
 
@@ -1267,19 +1318,27 @@ impl Dev {
         Ok(Image(id))
     }
 
-    fn shader(&self, spirv: &[u32], label: &str) -> Result<vk::ShaderModule, GpuError> {
+    fn shader(
+        device: &ash::Device,
+        spirv: &[u32],
+        label: &str,
+    ) -> Result<vk::ShaderModule, GpuError> {
         if spirv.is_empty() {
             return Err(crate::invalid(format!("program `{label}` has no SPIR-V")));
         }
         let info = vk::ShaderModuleCreateInfo::default().code(spirv);
         // SAFETY: the code is the caller's SPIR-V; drivers reject invalid
         // modules, and validation catches the rest.
-        unsafe { self.device.create_shader_module(&info, None) }.map_err(vk_error)
+        unsafe { device.create_shader_module(&info, None) }.map_err(vk_error)
     }
 
-    fn create_program(&mut self, op: CreateProgram<'_>) -> Result<Program, GpuError> {
-        validate::create_program(&op)?;
-        self.retire();
+    /// Builds a program's Vulkan objects: no lock needed, since it touches
+    /// only the device, which Vulkan lets any thread use.
+    fn build_program(
+        device: &ash::Device,
+        op: &CreateProgram<'_>,
+    ) -> Result<(ResInfo, Kind), GpuError> {
+        validate::create_program(op)?;
         let set_bindings: Vec<vk::DescriptorSetLayoutBinding<'_>> = op
             .bindings
             .iter()
@@ -1300,8 +1359,7 @@ impl Dev {
         let ranges: &[vk::PushConstantRange] = if op.push_constants > 0 { &ranges } else { &[] };
         // SAFETY: valid create infos; everything is destroyed on failure.
         let (set_layout, layout) = unsafe {
-            let set_layout = self
-                .device
+            let set_layout = device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&set_bindings),
                     None,
@@ -1311,30 +1369,27 @@ impl Dev {
             let info = vk::PipelineLayoutCreateInfo::default()
                 .set_layouts(&layouts)
                 .push_constant_ranges(ranges);
-            match self.device.create_pipeline_layout(&info, None) {
+            match device.create_pipeline_layout(&info, None) {
                 Ok(l) => (set_layout, l),
                 Err(e) => {
-                    self.device.destroy_descriptor_set_layout(set_layout, None);
+                    device.destroy_descriptor_set_layout(set_layout, None);
                     return Err(vk_error(e));
                 }
             }
         };
-        let cleanup = |dev: &Dev| {
-            // SAFETY: nothing uses them yet.
-            unsafe {
-                dev.device.destroy_pipeline_layout(layout, None);
-                dev.device.destroy_descriptor_set_layout(set_layout, None);
-            }
-        };
-        let built = self.pipeline(&op, layout);
+        let built = Self::pipeline(device, op, layout);
         let (pipeline, compute, target, stride) = match built {
             Ok(p) => p,
             Err(e) => {
-                cleanup(self);
+                // SAFETY: nothing uses them yet.
+                unsafe {
+                    device.destroy_pipeline_layout(layout, None);
+                    device.destroy_descriptor_set_layout(set_layout, None);
+                }
                 return Err(e);
             }
         };
-        let id = self.add(
+        Ok((
             ResInfo::Program {
                 label: op.label.into(),
                 compute,
@@ -1348,12 +1403,11 @@ impl Dev {
                 layout,
                 set_layout,
             },
-        );
-        Ok(Program(id))
+        ))
     }
 
     fn pipeline(
-        &self,
+        device: &ash::Device,
         op: &CreateProgram<'_>,
         layout: vk::PipelineLayout,
     ) -> Result<(vk::Pipeline, bool, Option<Format>, u32), GpuError> {
@@ -1365,7 +1419,7 @@ impl Dev {
         };
         match op.kind {
             ProgramKind::Compute { spirv, entry } => {
-                let module = self.shader(spirv, op.label)?;
+                let module = Self::shader(device, spirv, op.label)?;
                 let name = CString::new(entry).map_err(|_| bad_entry())?;
                 let stage = vk::PipelineShaderStageCreateInfo::default()
                     .stage(vk::ShaderStageFlags::COMPUTE)
@@ -1376,12 +1430,9 @@ impl Dev {
                     .layout(layout);
                 // SAFETY: valid create info; the module is destroyed after.
                 let made = unsafe {
-                    let made = self.device.create_compute_pipelines(
-                        vk::PipelineCache::null(),
-                        &[info],
-                        None,
-                    );
-                    self.device.destroy_shader_module(module, None);
+                    let made =
+                        device.create_compute_pipelines(vk::PipelineCache::null(), &[info], None);
+                    device.destroy_shader_module(module, None);
                     made
                 };
                 let pipeline = made.map_err(|(_, e)| vk_error(e))?[0];
@@ -1397,20 +1448,20 @@ impl Dev {
                 target,
                 blend,
             } => {
-                let vs = self.shader(vertex, op.label)?;
-                let fs = match self.shader(fragment, op.label) {
+                let vs = Self::shader(device, vertex, op.label)?;
+                let fs = match Self::shader(device, fragment, op.label) {
                     Ok(m) => m,
                     Err(e) => {
                         // SAFETY: unused.
-                        unsafe { self.device.destroy_shader_module(vs, None) };
+                        unsafe { device.destroy_shader_module(vs, None) };
                         return Err(e);
                     }
                 };
                 let destroy_modules = || {
                     // SAFETY: the pipeline (if any) no longer needs them.
                     unsafe {
-                        self.device.destroy_shader_module(vs, None);
-                        self.device.destroy_shader_module(fs, None);
+                        device.destroy_shader_module(vs, None);
+                        device.destroy_shader_module(fs, None);
                     }
                 };
                 let (Ok(vname), Ok(fname)) =
@@ -1496,14 +1547,18 @@ impl Dev {
                 // SAFETY: a valid create info, everything it points to
                 // alive for the call.
                 let made = unsafe {
-                    self.device
-                        .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
+                    device.create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
                 };
                 destroy_modules();
                 let pipeline = made.map_err(|(_, e)| vk_error(e))?[0];
                 Ok((pipeline, false, Some(target), stride))
             }
         }
+    }
+
+    fn add_program(&mut self, (info, kind): (ResInfo, Kind)) -> Program {
+        self.retire();
+        Program(self.add(info, kind))
     }
 
     fn upload(&mut self, op: Upload<'_>) -> Result<(), GpuError> {
@@ -1823,6 +1878,7 @@ impl Dev {
             );
         }
         let (seq, fence) = self.submit()?.expect("the copy was just recorded");
+        self.hold(seq, 1);
         Ok(Pending {
             seq,
             fence,
@@ -1835,15 +1891,20 @@ impl Dev {
     fn start_finish(&mut self) -> Result<Option<Pending>, GpuError> {
         self.submit()?;
         self.retire();
-        Ok(self.in_flight.back().map(|f| Pending {
-            seq: f.seq,
-            fence: f.fence,
-            staging: None,
-        }))
+        let last = self.in_flight.back_mut().map(|f| {
+            f.holds += 1;
+            Pending {
+                seq: f.seq,
+                fence: f.fence,
+                staging: None,
+            }
+        });
+        Ok(last)
     }
 
     /// The second half of a wait: reads the staging buffer into `out`.
     fn end_wait(&mut self, mut pending: Pending, out: Option<&mut [u8]>) -> Result<(), GpuError> {
+        self.hold(pending.seq, -1);
         let staging = pending.staging.take();
         let result = match (staging, out) {
             (Some(staging), Some(out)) => {
@@ -1915,6 +1976,9 @@ impl Drop for Dev {
             for (_, kind) in core::mem::take(&mut self.dead) {
                 self.destroy_kind(kind);
             }
+            for (_, staging) in core::mem::take(&mut self.orphans) {
+                self.free_staging(staging);
+            }
             for (_, res) in core::mem::take(&mut self.res) {
                 self.destroy_kind(res.kind);
             }
@@ -1954,7 +2018,7 @@ impl Drop for Shared {
 }
 
 impl Ash {
-    /// The best GPU, without validation.
+    /// The best GPU, with the default [`AshOptions`].
     pub fn new() -> Result<Self, GpuError> {
         Self::with(&AshOptions::default())
     }
@@ -1971,6 +2035,8 @@ impl Ash {
                 info,
                 messages,
                 waiter: OnceLock::new(),
+                spin: options.spin,
+                waiter_stack: options.waiter_stack,
             }),
         })
     }
@@ -1987,6 +2053,15 @@ impl Ash {
         )
     }
 
+    /// How many batches are submitted and not yet cleaned up, and how many
+    /// staging buffers of cancelled downloads wait to be freed: for tests.
+    #[doc(hidden)]
+    pub fn pending_counts(&self) -> (usize, usize) {
+        let mut dev = self.dev();
+        dev.retire();
+        (dev.in_flight.len(), dev.orphans.len())
+    }
+
     fn dev(&self) -> MutexGuard<'_, Dev> {
         self.shared
             .dev
@@ -1994,36 +2069,86 @@ impl Ash {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Waits for `pending` on this thread: the blocking form.
-    fn wait_blocking(&self, pending: Pending, out: Option<&mut [u8]>) -> Result<(), GpuError> {
-        self.dev().hold(pending.seq, 1);
-        // SAFETY: the fence stays alive while held.
-        let waited = unsafe {
-            self.shared
-                .device
-                .wait_for_fences(&[pending.fence], true, u64::MAX)
-        };
-        let mut dev = self.dev();
-        dev.hold(pending.seq, -1);
-        waited.map_err(vk_error)?;
-        dev.end_wait(pending, out)
+    /// Whether `fence` has signalled. It must be held.
+    fn signaled(&self, fence: vk::Fence) -> Result<bool, GpuError> {
+        // SAFETY: the caller holds the fence alive.
+        unsafe { self.shared.device.get_fence_status(fence) }.map_err(vk_error)
     }
 
-    /// Hands `pending`'s fence to the waiter thread: the async form.
-    fn wait_signal(&self, pending: &Pending) -> Arc<Signal> {
-        let signal = Arc::new(Signal::default());
-        if let Some(f) = self.dev().in_flight(pending.seq) {
-            f.signals.push(Arc::clone(&signal));
-        } else {
-            // Already retired: it has finished.
-            signal.complete(Ok(()));
-            return signal;
+    /// Checks `fence`, then keeps checking for up to the spin budget.
+    /// Whether it signalled. It must be held.
+    fn spin(&self, fence: vk::Fence) -> Result<bool, GpuError> {
+        if self.signaled(fence)? {
+            return Ok(true);
         }
+        let budget = self.shared.spin;
+        if budget.is_zero() {
+            return Ok(false);
+        }
+        let until = std::time::Instant::now() + budget;
+        while std::time::Instant::now() < until {
+            core::hint::spin_loop();
+            if self.signaled(fence)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Waits for `fence` on this thread: spins, then sleeps on it. The
+    /// blocking form. Its batch must be held.
+    fn block(&self, fence: vk::Fence) -> Result<(), GpuError> {
+        if self.spin(fence)? {
+            return Ok(());
+        }
+        // SAFETY: held by the caller.
+        unsafe {
+            self.shared
+                .device
+                .wait_for_fences(&[fence], true, u64::MAX)
+                .map_err(vk_error)
+        }
+    }
+
+    /// Waits for batch `seq` without blocking: spins, then hands the fence
+    /// to the waiter thread (once per batch) and awaits it. The async form.
+    /// The batch must be held.
+    async fn wait(&self, seq: u64, fence: vk::Fence) -> Result<(), GpuError> {
+        if self.spin(fence)? {
+            return Ok(());
+        }
+        let (signal, send) = {
+            let mut dev = self.dev();
+            // Held, so it is still in flight.
+            let Some(f) = dev.in_flight(seq) else {
+                return Ok(());
+            };
+            match &f.signal {
+                Some(s) => (Arc::clone(s), false),
+                None => {
+                    let s = Arc::new(Signal::default());
+                    f.signal = Some(Arc::clone(&s));
+                    (s, true)
+                }
+            }
+        };
+        if send {
+            self.send(Job {
+                fence,
+                signal: Arc::clone(&signal),
+            });
+        }
+        FenceWait(signal).await
+    }
+
+    /// Gives the waiter thread a fence, starting the thread if need be.
+    fn send(&self, job: Job) {
         let waiter = self.shared.waiter.get_or_init(|| {
             let (tx, rx) = mpsc::channel::<Job>();
             let device = self.shared.device.clone();
             let thread = std::thread::Builder::new()
                 .name("seam-ash fences".to_string())
+                .stack_size(self.shared.waiter_stack)
                 .spawn(move || {
                     for job in rx {
                         // SAFETY: the fence stays alive until its signal is
@@ -2032,37 +2157,56 @@ impl Ash {
                             unsafe { device.wait_for_fences(&[job.fence], true, u64::MAX) };
                         job.signal.complete(waited.map_err(vk_error));
                     }
-                })
-                .expect("seam-ash: could not start the fence waiter thread");
+                });
+            let (jobs, thread) = match thread {
+                Ok(t) => (Some(tx), Some(t)),
+                Err(_) => (None, None),
+            };
             Waiter {
-                jobs: Mutex::new(Some(tx)),
-                thread: Mutex::new(Some(thread)),
+                jobs: Mutex::new(jobs),
+                thread: Mutex::new(thread),
             }
         });
+        let signal = Arc::clone(&job.signal);
         let sent = waiter
             .jobs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            .map(|tx| {
-                tx.send(Job {
-                    fence: pending.fence,
-                    signal: Arc::clone(&signal),
-                })
-                .is_ok()
-            });
-        if sent != Some(true) {
-            signal.complete(Err(GpuError::DeviceLost));
+            .is_some_and(|tx| tx.send(job).is_ok());
+        if !sent {
+            signal.complete(Err(GpuError::Unsupported(
+                "the fence waiter thread could not start".into(),
+            )));
         }
-        signal
     }
+}
 
-    async fn wait_async(&self, pending: Pending, out: Option<&mut [u8]>) -> Result<(), GpuError> {
-        let signal = self.wait_signal(&pending);
-        let waited = FenceWait(signal).await;
-        let mut dev = self.dev();
-        waited?;
-        dev.end_wait(pending, out)
+/// A wait in progress: lets go of its batch when done or dropped. If the
+/// future waiting on a download is dropped, the staging buffer goes to the
+/// device's orphans, freed once its batch is.
+struct InProgress<'a> {
+    ash: &'a Ash,
+    pending: Option<Pending>,
+}
+
+impl InProgress<'_> {
+    fn finish(mut self, out: Option<&mut [u8]>) -> Result<(), GpuError> {
+        let pending = self.pending.take().expect("finished once");
+        self.ash.dev().end_wait(pending, out)
+    }
+}
+
+impl Drop for InProgress<'_> {
+    fn drop(&mut self) {
+        if let Some(mut pending) = self.pending.take() {
+            let mut dev = self.ash.dev();
+            dev.hold(pending.seq, -1);
+            if let Some(staging) = pending.staging.take() {
+                dev.orphans.push((pending.seq, staging));
+            }
+            dev.retire();
+        }
     }
 }
 
@@ -2098,13 +2242,210 @@ now! {
     [] Closing<CreateBuffer> => Result<(), GpuError>, |dev, Closing(b, _)| { dev.destroy(b.raw()); Ok(()) };
     [] Opening<CreateImage> => Result<Image, GpuError>, |dev, Opening(op, _)| dev.create_image(op);
     [] Closing<CreateImage> => Result<(), GpuError>, |dev, Closing(i, _)| { dev.destroy(i.raw()); Ok(()) };
-    ['a] Opening<CreateProgram<'a>> => Result<Program, GpuError>, |dev, Opening(op, _)| dev.create_program(op);
     ['a] Closing<CreateProgram<'a>> => Result<(), GpuError>, |dev, Closing(p, _)| { dev.destroy(p.raw()); Ok(()) };
     ['a] Upload<'a> => Result<(), GpuError>, |dev, op| dev.upload(op);
     ['a] UploadImage<'a> => Result<(), GpuError>, |dev, op| dev.upload_image(op);
     [] CopyBuffer => Result<(), GpuError>, |dev, op| dev.copy(op);
     ['a] Dispatch<'a> => Result<(), GpuError>, |dev, op| dev.dispatch(op);
     ['a] Draw<'a> => Result<(), GpuError>, |dev, op| dev.draw(op);
+}
+
+/// Compiles on the calling thread, outside the lock.
+impl Perform<Opening<CreateProgram<'_>>> for Ash {
+    fn perform(&mut self, Opening(op, _): Opening<CreateProgram<'_>>) -> Result<Program, GpuError> {
+        let built = Dev::build_program(&self.shared.device, &op)?;
+        Ok(self.dev().add_program(built))
+    }
+}
+
+/// A program's description, owned, for compiling on another thread.
+struct ProgramSpec {
+    label: String,
+    compute: Option<(Vec<u32>, String)>,
+    draw: Option<DrawSpec>,
+    bindings: Vec<BindingKind>,
+    push_constants: u32,
+}
+
+struct DrawSpec {
+    vertex: Vec<u32>,
+    vertex_entry: String,
+    fragment: Vec<u32>,
+    fragment_entry: String,
+    attrs: Vec<crate::VertexAttr>,
+    stride: u32,
+    target: Format,
+    blend: Blend,
+}
+
+impl ProgramSpec {
+    fn of(op: &CreateProgram<'_>) -> Self {
+        let (compute, draw) = match op.kind {
+            ProgramKind::Compute { spirv, entry } => (Some((spirv.to_vec(), entry.into())), None),
+            ProgramKind::Draw {
+                vertex,
+                vertex_entry,
+                fragment,
+                fragment_entry,
+                attrs,
+                stride,
+                target,
+                blend,
+            } => (
+                None,
+                Some(DrawSpec {
+                    vertex: vertex.to_vec(),
+                    vertex_entry: vertex_entry.into(),
+                    fragment: fragment.to_vec(),
+                    fragment_entry: fragment_entry.into(),
+                    attrs: attrs.to_vec(),
+                    stride,
+                    target,
+                    blend,
+                }),
+            ),
+        };
+        Self {
+            label: op.label.into(),
+            compute,
+            draw,
+            bindings: op.bindings.to_vec(),
+            push_constants: op.push_constants,
+        }
+    }
+
+    fn op(&self) -> CreateProgram<'_> {
+        let kind = match (&self.compute, &self.draw) {
+            (Some((spirv, entry)), _) => ProgramKind::Compute { spirv, entry },
+            (_, Some(d)) => ProgramKind::Draw {
+                vertex: &d.vertex,
+                vertex_entry: &d.vertex_entry,
+                fragment: &d.fragment,
+                fragment_entry: &d.fragment_entry,
+                attrs: &d.attrs,
+                stride: d.stride,
+                target: d.target,
+                blend: d.blend,
+            },
+            _ => unreachable!("one of the two"),
+        };
+        CreateProgram {
+            label: &self.label,
+            kind,
+            bindings: &self.bindings,
+            push_constants: self.push_constants,
+        }
+    }
+}
+
+type Built = Result<(ResInfo, Kind), GpuError>;
+
+/// A program compiling on its own thread, for the async forms.
+#[derive(Default)]
+struct Compiling {
+    state: Mutex<CompilingState>,
+}
+
+#[derive(Default)]
+struct CompilingState {
+    built: Option<Built>,
+    waker: Option<Waker>,
+    /// The future waiting for it was dropped: the thread destroys what it
+    /// built.
+    abandoned: bool,
+}
+
+/// Awaits a [`Compiling`]; dropping it abandons the program.
+struct AwaitBuilt {
+    compiling: Arc<Compiling>,
+    device: ash::Device,
+}
+
+impl Future for AwaitBuilt {
+    type Output = Built;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Built> {
+        let mut state = self
+            .compiling
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match state.built.take() {
+            Some(built) => Poll::Ready(built),
+            None => {
+                state.waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+    }
+}
+
+impl Drop for AwaitBuilt {
+    fn drop(&mut self) {
+        let mut state = self
+            .compiling
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.abandoned = true;
+        if let Some(Ok((_, kind))) = state.built.take() {
+            destroy_kind(&self.device, kind);
+        }
+    }
+}
+
+impl Ash {
+    /// Compiles `op` on a thread of its own (shaders take a while to
+    /// compile), so an executor's thread is never blocked by it.
+    async fn create_program_async(&self, op: &CreateProgram<'_>) -> Result<Program, GpuError> {
+        validate::create_program(op)?;
+        let spec = ProgramSpec::of(op);
+        let compiling = Arc::new(Compiling::default());
+        let device = self.shared.device.clone();
+        let theirs = (Arc::clone(&compiling), device.clone());
+        std::thread::Builder::new()
+            .name("seam-ash compile".to_string())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                let (compiling, device) = theirs;
+                let built = Dev::build_program(&device, &spec.op());
+                let mut state = compiling
+                    .state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if state.abandoned {
+                    if let Ok((_, kind)) = built {
+                        destroy_kind(&device, kind);
+                    }
+                    return;
+                }
+                state.built = Some(built);
+                if let Some(waker) = state.waker.take() {
+                    waker.wake();
+                }
+            })
+            .map_err(|_| GpuError::Unsupported("could not start a thread to compile on".into()))?;
+        let built = AwaitBuilt { compiling, device }.await?;
+        Ok(self.dev().add_program(built))
+    }
+}
+
+impl<'a> seam_core::future::AsyncPerform<Opening<CreateProgram<'a>>> for Ash {
+    async fn perform_async(
+        &mut self,
+        Opening(op, _): Opening<CreateProgram<'a>>,
+    ) -> Result<Program, GpuError> {
+        self.create_program_async(&op).await
+    }
+}
+
+impl<'a> seam_core::future::SendPerform<Opening<CreateProgram<'a>>> for Ash {
+    async fn perform_send(
+        &mut self,
+        Opening(op, _): Opening<CreateProgram<'a>>,
+    ) -> Result<Program, GpuError> {
+        self.create_program_async(&op).await
+    }
 }
 
 impl Perform<Download<'_>> for Ash {
@@ -2118,7 +2459,13 @@ impl Perform<Download<'_>> for Ash {
             }
             dev.start_download(op.buffer.raw(), op.offset, len, false)?
         };
-        self.wait_blocking(pending, Some(op.out))
+        let fence = pending.fence;
+        let progress = InProgress {
+            ash: self,
+            pending: Some(pending),
+        };
+        self.block(fence)?;
+        progress.finish(Some(op.out))
     }
 }
 
@@ -2129,17 +2476,29 @@ impl Perform<DownloadImage<'_>> for Ash {
             validate::whole_image(&*dev, op.image.raw(), op.out.len(), "download")?;
             dev.start_download(op.image.raw(), 0, op.out.len() as u64, true)?
         };
-        self.wait_blocking(pending, Some(op.out))
+        let fence = pending.fence;
+        let progress = InProgress {
+            ash: self,
+            pending: Some(pending),
+        };
+        self.block(fence)?;
+        progress.finish(Some(op.out))
     }
 }
 
 impl Perform<Finish> for Ash {
     fn perform(&mut self, _: Finish) -> Result<(), GpuError> {
-        let pending = self.dev().start_finish()?;
-        match pending {
-            Some(p) => self.wait_blocking(p, None),
-            None => Ok(()),
-        }
+        // Bound first: the lock is released before waiting.
+        let Some(pending) = self.dev().start_finish()? else {
+            return Ok(());
+        };
+        let fence = pending.fence;
+        let progress = InProgress {
+            ash: self,
+            pending: Some(pending),
+        };
+        self.block(fence)?;
+        progress.finish(None)
     }
 }
 
@@ -2158,7 +2517,10 @@ macro_rules! waiting_async {
                     }
                     dev.start_download(op.buffer.raw(), op.offset, len, false)?
                 };
-                self.wait_async(pending, Some(op.out)).await
+                let (seq, fence) = (pending.seq, pending.fence);
+                let progress = InProgress { ash: self, pending: Some(pending) };
+                self.wait(seq, fence).await?;
+                progress.finish(Some(op.out))
             }
         }
 
@@ -2169,17 +2531,22 @@ macro_rules! waiting_async {
                     validate::whole_image(&*dev, op.image.raw(), op.out.len(), "download")?;
                     dev.start_download(op.image.raw(), 0, op.out.len() as u64, true)?
                 };
-                self.wait_async(pending, Some(op.out)).await
+                let (seq, fence) = (pending.seq, pending.fence);
+                let progress = InProgress { ash: self, pending: Some(pending) };
+                self.wait(seq, fence).await?;
+                progress.finish(Some(op.out))
             }
         }
 
         impl seam_core::future::$trait<Finish> for Ash {
             async fn $method(&mut self, _: Finish) -> Result<(), GpuError> {
-                let pending = self.dev().start_finish()?;
-                match pending {
-                    Some(p) => self.wait_async(p, None).await,
-                    None => Ok(()),
-                }
+                let Some(pending) = self.dev().start_finish()? else {
+                    return Ok(());
+                };
+                let (seq, fence) = (pending.seq, pending.fence);
+                let progress = InProgress { ash: self, pending: Some(pending) };
+                self.wait(seq, fence).await?;
+                progress.finish(None)
             }
         }
     )*};
@@ -2188,6 +2555,127 @@ macro_rules! waiting_async {
 waiting_async! {
     perform_async: AsyncPerform;
     perform_send: SendPerform;
+}
+
+/// Work submitted with [`Submit`] on [`Ash`]: perform [`Wait`] on it, or
+/// inspect [`IsDone`]. It keeps its batch's fence alive while it lives.
+pub struct Submission {
+    ash: Ash,
+    /// The batch, and its fence; `None` when there was nothing to submit.
+    batch: Option<(u64, vk::Fence)>,
+    done: bool,
+}
+
+impl core::fmt::Debug for Submission {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Submission")
+            .field("batch", &self.batch.map(|b| b.0))
+            .field("done", &self.done)
+            .finish()
+    }
+}
+
+impl Drop for Submission {
+    fn drop(&mut self) {
+        if let Some((seq, _)) = self.batch {
+            let mut dev = self.ash.dev();
+            dev.hold(seq, -1);
+            dev.retire();
+        }
+    }
+}
+
+impl Dev {
+    /// Submits the batch, if any, and holds the last batch in flight for a
+    /// submission.
+    fn start_submit(&mut self) -> Result<Option<(u64, vk::Fence)>, GpuError> {
+        self.submit()?;
+        self.retire();
+        let last = self.in_flight.back().map(|f| (f.seq, f.fence));
+        if let Some((seq, _)) = last {
+            self.hold(seq, 1);
+        }
+        Ok(last)
+    }
+}
+
+impl Ash {
+    fn open_submission(&self) -> Result<Submission, GpuError> {
+        let batch = self.dev().start_submit()?;
+        Ok(Submission {
+            ash: self.clone(),
+            batch,
+            done: batch.is_none(),
+        })
+    }
+}
+
+impl Perform<Opening<Submit<Submission>>> for Ash {
+    fn perform(&mut self, _: Opening<Submit<Submission>>) -> Result<Submission, GpuError> {
+        self.open_submission()
+    }
+}
+
+impl Perform<Closing<Submit<Submission>>> for Ash {
+    fn perform(&mut self, Closing(mut s, _): Closing<Submit<Submission>>) -> Result<(), GpuError> {
+        s.perform(Wait)
+    }
+}
+
+impl Perform<Wait> for Submission {
+    fn perform(&mut self, _: Wait) -> Result<(), GpuError> {
+        if let (false, Some((_, fence))) = (self.done, self.batch) {
+            self.ash.block(fence)?;
+            self.done = true;
+        }
+        Ok(())
+    }
+}
+
+impl Inspect<IsDone> for Submission {
+    fn inspect(&self, _: IsDone) -> Result<bool, GpuError> {
+        match (self.done, self.batch) {
+            (false, Some((_, fence))) => self.ash.signaled(fence),
+            _ => Ok(true),
+        }
+    }
+}
+
+macro_rules! submission_async {
+    ($($method:ident, $imethod:ident: $trait:ident, $itrait:ident;)*) => {$(
+        impl seam_core::future::$trait<Opening<Submit<Submission>>> for Ash {
+            async fn $method(&mut self, _: Opening<Submit<Submission>>) -> Result<Submission, GpuError> {
+                self.open_submission()
+            }
+        }
+
+        impl seam_core::future::$trait<Closing<Submit<Submission>>> for Ash {
+            async fn $method(&mut self, Closing(mut s, _): Closing<Submit<Submission>>) -> Result<(), GpuError> {
+                s.$method(Wait).await
+            }
+        }
+
+        impl seam_core::future::$trait<Wait> for Submission {
+            async fn $method(&mut self, _: Wait) -> Result<(), GpuError> {
+                if let (false, Some((seq, fence))) = (self.done, self.batch) {
+                    self.ash.wait(seq, fence).await?;
+                    self.done = true;
+                }
+                Ok(())
+            }
+        }
+
+        impl seam_core::future::$itrait<IsDone> for Submission {
+            async fn $imethod(&self, op: IsDone) -> Result<bool, GpuError> {
+                self.inspect(op)
+            }
+        }
+    )*};
+}
+
+submission_async! {
+    perform_async, inspect_async: AsyncPerform, AsyncInspect;
+    perform_send, inspect_send: SendPerform, SendInspect;
 }
 
 impl Inspect<DeviceInfo> for Ash {

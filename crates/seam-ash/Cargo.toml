@@ -18,6 +18,7 @@ ash = { workspace = true, features = ["std", "loaded", "debug"], optional = true
 
 [dev-dependencies]
 naga = { workspace = true, features = ["wgsl-in", "spv-out"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 
 [features]
 default = ["ash"]

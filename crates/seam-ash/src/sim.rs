@@ -11,8 +11,8 @@ use seam_core::{Closing, Inspect, Opening, Perform};
 use crate::validate::{self, Lookup};
 use crate::{
     Bind, Buffer, CopyBuffer, CreateBuffer, CreateImage, CreateProgram, DeviceInfo, Dispatch,
-    Download, DownloadImage, Draw, Finish, Format, GpuError, GpuInfo, GpuKind, Image, Program,
-    ProgramKind, ResInfo, Upload, UploadImage,
+    Download, DownloadImage, Draw, Finish, Format, GpuError, GpuInfo, GpuKind, Image, IsDone,
+    Program, ProgramKind, ResInfo, Submit, Upload, UploadImage, Wait,
 };
 
 /// What [`SimGpu`] was asked to do, in order: for tests to assert on.
@@ -70,6 +70,8 @@ pub enum Recorded {
     DownloadImage(Image),
     /// Everything was waited for.
     Finish,
+    /// The work so far was submitted.
+    Submit,
 }
 
 /// A program's work, for a [`SimGpu`] emulator to do on the CPU: the
@@ -173,12 +175,18 @@ impl Lookup for State {
 
 /// A simulated GPU: buffers and images are bytes in memory, uploads,
 /// copies and downloads move them, and every operation is checked as
-/// [`Ash`](crate::Ash) checks it. A program runs by the CPU function given
-/// for its label with [`emulate`](Self::emulate); one without does
-/// nothing, but is recorded. A draw that clears clears its target either
-/// way. Nothing waits.
+/// [`Ash`] checks it. A program runs by the CPU function given for its
+/// label with [`emulate`](Self::emulate); one without does nothing, but is
+/// recorded. A draw that clears clears its target either way. Nothing
+/// waits.
 ///
 /// Every clone is a handle to the same GPU.
+///
+#[cfg_attr(feature = "ash", doc = "[`Ash`]: crate::Ash")]
+#[cfg_attr(
+    not(feature = "ash"),
+    doc = "[`Ash`]: https://docs.rs/seam-rs-ash/latest/seam_ash/struct.Ash.html"
+)]
 #[derive(Clone, Default)]
 pub struct SimGpu(Arc<Mutex<State>>);
 
@@ -585,6 +593,38 @@ impl Perform<DownloadImage<'_>> for SimGpu {
         Ok(())
     }
 }
+
+/// A submission on a [`SimGpu`]: nothing in it waits, so it is always
+/// done.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SimSubmission;
+
+impl Perform<Opening<Submit<SimSubmission>>> for SimGpu {
+    fn perform(&mut self, _: Opening<Submit<SimSubmission>>) -> Result<SimSubmission, GpuError> {
+        self.lock().log.push(Recorded::Submit);
+        Ok(SimSubmission)
+    }
+}
+
+impl Perform<Closing<Submit<SimSubmission>>> for SimGpu {
+    fn perform(&mut self, _: Closing<Submit<SimSubmission>>) -> Result<(), GpuError> {
+        Ok(())
+    }
+}
+
+impl Perform<Wait> for SimSubmission {
+    fn perform(&mut self, _: Wait) -> Result<(), GpuError> {
+        Ok(())
+    }
+}
+
+impl Inspect<IsDone> for SimSubmission {
+    fn inspect(&self, _: IsDone) -> Result<bool, GpuError> {
+        Ok(true)
+    }
+}
+
+impl seam_core::Capability for SimSubmission {}
 
 impl Perform<Finish> for SimGpu {
     fn perform(&mut self, _: Finish) -> Result<(), GpuError> {

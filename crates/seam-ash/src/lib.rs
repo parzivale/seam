@@ -13,6 +13,10 @@
 //!   bound in order.
 //! - **Waiting**: [`Download`], [`DownloadImage`] and [`Finish`] wait for
 //!   the work before them; nothing else does.
+//! - **Submitting without waiting**: [`Submit`] is a scope that sends the
+//!   work so far to the GPU and lends a submission: [`IsDone`] says
+//!   whether it has finished, [`Wait`] waits for it, and closing the scope
+//!   waits too. So the CPU does other work while the GPU runs.
 //!
 //! Synchronization is the handler's business: it tracks what each step
 //! reads and writes, and inserts the barriers and image layout changes
@@ -25,7 +29,9 @@
 //!   It implements the operations twice from one implementation: the
 //!   blocking form (`Perform`) waits on the calling thread, and the async
 //!   form (`AsyncPerform`, `SendPerform`) awaits a waiter thread, under any
-//!   executor. Everything but the waiting is the same sync code.
+//!   executor. Everything but the waiting is the same sync code. Waits
+//!   spin briefly before sleeping or handing off; [`AshOptions`] sets for
+//!   how long, and the waiter thread's stack size.
 //! - [`SimGpu`]: a simulated GPU that keeps buffers and images in memory,
 //!   moves real bytes, checks every operation as `Ash` does, and runs a
 //!   program by a CPU function a test gives it, by the program's label.
@@ -65,6 +71,16 @@
 //! });
 //! assert_eq!(double(&mut gpu, &[], &[1, 2, 21]).unwrap(), [2, 4, 42]);
 //! ```
+//!
+#![cfg_attr(
+    feature = "ash",
+    doc = "[`Ash`]: crate::Ash\n[`AshOptions`]: crate::AshOptions"
+)]
+#![cfg_attr(
+    not(feature = "ash"),
+    doc = "[`Ash`]: https://docs.rs/seam-rs-ash/latest/seam_ash/struct.Ash.html\n\
+           [`AshOptions`]: https://docs.rs/seam-rs-ash/latest/seam_ash/struct.AshOptions.html"
+)]
 #![cfg_attr(not(feature = "ash"), forbid(unsafe_code))]
 
 use std::string::String;
@@ -79,9 +95,9 @@ mod sim;
 mod validate;
 
 #[cfg(feature = "ash")]
-pub use device::{Ash, AshOptions};
+pub use device::{Ash, AshOptions, Submission};
 
-pub use sim::{Recorded, Run, SimGpu};
+pub use sim::{Recorded, Run, SimGpu, SimSubmission};
 
 macro_rules! ids {
     ($($(#[$m:meta])* $name:ident;)*) => {$(
@@ -602,6 +618,54 @@ impl<'a> DownloadImage<'a> {
     }
 }
 
+/// Send everything performed so far to the GPU without waiting, lending a
+/// submission of type `S` for a scope: perform [`Wait`] on it, or inspect
+/// [`IsDone`]. Closing the scope waits for the work, so it has finished
+/// once the scope returns; a scope that fails or is cancelled lets go
+/// without waiting, and the work runs to its end on its own (GPU work
+/// cannot be stopped).
+///
+/// With nothing performed since the last submission, it lends the last
+/// one, or one already done.
+pub struct Submit<S> {
+    submission: core::marker::PhantomData<fn() -> S>,
+}
+
+impl<S> Submit<S> {
+    /// Describes submitting.
+    pub const fn new() -> Self {
+        Self {
+            submission: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<S> Default for Submit<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<S> core::fmt::Debug for Submit<S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Submit")
+    }
+}
+
+impl<S> Acquisition for Submit<S> {
+    type Resource = S;
+    type Error = GpuError;
+}
+
+/// Wait for a submission's work to finish. Performed on the submission.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Wait;
+
+/// Whether a submission's work has finished, without waiting. Inspected on
+/// the submission.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IsDone;
+
 /// Submit everything performed so far and wait for it to finish.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Finish;
@@ -688,10 +752,13 @@ outcomes! {
     Download<'_> => Result<(), GpuError>;
     DownloadImage<'_> => Result<(), GpuError>;
     Finish => Result<(), GpuError>;
+    Wait => Result<(), GpuError>;
+    IsDone => Result<bool, GpuError>;
     DeviceInfo => GpuInfo;
 }
 
 impl Query for DeviceInfo {}
+impl Query for IsDone {}
 
 impl Acquisition for CreateBuffer {
     type Resource = Buffer;
@@ -701,6 +768,10 @@ impl Acquisition for CreateBuffer {
 impl Acquisition for CreateImage {
     type Resource = Image;
     type Error = GpuError;
+}
+
+impl<S> Effect for Submit<S> {
+    type Key = effects::Submit;
 }
 
 impl Acquisition for CreateProgram<'_> {
@@ -729,7 +800,8 @@ pub mod effects {
         Download,
         DownloadImage,
         Finish,
-        DeviceInfo
+        DeviceInfo,
+        Submit
     );
 }
 

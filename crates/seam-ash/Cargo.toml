@@ -1,0 +1,29 @@
+[package]
+name = "seam-rs-ash"
+description = "Vulkan for seam: buffers, images and programs as scopes, uploads, draws and dispatches as effects, with synchronization worked out for you; over ash, sync and async, and simulated for tests."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+seam-core = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+naga = { workspace = true, features = ["wgsl-in", "spv-out"] }
+
+[features]
+default = []
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
+name = "seam_ash"
+
+[lints]
+workspace = true

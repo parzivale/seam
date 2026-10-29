@@ -173,7 +173,7 @@ impl Lookup for State {
 
 /// A simulated GPU: buffers and images are bytes in memory, uploads,
 /// copies and downloads move them, and every operation is checked as
-/// the Vulkan handler will check it. A program runs by the CPU function given
+/// [`Ash`](crate::Ash) checks it. A program runs by the CPU function given
 /// for its label with [`emulate`](Self::emulate); one without does
 /// nothing, but is recorded. A draw that clears clears its target either
 /// way. Nothing waits.

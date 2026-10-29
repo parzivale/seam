@@ -97,6 +97,7 @@ where
 | [`seam-notify`](https://github.com/parzivale/seam/tree/main/crates/seam-notify) (`seam-rs-notify`) | File watching as a scope: the OS's events through notify, or rescanning through any capability's filesystem (so a `Sim` drives it). |
 | [`seam-reqwest`](https://github.com/parzivale/seam/tree/main/crates/seam-reqwest) (`seam-rs-reqwest`) | HTTP requests as an effect (`Fetch`, over `http`'s types), sent with reqwest, or scripted per URL in tests. |
 | [`seam-sqlx`](https://github.com/parzivale/seam/tree/main/crates/seam-sqlx) (`seam-rs-sqlx`) | SQL as effects: `Execute`, `Fetch`, transactions as scopes, portable values; sqlx's `Any` pool, or in-memory SQLite in tests. |
+| [`seam-ash`](https://github.com/parzivale/seam/tree/main/crates/seam-ash) (`seam-rs-ash`) | The GPU as effects, over Vulkan through ash: buffers, images and programs as scopes; uploads, copies, dispatches, draws and downloads as operations; every barrier and layout transition worked out by the handler. `Ash` is real Vulkan 1.3, blocking or async from one implementation; `SimGpu` moves real bytes and runs programs by CPU functions in tests. |
 | [`seam-unix`](https://github.com/parzivale/seam/tree/main/crates/seam-unix) (`seam-rs-unix`) | Unix effects: mounts, `chmod`/`chown`, symlinks, IDs, signals, the host name, the umask; and `SimUnix`, which simulates them. |
 | [`seam-rustix`](https://github.com/parzivale/seam/tree/main/crates/seam-rustix), [`seam-nix`](https://github.com/parzivale/seam/tree/main/crates/seam-nix) | `seam-unix`'s effects performed with rustix, or with nix. |
 | [`seam-test`](https://github.com/parzivale/seam/tree/main/crates/seam-test) (`seam-rs-test`) | The pure test backend: a `Sim` world with a virtual clock, seeded randomness, in-memory filesystem and network, scripted commands and captured stdio. Its only real effect is allocation. |
@@ -130,6 +131,7 @@ and only the binary (or its tests) picks a backend.
 | `jiff`, `jiff-bundled` | Time zones over jiff, `seam::jiff`; `jiff-bundled` adds the compiled-in tz database. |
 | `smol` | The smol backend, `seam::smol`. |
 | `rand`, `uuid`, `dirs`, `tracing`, `notify`, `reqwest`, `sqlx` | The wrapper of that crate, as `seam::rand`, `seam::uuid`, and so on. |
+| `ash` | The GPU over Vulkan, `seam::ash`. |
 | `unix`, `rustix`, `nix` | Unix effects, `seam::unix`, and their handlers over rustix (`seam::rustix`) and nix (`seam::nix`). |
 | `test` | The pure test backend, `seam::test`. No std on its own. |
 | `rt-multi-thread`, `test-util` | Tokio runtime options, named as in Tokio. Only with `tokio`. |

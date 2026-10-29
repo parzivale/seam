@@ -14,6 +14,7 @@ categories.workspace = true
 seam-core = { workspace = true }
 seam-futures = { workspace = true, optional = true }
 seam-jiff = { workspace = true, optional = true }
+seam-ash = { workspace = true, optional = true }
 seam-dirs = { workspace = true, optional = true }
 seam-nix = { workspace = true, optional = true }
 seam-notify = { workspace = true, optional = true }
@@ -64,6 +65,10 @@ tracing = ["dep:seam-tracing"]
 notify = ["dep:seam-notify", "fs", "time"]
 reqwest = ["dep:seam-reqwest"]
 sqlx = ["dep:seam-sqlx"]
+# The GPU as effects, over Vulkan (`seam::ash`): buffers, images and
+# programs as scopes, uploads, draws and dispatches, synchronization worked
+# out by the handler. `SimGpu` simulates it.
+ash = ["dep:seam-ash", "seam-ash?/ash"]
 # Unix effects (`seam::unix`), and their handlers over rustix and nix.
 unix = ["dep:seam-unix", "fs"]
 rustix = ["unix", "dep:seam-rustix"]

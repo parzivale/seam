@@ -318,6 +318,10 @@ pub use seam_reqwest as reqwest;
 #[cfg(feature = "sqlx")]
 pub use seam_sqlx as sqlx;
 
+/// The GPU as effects, over Vulkan through ash, and simulated.
+#[cfg(feature = "ash")]
+pub use seam_ash as ash;
+
 /// Unix effects: mounts, permissions, links, IDs, signals.
 #[cfg(feature = "unix")]
 pub use seam_unix as unix;

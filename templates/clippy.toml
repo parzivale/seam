@@ -88,6 +88,8 @@ disallowed-methods = [
     { path = "nix::mount::umount2", reason = "take `Perform<seam_unix::Unmount>` instead" },
     { path = "nix::sys::signal::kill", reason = "take `Perform<seam_unix::Kill>` instead" },
     { path = "nix::unistd::chown", reason = "take `Perform<seam_unix::Chown>` instead" },
+    { path = "ash::Entry::load", reason = "take the `seam_ash` operations instead" },
+    { path = "ash::Entry::linked", reason = "take the `seam_ash` operations instead" },
 ]
 disallowed-macros = [
     { path = "std::println", reason = "use `seam::ops::stdio::println` instead" },

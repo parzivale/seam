@@ -12,12 +12,17 @@ categories.workspace = true
 
 [dependencies]
 seam-core = { workspace = true, features = ["std"] }
+# `loaded`: the Vulkan loader is opened at run time, so building needs no
+# Vulkan SDK.
+ash = { workspace = true, features = ["std", "loaded", "debug"], optional = true }
 
 [dev-dependencies]
 naga = { workspace = true, features = ["wgsl-in", "spv-out"] }
 
 [features]
-default = []
+default = ["ash"]
+# `Ash`: real Vulkan, through ash.
+ash = ["dep:ash"]
 
 [package.metadata.docs.rs]
 all-features = true

@@ -21,7 +21,7 @@
 //!
 //! Two handlers:
 //!
-//! - `Ash` (not written yet): real Vulkan 1.3, through ash.
+//! - [`Ash`] (feature `ash`, on by default): real Vulkan 1.3, through ash.
 //!   It implements the operations twice from one implementation: the
 //!   blocking form (`Perform`) waits on the calling thread, and the async
 //!   form (`AsyncPerform`, `SendPerform`) awaits a waiter thread, under any
@@ -65,15 +65,21 @@
 //! });
 //! assert_eq!(double(&mut gpu, &[], &[1, 2, 21]).unwrap(), [2, 4, 42]);
 //! ```
-#![forbid(unsafe_code)]
+#![cfg_attr(not(feature = "ash"), forbid(unsafe_code))]
 
 use std::string::String;
 use std::vec::Vec;
 
 use seam_core::{Acquisition, Effect, Operation, Query};
 
+#[cfg(feature = "ash")]
+#[allow(unsafe_code)] // Vulkan: every call is unsafe; see the module's docs.
+mod device;
 mod sim;
 mod validate;
+
+#[cfg(feature = "ash")]
+pub use device::{Ash, AshOptions};
 
 pub use sim::{Recorded, Run, SimGpu};
 

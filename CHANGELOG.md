@@ -123,6 +123,31 @@ bans each library's own direct calls.
 Each is on the latest release of its library: uuid 1.29, sqlx 0.9,
 reqwest 0.13 (rustls by default), nix 0.31, rustix 1.1.
 
+### The GPU over Vulkan
+
+A new crate, `seam-ash` (`seam-rs-ash`, `seam::ash` with the `ash`
+feature), makes the GPU effects:
+
+- Scopes for resources: `CreateBuffer`, `CreateImage` and `CreateProgram`
+  (compute, or vertex and fragment drawing triangles), lending plain
+  `Buffer`, `Image` and `Program` IDs.
+- Operations: `Upload`, `UploadImage`, `CopyBuffer`, `Dispatch`, `Draw`
+  (with clears, vertex buffers, instances, bindings and push constants),
+  `Download`, `DownloadImage`, `Finish`, and the `DeviceInfo` query. Only
+  downloads and `Finish` wait.
+- The handler tracks what each operation reads and writes and inserts the
+  barriers and image layout transitions; a core never mentions
+  synchronization. The tests run with the Khronos validation layer's
+  synchronization validation, which reports no hazards.
+- `Ash`: Vulkan 1.3 (dynamic rendering, synchronization2) through ash. One
+  implementation gives both forms: blocking (`Perform`) waits on the
+  calling thread, async (`AsyncPerform`, `SendPerform`) awaits a waiter
+  thread under any executor. A scope closed while the GPU still uses its
+  resource defers the destruction.
+- `SimGpu`: buffers and images as bytes in memory, the same checks as
+  `Ash`, clears applied, and programs run by CPU functions given per
+  label, for testing a core's data flow without a GPU.
+
 ### Simulation
 
 - `Sim::to_world` and `seam::test::to_world::<(K, ..), _>(&root)`

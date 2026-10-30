@@ -83,11 +83,38 @@
 //! |---|---|---|
 //! | `bundled` | no | [`Bundled`], the tz database compiled in (from `jiff-tzdb`), for systems without one; add `seam-rs-jiff` with it alongside `seam` |
 //!
-//! # Keeping cores honest
-//! Cores should not call jiff's own `Zoned::now`, `Timestamp::now`,
-//! `TimeZone::system` or `TimeZone::get`, which reach the system directly;
-//! seam's `templates/clippy.toml` bans them. Built without jiff's default
-//! features, as here, jiff has no database of its own to find.
+//! # jiff's API
+//!
+//! This crate is jiff for a core: all of jiff's API is here, at the same
+//! paths (`seam_jiff::civil::date`, `seam_jiff::tz::Offset`,
+//! `seam_jiff::fmt::strtime::format`, ...), except what reaches the
+//! system. Types whose API reaches the system are wrapped (`Zoned`,
+//! `Timestamp`, `civil::Date`, `tz::TimeZone`, and those that make or take
+//! them), every other method and trait impl forwarded; the rest are
+//! jiff's own, re-exported. A core depends on this crate rather than on
+//! jiff, so it cannot reach the clock or the tz database by accident.
+//!
+//! What is left out, and what to use instead:
+//!
+//! | jiff | Here |
+//! |---|---|
+//! | `Timestamp::now()` | [`Timestamp::now(c)`](Timestamp::now), by `WallClock` |
+//! | `Zoned::now()` | [`Zoned::now(c)`](Zoned::now), by `WallClock` and [`SystemTimeZone`] |
+//! | `TimeZone::system()`, `try_system()` | [`TimeZone::system(c)`](tz::TimeZone::system) |
+//! | `TimeZone::get(name)`, `tz::db()` | [`TimeZone::get(c, name)`](tz::TimeZone::get), by [`TimeZoneFor`] |
+//! | `in_tz(name)` on `Timestamp`, `Zoned`, `Date`, `DateTime` | `in_tz(c, name)` |
+//! | `"..[Europe/Paris]".parse::<Zoned>()` | [`Zoned::parse(c, s)`](Zoned::parse) |
+//! | `temporal::DateTimeParser::parse_zoned`, `parse_time_zone` | the same, taking `c` |
+//! | `strtime::BrokenDownTime::to_zoned()` | [`to_zoned(c)`](fmt::strtime::BrokenDownTime::to_zoned) |
+//! | `TimeZoneAnnotation::to_time_zone()` | [`to_time_zone(c)`](fmt::temporal::TimeZoneAnnotation::to_time_zone) |
+//! | `Zoned: TryFrom<SystemTime>` (the system's zone) | `Timestamp::try_from(t)?.to_zoned(tz)` |
+//! | `TimeZoneDatabase` | [`TzDb`] or [`Bundled`], as a part of the root |
+//!
+//! Each wrapper converts to and from its jiff type with `From`, for
+//! libraries that take jiff's. The wrappers are generated from jiff's API
+//! (`scripts/jiff-facade` in the repository), so they cover all of it.
+//! seam's `templates/clippy.toml` also bans jiff's effectful functions, for
+//! code that reaches jiff some other way.
 //!
 #![cfg_attr(
     not(feature = "bundled"),
@@ -95,11 +122,14 @@
 )]
 #![forbid(unsafe_code)]
 
+mod effectful;
+mod jiff_facade;
+pub use jiff_facade::*;
+
 use std::path::{Path, PathBuf};
 use std::string::String;
 
-use jiff::tz::TimeZone;
-use jiff::{Timestamp, Zoned};
+use crate::tz::TimeZone;
 use seam_core::io;
 use seam_core::ops::env::Var;
 use seam_core::ops::fs::{ReadAt, View, read_file};

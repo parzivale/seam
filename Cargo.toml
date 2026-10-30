@@ -33,6 +33,7 @@ seam-ash = { package = "seam-rs-ash", path = "crates/seam-ash", version = "0.6.0
 tokio = { version = "1.54", default-features = false }
 futures = { version = "0.3.34", default-features = false }
 jiff = { version = "0.2.38", default-features = false }
+ref-cast = "1.0.25"
 jiff-tzdb = { version = "0.1.9", default-features = false }
 rand = { version = "0.10", default-features = false }
 uuid = { version = "1", default-features = false }

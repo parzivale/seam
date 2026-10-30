@@ -24,7 +24,7 @@ fn world() -> Sim {
 /// offset at the world's time.
 fn system_zone(sim: &Sim) -> String {
     let tz = TzDb::new(sim.clone()).inspect(SystemTimeZone).unwrap();
-    let now = jiff::Timestamp::from_second(1_700_000_000).unwrap();
+    let now = seam_jiff::Timestamp::from_second(1_700_000_000).unwrap();
     format!("{} {}", tz.iana_name().unwrap_or("-"), tz.to_offset(now))
 }
 

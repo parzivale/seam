@@ -15,6 +15,8 @@ seam-core = { workspace = true, features = ["std", "fs", "env", "time"] }
 # No default features: jiff's own system time zone and tz database lookups
 # are effects, which this crate performs through seam instead.
 jiff = { workspace = true, features = ["std"] }
+# Borrowing a jiff value as its wrapper, without `unsafe` here.
+ref-cast = { workspace = true }
 jiff-tzdb = { workspace = true, optional = true }
 
 [dev-dependencies]

@@ -1,5 +1,66 @@
 # Changelog
 
+## Unreleased
+
+Samplers for the GPU, shaders written in Rust, an example for every crate,
+and fixes for what writing them turned up.
+
+### Breaking
+
+- `seam-ash`: `Bind::Sampled` takes the sampler that reads the image,
+  `Bind::Sampled(image, sampler)`; the device's built-in sampler (linear,
+  clamped to the edge) is gone. Make one with
+  `CreateSampler::new(Filter::Linear)`.
+- `seam-tracing`: `Span::fields` is a `Cow<[Field]>`, and
+  `Span::fields(..)` takes a slice or a `Vec` (it is no longer `const`).
+
+### The GPU
+
+- Samplers: `CreateSampler`, a scope lending a `Sampler`, with a filter
+  (`Nearest`, `Linear`) each way and an address mode per axis
+  (`ClampToEdge`, `Repeat`, `MirroredRepeat`, `ClampToBorder` with a
+  `BorderColor`). Bound with an image as a combined image sampler
+  (`Bind::Sampled(image, sampler)`: GLSL's `sampler2D`, rust-gpu's
+  `SampledImage`), or apart (`Bind::Texture`, `Bind::Sampler`: WGSL's and
+  HLSL's). Every stage samples, the vertex stage too. `SimGpu`'s
+  emulators sample the same way on the CPU (`Run::sample`, `sample_with`,
+  `texel`).
+- Shaders in Rust, through rust-gpu: `Ash` turns on the Vulkan memory
+  model where the device has it, which rust-gpu's shaders declare.
+  `crates/seam-ash/shaders` is a shader crate built to SPIR-V on
+  rust-gpu's nightly (its own `build` workspace) and for the CPU on
+  stable, so `SimGpu`'s emulators call the shaders themselves; the tests
+  run a Rust compute shader and a Rust vertex shader that samples, on
+  Vulkan and in the simulation.
+
+### Fixes
+
+- `seam-uuid`: `V7`, a generator whose v7 UUIDs sort in the order they
+  were made, within one millisecond too (a 42-bit counter, RFC 9562's
+  method 1), as uuid's own `now_v7` does; `new_v7` stays random within a
+  millisecond, and says so.
+- `seam-tracing`: a span from `span!` (and `info_span!`, ...) owns its
+  fields, so it can be held in a `let` before it is opened.
+- `seam-unix`: `SimUnix` performs `CreateDir` and `Open` through its
+  filesystem and gives what they create to the effective user, with the
+  mode the umask leaves, as Unix does; a user may then change its mode.
+- `seam-notify`: `Polling::comparing_contents` (and `compare_contents`)
+  compares files' contents too, as notify's `with_compare_contents` does,
+  so a rewrite that keeps the size within the clock's resolution is seen
+  (over a `Sim`, whose clock stands still, every same-size rewrite).
+- The `seam` feature `uuid` turns on the simulation's wall clock for
+  `test`, which the uuid helpers need.
+
+### Examples
+
+- One for every wrapper and handler crate in `crates/seam/examples`, each
+  a core with a `main` on the real handlers and tests on the simulated
+  ones: `checksums` (smol), `word_pipe` (futures), `world_clock` (jiff),
+  `dice` (rand), `ids` (uuid), `settings` (dirs), `import_log`
+  (tracing), `changes` (notify), `titles` (reqwest), `todo` (sqlx),
+  `shared_dir` (unix, over rustix) and `gpu_double` (ash, with a Rust
+  shader).
+
 ## 0.7.0
 
 The GPU over Vulkan, the wrapper crates working under every executor, and
@@ -76,22 +137,9 @@ core needs no direct dependency on the library:
 A new crate, `seam-ash` (`seam-rs-ash`, `seam::ash` with the `ash`
 feature), makes the GPU effects:
 
-- Scopes for resources: `CreateBuffer`, `CreateImage`, `CreateSampler`
-  and `CreateProgram` (compute, or vertex and fragment drawing triangles),
-  lending plain `Buffer`, `Image`, `Sampler` and `Program` IDs.
-- Samplers: a filter (`Nearest`, `Linear`) and an address mode per axis
-  (`ClampToEdge`, `Repeat`, `MirroredRepeat`, `ClampToBorder` with a
-  `BorderColor`). Bound with an image as a combined image sampler
-  (`Bind::Sampled(image, sampler)`: GLSL's `sampler2D`), or apart
-  (`Bind::Texture`, `Bind::Sampler`: WGSL's and HLSL's). Every stage
-  samples, the vertex stage too. `SimGpu`'s emulators sample the same way
-  on the CPU (`Run::sample`, `sample_with`, `texel`).
-- Shaders in Rust, through rust-gpu: `Ash` turns on the Vulkan memory
-  model, which rust-gpu's shaders declare. `crates/seam-ash/shaders` is a
-  shader crate built to SPIR-V on rust-gpu's nightly (its own `build`
-  workspace) and for the CPU on stable, so `SimGpu`'s emulators call the
-  shaders themselves; the tests run a Rust compute shader and a Rust
-  vertex shader that samples, on Vulkan and in the simulation.
+- Scopes for resources: `CreateBuffer`, `CreateImage` and `CreateProgram`
+  (compute, or vertex and fragment drawing triangles), lending plain
+  `Buffer`, `Image` and `Program` IDs.
 - Operations: `Upload`, `UploadImage`, `CopyBuffer`, `Dispatch`, `Draw`
   (with clears, vertex buffers, instances, bindings and push constants),
   `Download`, `DownloadImage`, `Finish`, and the `DeviceInfo` query. Only
@@ -132,23 +180,6 @@ feature), makes the GPU effects:
 
 ### Fixes
 
-- `seam-uuid`: `V7`, a generator whose v7 UUIDs sort in the order they
-  were made, within one millisecond too (a 42-bit counter, RFC 9562's
-  method 1), as uuid's own `now_v7` does; `new_v7` stays random within a
-  millisecond, and says so.
-- `seam-tracing`: a span from `span!` (and `info_span!`, ...) owns its
-  fields, so it can be held in a `let` before it is opened. `Span::fields`
-  takes a slice or a `Vec`.
-- `seam-unix`: `SimUnix` performs `CreateDir` and `Open` through its
-  filesystem and gives what they create to the effective user, with the
-  mode the umask leaves, as Unix does; a user may then change its mode.
-- `seam-notify`: `Polling::comparing_contents` (and `compare_contents`)
-  compares files' contents too, as notify's `with_compare_contents` does,
-  so a rewrite that keeps the size within the clock's resolution is seen
-  (over a `Sim`, whose clock stands still, every same-size rewrite).
-- The `seam` feature `uuid` turns on the simulation's wall clock for
-  `test`.
-
 - `create_dir_all` works innermost first, as std's does, climbing only
   past missing directories: it no longer touches an ancestor that exists,
   so it works where the root cannot be seen (a WASI sandbox, a chroot).
@@ -162,13 +193,6 @@ feature), makes the GPU effects:
   real handlers (compiled as a doctest) and its features. The README has
   a Handlers section: what each handler covers, and what each wrapper
   needs beside it in a root.
-- An example for every wrapper and handler crate in `crates/seam/examples`,
-  each a core with a `main` on the real handlers and tests on the
-  simulated ones: `checksums` (smol), `word_pipe` (futures),
-  `world_clock` (jiff), `dice` (rand), `ids` (uuid), `settings` (dirs),
-  `import_log` (tracing), `changes` (notify), `titles` (reqwest), `todo`
-  (sqlx), `shared_dir` (unix, over rustix) and `gpu_double` (ash, with a
-  Rust shader).
 - "Backend" is gone from the docs: seam has effects and handlers, and
   `Std`, `Tokio`, `Smol` and `Sim` are handlers like any other.
 

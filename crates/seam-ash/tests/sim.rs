@@ -136,3 +136,96 @@ fn submissions_on_the_simulation_are_done_at_once() {
     .unwrap();
     assert!(gpu.log().iter().any(|r| matches!(r, Recorded::Submit)));
 }
+
+/// A 1-pixel-high R8 image with texels 0, 100, 200, sampled by an
+/// emulator at the `u`s given, with `sampler`: each sample's red, in
+/// texel units of 255.
+fn samples(sampler: CreateSampler, us: &'static [f32]) -> Result<Vec<f32>, GpuError> {
+    let mut gpu = SimGpu::new();
+    let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let out = got.clone();
+    gpu.emulate("read", move |run| {
+        assert_eq!(run.sampler(0), Some(sampler));
+        *out.lock().unwrap() = us
+            .iter()
+            .map(|u| run.sample(0, [*u, 0.5])[0] * 255.0)
+            .collect();
+    });
+    let program = CreateProgram::compute("read", &[], "main", &[BindingKind::SampledImage]);
+    gpu.acquire(program, |gpu, program| {
+        let image = CreateImage::new(3, 1, Format::R8Unorm, ImageUsage::SAMPLED);
+        gpu.acquire(image, |gpu, img| {
+            gpu.perform(UploadImage::new(*img, &[0, 100, 200]))?;
+            gpu.acquire(sampler, |gpu, smp| {
+                gpu.perform(Dispatch::new(
+                    *program,
+                    &[Bind::Sampled(*img, *smp)],
+                    [1, 1, 1],
+                ))
+            })
+        })
+    })?;
+    let got = got.lock().unwrap().clone();
+    Ok(got)
+}
+
+#[test]
+fn emulators_sample_as_the_gpu_does() {
+    let near = |got: Vec<f32>, want: &[f32]| {
+        assert!(
+            got.iter().zip(want).all(|(g, w)| (g - w).abs() < 0.01),
+            "{got:?} != {want:?}"
+        );
+    };
+    // Texel centres are at 1/6, 3/6, 5/6.
+    let linear = CreateSampler::new(Filter::Linear);
+    near(
+        samples(linear, &[1.0 / 6.0, 2.0 / 6.0, 0.0, 1.0]).unwrap(),
+        &[0.0, 50.0, 0.0, 200.0],
+    );
+    let nearest = CreateSampler::new(Filter::Nearest).address(AddressMode::MirroredRepeat);
+    // Past the right edge it reads back the other way: 200, 200, 100, 0.
+    near(
+        samples(nearest, &[0.9, 1.1, 1.5, 1.9]).unwrap(),
+        &[200.0, 200.0, 100.0, 0.0],
+    );
+    let repeat = CreateSampler::new(Filter::Nearest).address(AddressMode::Repeat);
+    near(samples(repeat, &[1.1, -0.1]).unwrap(), &[0.0, 200.0]);
+    // Linear, repeating: between the last texel and the first.
+    let wrap = CreateSampler::new(Filter::Linear).address(AddressMode::Repeat);
+    near(samples(wrap, &[1.0]).unwrap(), &[100.0]);
+    let border = CreateSampler::new(Filter::Nearest)
+        .address(AddressMode::ClampToBorder)
+        .border(BorderColor::OpaqueWhite);
+    near(samples(border, &[-0.1, 0.5]).unwrap(), &[255.0, 100.0]);
+}
+
+#[test]
+fn a_closed_sampler_cannot_be_bound() {
+    let mut gpu = SimGpu::new();
+    let program = CreateProgram::compute("read", &[], "main", &[BindingKind::SampledImage]);
+    let err = gpu
+        .acquire(program, |gpu, program| {
+            let image = CreateImage::new(1, 1, Format::R8Unorm, ImageUsage::SAMPLED);
+            gpu.acquire(image, |gpu, img| {
+                let smp = gpu.acquire(CreateSampler::new(Filter::Nearest), |_, smp| Ok(*smp))?;
+                gpu.perform(Dispatch::new(
+                    *program,
+                    &[Bind::Sampled(*img, smp)],
+                    [1, 1, 1],
+                ))
+            })
+        })
+        .unwrap_err();
+    assert!(err.to_string().contains("sampler"), "{err}");
+    // A texture where a combined sampler is wanted is a mistake too.
+    let err = gpu
+        .acquire(program, |gpu, program| {
+            let image = CreateImage::new(1, 1, Format::R8Unorm, ImageUsage::SAMPLED);
+            gpu.acquire(image, |gpu, img| {
+                gpu.perform(Dispatch::new(*program, &[Bind::Texture(*img)], [1, 1, 1]))
+            })
+        })
+        .unwrap_err();
+    assert!(err.to_string().contains("SampledImage"), "{err}");
+}

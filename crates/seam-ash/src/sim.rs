@@ -10,9 +10,10 @@ use seam_core::{Closing, Inspect, Opening, Perform};
 
 use crate::validate::{self, Lookup};
 use crate::{
-    Bind, Buffer, CopyBuffer, CreateBuffer, CreateImage, CreateProgram, DeviceInfo, Dispatch,
-    Download, DownloadImage, Draw, Finish, Format, GpuError, GpuInfo, GpuKind, Image, Import,
-    IsDone, Program, ProgramKind, ResInfo, Submit, Upload, UploadImage,
+    AddressMode, Bind, Buffer, CopyBuffer, CreateBuffer, CreateImage, CreateProgram, CreateSampler,
+    DeviceInfo, Dispatch, Download, DownloadImage, Draw, Filter, Finish, Format, GpuError, GpuInfo,
+    GpuKind, Image, Import, IsDone, Program, ProgramKind, ResInfo, Sampler, Submit, Upload,
+    UploadImage,
 };
 
 /// What [`SimGpu`] was asked to do, in order: for tests to assert on.
@@ -22,6 +23,8 @@ pub enum Recorded {
     CreateBuffer(Buffer),
     /// An image was created.
     CreateImage(Image),
+    /// A sampler was created.
+    CreateSampler(Sampler),
     /// An image was imported.
     Import(Image),
     /// A program was created, with its label.
@@ -83,8 +86,11 @@ pub struct Run<'a> {
     label: &'a str,
     groups: [u32; 3],
     push: &'a [u8],
-    /// For each binding, the slot holding its resource's bytes.
-    bound: Vec<usize>,
+    /// For each binding, the slot holding its resource's bytes (`None`
+    /// for a sampler, which has none).
+    bound: Vec<Option<usize>>,
+    /// For each binding, its sampler, if it is a sampled image or one.
+    samplers: Vec<Option<CreateSampler>>,
     slots: Vec<Slot>,
     target: Option<usize>,
     vertices: Option<usize>,
@@ -96,6 +102,7 @@ struct Slot {
     id: u64,
     data: Vec<u8>,
     size: Option<(u32, u32)>,
+    format: Option<Format>,
 }
 
 impl Run<'_> {
@@ -121,14 +128,98 @@ impl Run<'_> {
     ///
     /// If there is no binding `i`.
     pub fn buffer(&mut self, i: usize) -> &mut [u8] {
-        let slot = self.bound[i];
+        let slot = self.slot(i);
         &mut self.slots[slot].data
+    }
+
+    fn slot(&self, i: usize) -> usize {
+        self.bound[i].expect("seam-ash: a sampler binding has no bytes")
     }
 
     /// The width and height of the image at binding `i`, or `None` for a
     /// buffer.
     pub fn image_size(&self, i: usize) -> Option<(u32, u32)> {
-        self.slots[self.bound[i]].size
+        self.bound[i].and_then(|s| self.slots[s].size)
+    }
+
+    /// The sampler at binding `i`: bound with a sampled image, or alone.
+    pub fn sampler(&self, i: usize) -> Option<CreateSampler> {
+        self.samplers[i]
+    }
+
+    /// The texel at `x`, `y` of the image at binding `i`, as linear RGBA:
+    /// what a shader's `texelFetch` reads (unorm in [0, 1], sRGB decoded,
+    /// one-channel formats as `[r, 0, 0, 1]`).
+    ///
+    /// # Panics
+    ///
+    /// If binding `i` is not an image, or `x`, `y` is outside it.
+    pub fn texel(&self, i: usize, x: u32, y: u32) -> [f32; 4] {
+        let slot = &self.slots[self.slot(i)];
+        let (w, h) = slot.size.expect("seam-ash: the binding is not an image");
+        assert!(
+            x < w && y < h,
+            "seam-ash: texel {x}, {y} is outside a {w}x{h} image"
+        );
+        let format = slot.format.expect("an image has a format");
+        let n = format.bytes_per_pixel() as usize;
+        let at = (y as usize * w as usize + x as usize) * n;
+        decode_pixel(format, &slot.data[at..at + n])
+    }
+
+    /// Samples the image at binding `i` at `uv` (in [0, 1] across the
+    /// image) with its sampler's filter and address modes: what a shader's
+    /// `textureLod(.., uv, 0.0)` reads. Images have one level, so this is
+    /// `texture` in a fragment shader too, up to the GPU's precision.
+    ///
+    /// # Panics
+    ///
+    /// If binding `i` is not a sampled image.
+    pub fn sample(&self, i: usize, uv: [f32; 2]) -> [f32; 4] {
+        self.sample_with(i, i, uv)
+    }
+
+    /// Samples the image (a texture) at binding `texture` with the sampler
+    /// at binding `sampler`, as [`sample`](Self::sample) does: for shaders
+    /// that bind them apart (WGSL, HLSL).
+    ///
+    /// # Panics
+    ///
+    /// If `texture` is not an image, or `sampler` not a sampler.
+    pub fn sample_with(&self, texture: usize, sampler: usize, uv: [f32; 2]) -> [f32; 4] {
+        let i = texture;
+        let sampler = self.samplers[sampler].expect("seam-ash: the binding has no sampler");
+        let (w, h) = self
+            .image_size(i)
+            .expect("seam-ash: the binding is not an image");
+        let border = sampler.border.rgba();
+        let fetch = |x: i64, y: i64| -> [f32; 4] {
+            match (wrap(x, w, sampler.address_u), wrap(y, h, sampler.address_v)) {
+                (Some(x), Some(y)) => self.texel(i, x, y),
+                _ => border,
+            }
+        };
+        let (u, v) = (uv[0] * w as f32, uv[1] * h as f32);
+        match sampler.mag {
+            Filter::Nearest => fetch(u.floor() as i64, v.floor() as i64),
+            Filter::Linear => {
+                let (u, v) = (u - 0.5, v - 0.5);
+                let (x, y) = (u.floor(), v.floor());
+                let (fx, fy) = (u - x, v - y);
+                let (x, y) = (x as i64, y as i64);
+                let [a, b, c, d] = [
+                    fetch(x, y),
+                    fetch(x + 1, y),
+                    fetch(x, y + 1),
+                    fetch(x + 1, y + 1),
+                ];
+                core::array::from_fn(|k| {
+                    let top = a[k] + (b[k] - a[k]) * fx;
+                    let bottom = c[k] + (d[k] - c[k]) * fx;
+                    top + (bottom - top) * fy
+                })
+            }
+        }
     }
 
     /// For a draw: the target image's pixels (already cleared, if the draw
@@ -151,6 +242,60 @@ impl Run<'_> {
     /// For a draw: how many vertices and instances.
     pub fn counts(&self) -> (u32, u32) {
         (self.vertex_count, self.instance_count)
+    }
+}
+
+/// A texel coordinate wrapped into `0..size` by `mode`, or `None` for the
+/// border.
+fn wrap(i: i64, size: u32, mode: AddressMode) -> Option<u32> {
+    let n = i64::from(size);
+    let i = match mode {
+        AddressMode::ClampToEdge => i.clamp(0, n - 1),
+        AddressMode::Repeat => i.rem_euclid(n),
+        AddressMode::MirroredRepeat => {
+            let m = i.rem_euclid(2 * n);
+            if m < n { m } else { 2 * n - 1 - m }
+        }
+        AddressMode::ClampToBorder if (0..n).contains(&i) => i,
+        AddressMode::ClampToBorder => return None,
+    };
+    Some(i as u32)
+}
+
+/// One pixel of `format`, as linear RGBA.
+fn decode_pixel(format: Format, px: &[u8]) -> [f32; 4] {
+    let unorm = |b: u8| f32::from(b) / 255.0;
+    let srgb = |b: u8| {
+        let c = unorm(b);
+        if c <= 0.040_45 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let half = |i: usize| f16_value(u16::from_le_bytes([px[i], px[i + 1]]));
+    let float = |i: usize| f32::from_le_bytes([px[i], px[i + 1], px[i + 2], px[i + 3]]);
+    match format {
+        Format::Rgba8Unorm => [unorm(px[0]), unorm(px[1]), unorm(px[2]), unorm(px[3])],
+        Format::Bgra8Unorm => [unorm(px[2]), unorm(px[1]), unorm(px[0]), unorm(px[3])],
+        Format::Rgba8Srgb => [srgb(px[0]), srgb(px[1]), srgb(px[2]), unorm(px[3])],
+        Format::Bgra8Srgb => [srgb(px[2]), srgb(px[1]), srgb(px[0]), unorm(px[3])],
+        Format::R8Unorm => [unorm(px[0]), 0.0, 0.0, 1.0],
+        Format::Rgba16Float => [half(0), half(2), half(4), half(6)],
+        Format::Rgba32Float => [float(0), float(4), float(8), float(12)],
+    }
+}
+
+/// IEEE half-precision bits as an `f32`.
+fn f16_value(h: u16) -> f32 {
+    let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exp = i32::from((h >> 10) & 0x1f);
+    let mant = f32::from(h & 0x3ff);
+    sign * match exp {
+        0 => mant * 2f32.powi(-24),
+        0x1f if mant == 0.0 => f32::INFINITY,
+        0x1f => f32::NAN,
+        e => (1.0 + mant / 1024.0) * 2f32.powi(e - 15),
     }
 }
 
@@ -287,26 +432,41 @@ impl State {
                 return i;
             }
             let entry = state.res.get_mut(&id).expect("checked to exist");
-            let size = match entry.info {
-                ResInfo::Image { width, height, .. } => Some((width, height)),
-                _ => None,
+            let (size, format) = match entry.info {
+                ResInfo::Image {
+                    width,
+                    height,
+                    format,
+                    ..
+                } => (Some((width, height)), Some(format)),
+                _ => (None, None),
             };
             slots.push(Slot {
                 id,
                 data: core::mem::take(&mut entry.data),
                 size,
+                format,
             });
             slots.len() - 1
         };
-        let bound: Vec<usize> = run_setup
+        let bound: Vec<Option<usize>> = run_setup
             .bindings
             .iter()
             .map(|b| {
                 let id = match *b {
                     Bind::Uniform(x) | Bind::Storage(x) => x.raw(),
-                    Bind::Sampled(x) | Bind::StorageImage(x) => x.raw(),
+                    Bind::Sampled(x, _) | Bind::Texture(x) | Bind::StorageImage(x) => x.raw(),
+                    Bind::Sampler(_) => return None,
                 };
-                slot_of(self, id)
+                Some(slot_of(self, id))
+            })
+            .collect();
+        let samplers = run_setup
+            .bindings
+            .iter()
+            .map(|b| match *b {
+                Bind::Sampled(_, s) | Bind::Sampler(s) => validate::sampler(&*self, s.raw()).ok(),
+                _ => None,
             })
             .collect();
         let target = run_setup.target.map(|t| slot_of(self, t.raw()));
@@ -316,6 +476,7 @@ impl State {
             groups: run_setup.groups,
             push: run_setup.push,
             bound,
+            samplers,
             slots,
             target,
             vertices,
@@ -374,6 +535,15 @@ impl Perform<Opening<CreateImage>> for SimGpu {
     }
 }
 
+impl Perform<Opening<CreateSampler>> for SimGpu {
+    fn perform(&mut self, Opening(op, _): Opening<CreateSampler>) -> Result<Sampler, GpuError> {
+        let mut state = self.lock();
+        let id = state.add(ResInfo::Sampler(op), 0);
+        state.log.push(Recorded::CreateSampler(Sampler(id)));
+        Ok(Sampler(id))
+    }
+}
+
 impl Perform<Opening<CreateProgram<'_>>> for SimGpu {
     fn perform(&mut self, Opening(op, _): Opening<CreateProgram<'_>>) -> Result<Program, GpuError> {
         validate::create_program(&op)?;
@@ -414,6 +584,7 @@ macro_rules! closing {
 closing! {
     CreateBuffer => Buffer;
     CreateImage => Image;
+    CreateSampler => Sampler;
     CreateProgram<'_> => Program;
 }
 

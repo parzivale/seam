@@ -42,6 +42,13 @@ pub(crate) fn image(
     }
 }
 
+pub(crate) fn sampler(l: &impl Lookup, id: u64) -> Result<crate::CreateSampler, GpuError> {
+    match l.info(id) {
+        Some(ResInfo::Sampler(s)) => Ok(*s),
+        _ => Err(gone("sampler", id)),
+    }
+}
+
 pub(crate) struct ProgramInfo<'a> {
     pub label: &'a str,
     pub compute: bool,
@@ -186,7 +193,12 @@ fn bindings(
         let ok = match *b {
             Bind::Uniform(buf) => buffer(l, buf.raw())?.1.contains(BufferUsage::UNIFORM),
             Bind::Storage(buf) => buffer(l, buf.raw())?.1.contains(BufferUsage::STORAGE),
-            Bind::Sampled(img) => image(l, img.raw())?.3.contains(ImageUsage::SAMPLED),
+            Bind::Sampled(img, smp) => {
+                sampler(l, smp.raw())?;
+                image(l, img.raw())?.3.contains(ImageUsage::SAMPLED)
+            }
+            Bind::Texture(img) => image(l, img.raw())?.3.contains(ImageUsage::SAMPLED),
+            Bind::Sampler(smp) => sampler(l, smp.raw()).is_ok(),
             Bind::StorageImage(img) => image(l, img.raw())?.3.contains(ImageUsage::STORAGE),
         };
         if !ok {

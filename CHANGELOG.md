@@ -76,9 +76,16 @@ core needs no direct dependency on the library:
 A new crate, `seam-ash` (`seam-rs-ash`, `seam::ash` with the `ash`
 feature), makes the GPU effects:
 
-- Scopes for resources: `CreateBuffer`, `CreateImage` and `CreateProgram`
-  (compute, or vertex and fragment drawing triangles), lending plain
-  `Buffer`, `Image` and `Program` IDs.
+- Scopes for resources: `CreateBuffer`, `CreateImage`, `CreateSampler`
+  and `CreateProgram` (compute, or vertex and fragment drawing triangles),
+  lending plain `Buffer`, `Image`, `Sampler` and `Program` IDs.
+- Samplers: a filter (`Nearest`, `Linear`) and an address mode per axis
+  (`ClampToEdge`, `Repeat`, `MirroredRepeat`, `ClampToBorder` with a
+  `BorderColor`). Bound with an image as a combined image sampler
+  (`Bind::Sampled(image, sampler)`: GLSL's `sampler2D`), or apart
+  (`Bind::Texture`, `Bind::Sampler`: WGSL's and HLSL's). Every stage
+  samples, the vertex stage too. `SimGpu`'s emulators sample the same way
+  on the CPU (`Run::sample`, `sample_with`, `texel`).
 - Operations: `Upload`, `UploadImage`, `CopyBuffer`, `Dispatch`, `Draw`
   (with clears, vertex buffers, instances, bindings and push constants),
   `Download`, `DownloadImage`, `Finish`, and the `DeviceInfo` query. Only

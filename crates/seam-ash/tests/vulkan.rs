@@ -317,7 +317,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 /// SPIR-V for GLSL, from glslang where it is installed: WGSL cannot say
 /// combined image samplers.
 fn glsl(stage: &str, src: &str) -> Option<Vec<u32>> {
-    let dir = std::env::temp_dir().join(format!("seam-ash-glsl-{}-{stage}", std::process::id()));
+    // Unique per call: tests compile in parallel.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir =
+        std::env::temp_dir().join(format!("seam-ash-glsl-{}-{n}-{stage}", std::process::id()));
     std::fs::create_dir_all(&dir).ok()?;
     let (input, output) = (dir.join(format!("shader.{stage}")), dir.join("shader.spv"));
     std::fs::write(&input, src).ok()?;
@@ -380,20 +384,22 @@ void main() { color = texture(tex, uv); }",
                 gpu.acquire(
                     CreateImage::new(2, 2, Format::Rgba8Unorm, ImageUsage::SAMPLED),
                     |gpu, tex| {
-                        gpu.acquire(
-                            CreateImage::new(4, 4, Format::Rgba8Unorm, ImageUsage::TARGET),
-                            |gpu, target| {
-                                gpu.perform(UploadImage::new(*tex, &texture))?;
-                                let bindings = [Bind::Sampled(*tex)];
-                                let draw = Draw::new(*program, *target, 3)
-                                    .clear([0.0, 0.0, 0.0, 1.0])
-                                    .bind(&bindings);
-                                gpu.perform(draw)?;
-                                let mut out = vec![0; 64];
-                                gpu.perform(DownloadImage::new(*target, &mut out))?;
-                                Ok::<_, GpuError>(out)
-                            },
-                        )
+                        gpu.acquire(CreateSampler::new(Filter::Linear), |gpu, smp| {
+                            gpu.acquire(
+                                CreateImage::new(4, 4, Format::Rgba8Unorm, ImageUsage::TARGET),
+                                |gpu, target| {
+                                    gpu.perform(UploadImage::new(*tex, &texture))?;
+                                    let bindings = [Bind::Sampled(*tex, *smp)];
+                                    let draw = Draw::new(*program, *target, 3)
+                                        .clear([0.0, 0.0, 0.0, 1.0])
+                                        .bind(&bindings);
+                                    gpu.perform(draw)?;
+                                    let mut out = vec![0; 64];
+                                    gpu.perform(DownloadImage::new(*target, &mut out))?;
+                                    Ok::<_, GpuError>(out)
+                                },
+                            )
+                        })
                     },
                 )
             },
@@ -403,6 +409,184 @@ void main() { color = texture(tex, uv); }",
     for px in pixels.chunks(4) {
         assert!((px[0] as i32 - 128).abs() <= 1 && px[3] == 255, "{px:?}");
     }
+    clean(&gpu);
+}
+
+/// The four texels of the 2x2 texture the vertex-stage tests sample:
+/// red, green / blue, white.
+const QUAD: [u8; 16] = [
+    255, 0, 0, 255, 0, 255, 0, 255, //
+    0, 0, 255, 255, 255, 255, 255, 255,
+];
+
+/// Draws a full-screen triangle whose colour the vertex stage samples
+/// from [`QUAD`] at `uv`, once per sampler in `samplers`; returns each
+/// draw's first pixel. `bind` gives the bindings for the texture and a
+/// sampler.
+fn sample_in_the_vertex_stage<G>(
+    gpu: &mut G,
+    program: CreateProgram<'_>,
+    samplers: &[CreateSampler],
+    bind: fn(Image, Sampler) -> Vec<Bind>,
+) -> Result<Vec<[u8; 4]>, GpuError>
+where
+    G: Provide<CreateImage>
+        + Provide<CreateSampler>
+        + for<'a> Provide<CreateProgram<'a>>
+        + for<'a> Perform<UploadImage<'a>>
+        + for<'a> Perform<Draw<'a>>
+        + for<'a> Perform<DownloadImage<'a>>,
+{
+    gpu.acquire(program, |gpu, program| {
+        let tex = CreateImage::new(2, 2, Format::Rgba8Unorm, ImageUsage::SAMPLED);
+        gpu.acquire(tex, |gpu, tex| {
+            gpu.perform(UploadImage::new(*tex, &QUAD))?;
+            let target = CreateImage::new(2, 2, Format::Rgba8Unorm, ImageUsage::TARGET);
+            gpu.acquire(target, |gpu, target| {
+                let mut firsts = Vec::new();
+                for desc in samplers {
+                    gpu.acquire(*desc, |gpu, smp| {
+                        let bindings = bind(*tex, *smp);
+                        gpu.perform(Draw::new(*program, *target, 3).bind(&bindings))?;
+                        let mut out = [0; 16];
+                        gpu.perform(DownloadImage::new(*target, &mut out))?;
+                        firsts.push([out[0], out[1], out[2], out[3]]);
+                        Ok::<_, GpuError>(())
+                    })?;
+                }
+                Ok(firsts)
+            })
+        })
+    })
+}
+
+/// Past the right edge, at `u` = 1.25, `v` = 0.25: texel 0, 0 (red) when
+/// repeating, 1, 0 (green) when clamped, the border (white) outside.
+const SAMPLERS: [CreateSampler; 3] = [
+    CreateSampler::new(Filter::Nearest).address(AddressMode::Repeat),
+    CreateSampler::new(Filter::Nearest),
+    CreateSampler::new(Filter::Nearest)
+        .address(AddressMode::ClampToBorder)
+        .border(BorderColor::OpaqueWhite),
+];
+const EXPECTED: [[u8; 4]; 3] = [[255, 0, 0, 255], [0, 255, 0, 255], [255; 4]];
+
+/// A vertex shader samples, through a combined image sampler (GLSL's
+/// `sampler2D`), with whichever sampler the draw binds.
+#[test]
+fn the_vertex_stage_samples_with_the_bound_sampler() {
+    let vs = glsl(
+        "vert",
+        "#version 450
+layout(set = 0, binding = 0) uniform sampler2D tex;
+layout(location = 0) flat out vec4 color;
+void main() {
+    vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+    color = textureLod(tex, vec2(1.25, 0.25), 0.0);
+}",
+    );
+    let fs = glsl(
+        "frag",
+        "#version 450
+layout(location = 0) flat in vec4 color;
+layout(location = 0) out vec4 out_color;
+void main() { out_color = color; }",
+    );
+    let (Some(vs), Some(fs)) = (vs, fs) else {
+        eprintln!("skipping: glslang is not installed");
+        return;
+    };
+    let kind = ProgramKind::Draw {
+        vertex: &vs,
+        vertex_entry: "main",
+        fragment: &fs,
+        fragment_entry: "main",
+        attrs: &[],
+        stride: 0,
+        target: Format::Rgba8Unorm,
+        blend: Blend::Replace,
+    };
+    let program = CreateProgram::draw("heights", kind, &[BindingKind::SampledImage]);
+    let bind = |t, s| vec![Bind::Sampled(t, s)];
+
+    // The simulation samples as the GPU does.
+    let mut sim = SimGpu::new();
+    sim.emulate("heights", |run| {
+        let color = run.sample(0, [1.25, 0.25]);
+        let px = color.map(|c| (c * 255.0).round() as u8);
+        let (target, _, _) = run.target();
+        for chunk in target.chunks_mut(4) {
+            chunk.copy_from_slice(&px);
+        }
+    });
+    assert_eq!(
+        sample_in_the_vertex_stage(&mut sim, program, &SAMPLERS, bind).unwrap(),
+        EXPECTED
+    );
+
+    let Some(mut gpu) = gpu() else { return };
+    assert_eq!(
+        sample_in_the_vertex_stage(&mut gpu, program, &SAMPLERS, bind).unwrap(),
+        EXPECTED
+    );
+    clean(&gpu);
+}
+
+/// The same from WGSL, whose textures and samplers are bound apart.
+#[test]
+fn the_vertex_stage_samples_a_texture_with_a_separate_sampler() {
+    let shader = wgsl(
+        "@group(0) @binding(0) var tex: texture_2d<f32>;
+@group(0) @binding(1) var smp: sampler;
+struct Out {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) @interpolate(flat) color: vec4<f32>,
+}
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> Out {
+    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return Out(vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0), textureSampleLevel(tex, smp, vec2<f32>(1.25, 0.25), 0.0));
+}
+@fragment
+fn fs(in: Out) -> @location(0) vec4<f32> { return in.color; }",
+    );
+    let kind = ProgramKind::Draw {
+        vertex: &shader,
+        vertex_entry: "vs",
+        fragment: &shader,
+        fragment_entry: "fs",
+        attrs: &[],
+        stride: 0,
+        target: Format::Rgba8Unorm,
+        blend: Blend::Replace,
+    };
+    let program = CreateProgram::draw(
+        "heights",
+        kind,
+        &[BindingKind::Texture, BindingKind::Sampler],
+    );
+    let bind = |t, s| vec![Bind::Texture(t), Bind::Sampler(s)];
+
+    let mut sim = SimGpu::new();
+    sim.emulate("heights", |run| {
+        let color = run.sample_with(0, 1, [1.25, 0.25]);
+        let px = color.map(|c| (c * 255.0).round() as u8);
+        let (target, _, _) = run.target();
+        for chunk in target.chunks_mut(4) {
+            chunk.copy_from_slice(&px);
+        }
+    });
+    assert_eq!(
+        sample_in_the_vertex_stage(&mut sim, program, &SAMPLERS, bind).unwrap(),
+        EXPECTED
+    );
+
+    let Some(mut gpu) = gpu() else { return };
+    assert_eq!(
+        sample_in_the_vertex_stage(&mut gpu, program, &SAMPLERS, bind).unwrap(),
+        EXPECTED
+    );
     clean(&gpu);
 }
 

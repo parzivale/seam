@@ -38,10 +38,11 @@ use seam_core::{Closing, Inspect, Opening, Perform};
 
 use crate::validate::{self, Lookup};
 use crate::{
-    AttrFormat, Bind, BindingKind, Blend, Buffer, BufferUsage, CopyBuffer, CreateBuffer,
-    CreateImage, CreateProgram, DeviceInfo, Dispatch, Download, DownloadImage, Draw, Finish,
-    Format, GpuError, GpuInfo, GpuKind, Image, ImageUsage, Import, IsDone, Program, ProgramKind,
-    ResInfo, Submit, Upload, UploadImage,
+    AddressMode, AttrFormat, Bind, BindingKind, Blend, BorderColor, Buffer, BufferUsage,
+    CopyBuffer, CreateBuffer, CreateImage, CreateProgram, CreateSampler, DeviceInfo, Dispatch,
+    Download, DownloadImage, Draw, Filter, Finish, Format, GpuError, GpuInfo, GpuKind, Image,
+    ImageUsage, Import, IsDone, Program, ProgramKind, ResInfo, Sampler, Submit, Upload,
+    UploadImage,
 };
 
 /// How [`Ash::with`] sets Vulkan up.
@@ -218,6 +219,7 @@ enum Kind {
         layout: vk::PipelineLayout,
         set_layout: vk::DescriptorSetLayout,
     },
+    Sampler(vk::Sampler),
 }
 
 /// Whether an image's memory belongs to something outside this device (an
@@ -357,7 +359,6 @@ struct Dev {
     ext: Extensions,
     mem: vk::PhysicalDeviceMemoryProperties,
     pool: vk::CommandPool,
-    sampler: vk::Sampler,
     next_id: u64,
     res: HashMap<u64, Res>,
     batch: Option<Batch>,
@@ -456,6 +457,8 @@ fn descriptor_type(k: BindingKind) -> vk::DescriptorType {
         BindingKind::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
         BindingKind::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
         BindingKind::SampledImage => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        BindingKind::Texture => vk::DescriptorType::SAMPLED_IMAGE,
+        BindingKind::Sampler => vk::DescriptorType::SAMPLER,
         BindingKind::StorageImage => vk::DescriptorType::STORAGE_IMAGE,
     }
 }
@@ -642,7 +645,7 @@ impl Dev {
         }
         let _ = on;
         // SAFETY: plain queries and creations on the new device.
-        let (mem, pool, sampler) = unsafe {
+        let (mem, pool) = unsafe {
             let mem = instance.get_physical_device_memory_properties(physical);
             let pool = device
                 .create_command_pool(
@@ -652,18 +655,7 @@ impl Dev {
                     None,
                 )
                 .map_err(vk_error)?;
-            let sampler = device
-                .create_sampler(
-                    &vk::SamplerCreateInfo::default()
-                        .mag_filter(vk::Filter::LINEAR)
-                        .min_filter(vk::Filter::LINEAR)
-                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-                    None,
-                )
-                .map_err(vk_error)?;
-            (mem, pool, sampler)
+            (mem, pool)
         };
         let info = GpuInfo {
             name: props
@@ -689,7 +681,6 @@ impl Dev {
             ext,
             mem,
             pool,
-            sampler,
             next_id: 0,
             res: HashMap::new(),
             batch: None,
@@ -862,6 +853,7 @@ fn destroy_kind(device: &ash::Device, kind: Kind) {
                 device.destroy_pipeline_layout(layout, None);
                 device.destroy_descriptor_set_layout(set_layout, None);
             }
+            Kind::Sampler(sampler) => device.destroy_sampler(sampler, None),
         }
     }
 }
@@ -1041,7 +1033,7 @@ impl Dev {
                         t.reads |= u.stage;
                     }
                 }
-                Kind::Program { .. } => {}
+                Kind::Program { .. } | Kind::Sampler(_) => {}
             }
         }
         if !buffer_barriers.is_empty() || !image_barriers.is_empty() {
@@ -1089,6 +1081,8 @@ impl Dev {
                         vk::DescriptorType::UNIFORM_BUFFER,
                         vk::DescriptorType::STORAGE_BUFFER,
                         vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                        vk::DescriptorType::SAMPLED_IMAGE,
+                        vk::DescriptorType::SAMPLER,
                         vk::DescriptorType::STORAGE_IMAGE,
                     ]
                     .map(|ty| vk::DescriptorPoolSize {
@@ -1120,6 +1114,7 @@ impl Dev {
             }
         }
         let set = set.ok_or(GpuError::OutOfMemory)?;
+        let seq = self.batch()?.seq;
         let mut buffer_infos = Vec::new();
         let mut image_infos = Vec::new();
         for b in bindings {
@@ -1134,19 +1129,47 @@ impl Dev {
                         range: vk::WHOLE_SIZE,
                     });
                 }
-                Bind::Sampled(img) | Bind::StorageImage(img) => {
+                Bind::Sampled(img, smp) => {
                     let Kind::Image { view, .. } = self.res[&img.raw()].kind else {
                         unreachable!()
                     };
-                    let layout = if matches!(b, Bind::Sampled(_)) {
+                    // The set names the sampler: it outlives the batch.
+                    let res = self.res.get_mut(&smp.raw()).expect("validated");
+                    res.last_use = seq;
+                    let Kind::Sampler(sampler) = res.kind else {
+                        unreachable!()
+                    };
+                    image_infos.push(vk::DescriptorImageInfo {
+                        sampler,
+                        image_view: view,
+                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    });
+                }
+                Bind::Texture(img) | Bind::StorageImage(img) => {
+                    let Kind::Image { view, .. } = self.res[&img.raw()].kind else {
+                        unreachable!()
+                    };
+                    let image_layout = if matches!(b, Bind::Texture(_)) {
                         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
                     } else {
                         vk::ImageLayout::GENERAL
                     };
                     image_infos.push(vk::DescriptorImageInfo {
-                        sampler: self.sampler,
+                        sampler: vk::Sampler::null(),
                         image_view: view,
-                        image_layout: layout,
+                        image_layout,
+                    });
+                }
+                Bind::Sampler(smp) => {
+                    let res = self.res.get_mut(&smp.raw()).expect("validated");
+                    res.last_use = seq;
+                    let Kind::Sampler(sampler) = res.kind else {
+                        unreachable!()
+                    };
+                    image_infos.push(vk::DescriptorImageInfo {
+                        sampler,
+                        image_view: vk::ImageView::null(),
+                        image_layout: vk::ImageLayout::UNDEFINED,
                     });
                 }
             }
@@ -1165,7 +1188,10 @@ impl Dev {
                         bi += 1;
                         w.buffer_info(core::slice::from_ref(&buffer_infos[bi - 1]))
                     }
-                    Bind::Sampled(_) | Bind::StorageImage(_) => {
+                    Bind::Sampled(..)
+                    | Bind::Texture(_)
+                    | Bind::Sampler(_)
+                    | Bind::StorageImage(_) => {
                         ii += 1;
                         w.image_info(core::slice::from_ref(&image_infos[ii - 1]))
                     }
@@ -1186,35 +1212,37 @@ impl Dev {
         let rw = vk::AccessFlags2::SHADER_STORAGE_READ | vk::AccessFlags2::SHADER_STORAGE_WRITE;
         bindings
             .iter()
-            .map(|b| match *b {
-                Bind::Uniform(x) => Use {
+            .filter_map(|b| match *b {
+                Bind::Uniform(x) => Some(Use {
                     id: x.raw(),
                     stage: shader,
                     access: vk::AccessFlags2::UNIFORM_READ,
                     write: false,
                     layout: None,
-                },
-                Bind::Storage(x) => Use {
+                }),
+                Bind::Storage(x) => Some(Use {
                     id: x.raw(),
                     stage: shader,
                     access: rw,
                     write: true,
                     layout: None,
-                },
-                Bind::Sampled(x) => Use {
+                }),
+                Bind::Sampled(x, _) | Bind::Texture(x) => Some(Use {
                     id: x.raw(),
                     stage: shader,
                     access: vk::AccessFlags2::SHADER_SAMPLED_READ,
                     write: false,
                     layout: Some(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-                },
-                Bind::StorageImage(x) => Use {
+                }),
+                Bind::StorageImage(x) => Some(Use {
                     id: x.raw(),
                     stage: shader,
                     access: rw,
                     write: true,
                     layout: Some(vk::ImageLayout::GENERAL),
-                },
+                }),
+                // A sampler is never written: nothing to order.
+                Bind::Sampler(_) => None,
             })
             .collect()
     }
@@ -1341,6 +1369,39 @@ impl Dev {
             Kind::Buffer { buffer, memory },
         );
         Ok(Buffer(id))
+    }
+
+    fn create_sampler(&mut self, op: CreateSampler) -> Result<Sampler, GpuError> {
+        self.retire();
+        let filter = |f| match f {
+            Filter::Nearest => vk::Filter::NEAREST,
+            Filter::Linear => vk::Filter::LINEAR,
+        };
+        let address = |a| match a {
+            AddressMode::ClampToEdge => vk::SamplerAddressMode::CLAMP_TO_EDGE,
+            AddressMode::Repeat => vk::SamplerAddressMode::REPEAT,
+            AddressMode::MirroredRepeat => vk::SamplerAddressMode::MIRRORED_REPEAT,
+            AddressMode::ClampToBorder => vk::SamplerAddressMode::CLAMP_TO_BORDER,
+        };
+        let border = match op.border {
+            BorderColor::TransparentBlack => vk::BorderColor::FLOAT_TRANSPARENT_BLACK,
+            BorderColor::OpaqueBlack => vk::BorderColor::FLOAT_OPAQUE_BLACK,
+            BorderColor::OpaqueWhite => vk::BorderColor::FLOAT_OPAQUE_WHITE,
+        };
+        let info = vk::SamplerCreateInfo::default()
+            .mag_filter(filter(op.mag))
+            .min_filter(filter(op.min))
+            .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+            .address_mode_u(address(op.address_u))
+            .address_mode_v(address(op.address_v))
+            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .border_color(border)
+            .max_lod(0.0);
+        // SAFETY: a valid create info.
+        let sampler = unsafe { self.device.create_sampler(&info, None) }.map_err(vk_error)?;
+        Ok(Sampler(
+            self.add(ResInfo::Sampler(op), Kind::Sampler(sampler)),
+        ))
     }
 
     fn create_image(&mut self, op: CreateImage) -> Result<Image, GpuError> {
@@ -2143,7 +2204,6 @@ impl Drop for Dev {
             for (_, res) in core::mem::take(&mut self.res) {
                 self.destroy_kind(res.kind);
             }
-            self.device.destroy_sampler(self.sampler, None);
             self.device.destroy_command_pool(self.pool, None);
             self.device.destroy_device(None);
             if let Some((utils, m)) = self.debug.take() {
@@ -2403,6 +2463,8 @@ now! {
     [] Closing<CreateBuffer> => Result<(), GpuError>, |dev, Closing(b, _)| { dev.destroy(b.raw()); Ok(()) };
     [] Opening<CreateImage> => Result<Image, GpuError>, |dev, Opening(op, _)| dev.create_image(op);
     [] Closing<CreateImage> => Result<(), GpuError>, |dev, Closing(i, _)| { dev.destroy(i.raw()); Ok(()) };
+    [] Opening<CreateSampler> => Result<Sampler, GpuError>, |dev, Opening(op, _)| dev.create_sampler(op);
+    [] Closing<CreateSampler> => Result<(), GpuError>, |dev, Closing(s, _)| { dev.destroy(s.raw()); Ok(()) };
     ['a] Closing<CreateProgram<'a>> => Result<(), GpuError>, |dev, Closing(p, _)| { dev.destroy(p.raw()); Ok(()) };
     ['a] Upload<'a> => Result<(), GpuError>, |dev, op| dev.upload(op);
     ['a] UploadImage<'a> => Result<(), GpuError>, |dev, op| dev.upload_image(op);

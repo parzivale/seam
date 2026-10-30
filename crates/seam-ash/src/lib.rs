@@ -2,10 +2,10 @@
 //!
 //! A core sees the GPU as a few kinds of thing, and nothing else:
 //!
-//! - **Resources**, as scopes: [`CreateBuffer`], [`CreateImage`] and
-//!   [`CreateProgram`] lend a [`Buffer`], an [`Image`] or a [`Program`]
-//!   (plain IDs, the same for every handler) and destroy it when the scope
-//!   closes.
+//! - **Resources**, as scopes: [`CreateBuffer`], [`CreateImage`],
+//!   [`CreateSampler`] and [`CreateProgram`] lend a [`Buffer`], an
+//!   [`Image`], a [`Sampler`] or a [`Program`] (plain IDs, the same for
+//!   every handler) and destroy it when the scope closes.
 //! - **Moving data**: [`Upload`], [`UploadImage`] and [`CopyBuffer`] put
 //!   bytes in, [`Download`] and [`DownloadImage`] take them out.
 //! - **Running programs**: [`Dispatch`] runs a compute program, [`Draw`]
@@ -191,6 +191,8 @@ ids! {
     Image;
     /// A compiled program, lent by [`CreateProgram`].
     Program;
+    /// How a program samples an image, lent by [`CreateSampler`].
+    Sampler;
 }
 
 macro_rules! flags {
@@ -270,6 +272,115 @@ impl Format {
     }
 }
 
+/// How a [`Sampler`] reads between texels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Filter {
+    /// The nearest texel.
+    Nearest,
+    /// A blend of the four nearest texels, by distance.
+    Linear,
+}
+
+/// What a [`Sampler`] reads outside the image, per axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AddressMode {
+    /// The edge texel.
+    ClampToEdge,
+    /// The image again, tiled.
+    Repeat,
+    /// The image again, mirrored every other time.
+    MirroredRepeat,
+    /// The sampler's [`BorderColor`].
+    ClampToBorder,
+}
+
+/// The colour a [`Sampler`] with [`AddressMode::ClampToBorder`] reads
+/// outside the image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BorderColor {
+    /// `[0, 0, 0, 0]`.
+    TransparentBlack,
+    /// `[0, 0, 0, 1]`.
+    OpaqueBlack,
+    /// `[1, 1, 1, 1]`.
+    OpaqueWhite,
+}
+
+impl BorderColor {
+    /// The colour, as RGBA.
+    pub const fn rgba(self) -> [f32; 4] {
+        match self {
+            Self::TransparentBlack => [0.0, 0.0, 0.0, 0.0],
+            Self::OpaqueBlack => [0.0, 0.0, 0.0, 1.0],
+            Self::OpaqueWhite => [1.0; 4],
+        }
+    }
+}
+
+/// Create a sampler, lending it for a scope: how a program reads an image
+/// bound with [`Bind::Sampled`]. Any stage samples, the vertex stage too
+/// (there with `textureLod` or `texelFetch`, as a vertex shader has no
+/// derivatives for `texture`).
+///
+/// Images have one level, so sampling is at level 0 and the
+/// magnification filter applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CreateSampler {
+    /// The filter when a texel covers more than a pixel.
+    pub mag: Filter,
+    /// The filter when it covers less.
+    pub min: Filter,
+    /// Outside the image horizontally.
+    pub address_u: AddressMode,
+    /// Outside the image vertically.
+    pub address_v: AddressMode,
+    /// The colour outside, for [`AddressMode::ClampToBorder`].
+    pub border: BorderColor,
+}
+
+impl CreateSampler {
+    /// Describes a sampler filtering with `filter` both ways, clamped to
+    /// the edge.
+    pub const fn new(filter: Filter) -> Self {
+        Self {
+            mag: filter,
+            min: filter,
+            address_u: AddressMode::ClampToEdge,
+            address_v: AddressMode::ClampToEdge,
+            border: BorderColor::TransparentBlack,
+        }
+    }
+
+    /// Filters with `mag` when magnifying and `min` when minifying.
+    #[must_use]
+    pub const fn filters(mut self, mag: Filter, min: Filter) -> Self {
+        self.mag = mag;
+        self.min = min;
+        self
+    }
+
+    /// Reads outside the image by `mode`, on both axes.
+    #[must_use]
+    pub const fn address(self, mode: AddressMode) -> Self {
+        self.address_uv(mode, mode)
+    }
+
+    /// Reads outside the image by `u` horizontally and `v` vertically.
+    #[must_use]
+    pub const fn address_uv(mut self, u: AddressMode, v: AddressMode) -> Self {
+        self.address_u = u;
+        self.address_v = v;
+        self
+    }
+
+    /// Reads `color` outside the image, with [`AddressMode::ClampToBorder`].
+    #[must_use]
+    pub const fn border(mut self, color: BorderColor) -> Self {
+        self.border = color;
+        self
+    }
+}
+
 /// What a program's binding is, at set 0, binding `i` for the `i`th kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BindingKind {
@@ -277,9 +388,16 @@ pub enum BindingKind {
     UniformBuffer,
     /// A storage buffer.
     StorageBuffer,
-    /// A sampled image (a combined image sampler: linear filtering, clamped
-    /// to the edge).
+    /// A sampled image: a combined image sampler (GLSL's `sampler2D`,
+    /// rust-gpu's `SampledImage`), bound with an image and the [`Sampler`]
+    /// that reads it.
     SampledImage,
+    /// An image to sample, without its sampler (WGSL's `texture_2d`,
+    /// HLSL's `Texture2D`): paired in the shader with a
+    /// [`Sampler`](BindingKind::Sampler) binding.
+    Texture,
+    /// A sampler alone (WGSL's and HLSL's `sampler`).
+    Sampler,
     /// A storage image.
     StorageImage,
 }
@@ -291,8 +409,12 @@ pub enum Bind {
     Uniform(Buffer),
     /// A buffer the program may read and write.
     Storage(Buffer),
-    /// An image the program samples.
-    Sampled(Image),
+    /// An image the program samples, with the sampler that reads it.
+    Sampled(Image, Sampler),
+    /// An image the program samples, with a sampler bound on its own.
+    Texture(Image),
+    /// A sampler, for the program's textures.
+    Sampler(Sampler),
     /// An image the program may read and write.
     StorageImage(Image),
 }
@@ -303,7 +425,9 @@ impl Bind {
         match self {
             Self::Uniform(_) => BindingKind::UniformBuffer,
             Self::Storage(_) => BindingKind::StorageBuffer,
-            Self::Sampled(_) => BindingKind::SampledImage,
+            Self::Sampled(..) => BindingKind::SampledImage,
+            Self::Texture(_) => BindingKind::Texture,
+            Self::Sampler(_) => BindingKind::Sampler,
             Self::StorageImage(_) => BindingKind::StorageImage,
         }
     }
@@ -892,6 +1016,11 @@ impl<B> Effect for Import<B> {
     type Key = effects::Import;
 }
 
+impl Acquisition for CreateSampler {
+    type Resource = Sampler;
+    type Error = GpuError;
+}
+
 impl Acquisition for CreateProgram<'_> {
     type Resource = Program;
     type Error = GpuError;
@@ -909,6 +1038,7 @@ pub mod effects {
     keys!(
         CreateBuffer,
         CreateImage,
+        CreateSampler,
         CreateProgram,
         Upload,
         UploadImage,
@@ -939,6 +1069,7 @@ macro_rules! keyed {
 keyed! {
     CreateBuffer => CreateBuffer;
     CreateImage => CreateImage;
+    CreateSampler => CreateSampler;
     CreateProgram<'_> => CreateProgram;
     Upload<'_> => Upload;
     UploadImage<'_> => UploadImage;
@@ -997,6 +1128,7 @@ pub(crate) enum ResInfo {
         format: Format,
         usage: ImageUsage,
     },
+    Sampler(CreateSampler),
     Program {
         label: String,
         compute: bool,

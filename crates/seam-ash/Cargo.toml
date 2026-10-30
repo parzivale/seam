@@ -12,6 +12,8 @@ categories.workspace = true
 
 [dependencies]
 seam-core = { workspace = true, features = ["std"] }
+# The windows a swapchain presents to.
+raw-window-handle = { workspace = true }
 # `loaded`: the Vulkan loader is opened at run time, so building needs no
 # Vulkan SDK.
 ash = { workspace = true, features = ["std", "loaded", "debug"], optional = true }

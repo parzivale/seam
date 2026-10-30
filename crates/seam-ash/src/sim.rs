@@ -18,6 +18,7 @@ use crate::{
     MAX_VERTEX_BUFFERS, Program, ProgramKind, Queries, QueryKind, ReadQueries, Rect, ResInfo,
     Sampler, Submit, Upload, UploadImage, Viewport, WriteTimestamp,
 };
+use crate::{CreateSwapchain, NextFrame, Present, ResizeSwapchain, Swapchain};
 
 /// What [`SimGpu`] was asked to do, in order: for tests to assert on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +31,14 @@ pub enum Recorded {
     CreateSampler(Sampler),
     /// Queries were created.
     CreateQueries(Queries),
+    /// A swapchain was created.
+    CreateSwapchain(Swapchain),
+    /// A swapchain lent its next image.
+    NextFrame(Swapchain, Image),
+    /// A swapchain's image was presented.
+    Present(Swapchain),
+    /// A swapchain was resized.
+    ResizeSwapchain(Swapchain, u32, u32),
     /// A timestamp was written into a query slot.
     WriteTimestamp(Queries, u32),
     /// An image was imported.
@@ -617,6 +626,16 @@ struct State {
     res: BTreeMap<u64, Entry>,
     emulators: HashMap<String, Emulator>,
     log: Vec<Recorded>,
+    /// Each swapchain's window.
+    windows: BTreeMap<u64, SimWindow>,
+}
+
+/// A simulated window: what was presented to it, and whether it has
+/// changed size since.
+#[derive(Default)]
+struct SimWindow {
+    frames: Vec<Vec<u8>>,
+    resized: Option<(u32, u32)>,
 }
 
 impl Lookup for State {
@@ -693,6 +712,24 @@ impl SimGpu {
                 data,
             }) => Some(data.clone()),
             _ => None,
+        }
+    }
+
+    /// Every frame presented to `swapchain`'s window, in order: each its
+    /// image's bytes, as [`image`](Self::image) gives them.
+    pub fn frames(&self, swapchain: Swapchain) -> Vec<Vec<u8>> {
+        self.lock()
+            .windows
+            .get(&swapchain.raw())
+            .map_or_else(Vec::new, |w| w.frames.clone())
+    }
+
+    /// Resizes `swapchain`'s window, as a user dragging its edge would:
+    /// its next [`NextFrame`] or [`Present`] fails with
+    /// [`GpuError::Outdated`] until [`ResizeSwapchain`] is performed.
+    pub fn resize_window(&self, swapchain: Swapchain, width: u32, height: u32) {
+        if let Some(w) = self.lock().windows.get_mut(&swapchain.raw()) {
+            w.resized = Some((width, height));
         }
     }
 
@@ -911,6 +948,107 @@ impl Perform<Opening<CreateSampler>> for SimGpu {
         let id = state.add(ResInfo::Sampler(op), 0);
         state.log.push(Recorded::CreateSampler(Sampler(id)));
         Ok(Sampler(id))
+    }
+}
+
+impl Perform<Opening<CreateSwapchain>> for SimGpu {
+    fn perform(&mut self, Opening(op, _): Opening<CreateSwapchain>) -> Result<Swapchain, GpuError> {
+        validate::create_swapchain(&op)?;
+        let mut state = self.lock();
+        let info = ResInfo::Swapchain {
+            width: op.width,
+            height: op.height,
+            format: op.format,
+            usage: op.usage,
+            lent: None,
+        };
+        let id = state.add(info, 0);
+        state.windows.insert(id, SimWindow::default());
+        state.log.push(Recorded::CreateSwapchain(Swapchain(id)));
+        Ok(Swapchain(id))
+    }
+}
+
+impl Perform<Closing<CreateSwapchain>> for SimGpu {
+    fn perform(&mut self, Closing(s, _): Closing<CreateSwapchain>) -> Result<(), GpuError> {
+        let mut state = self.lock();
+        if let Some(ResInfo::Swapchain {
+            lent: Some(image), ..
+        }) = state.res.get(&s.raw()).map(|e| &e.info)
+        {
+            let image = *image;
+            state.res.remove(&image);
+        }
+        state.res.remove(&s.raw());
+        state.windows.remove(&s.raw());
+        state.log.push(Recorded::Destroy(s.raw()));
+        Ok(())
+    }
+}
+
+impl State {
+    /// Fails if `swapchain`'s window has changed size.
+    fn current(&self, swapchain: Swapchain) -> Result<(), GpuError> {
+        match self.windows.get(&swapchain.raw()) {
+            Some(SimWindow {
+                resized: Some(_), ..
+            }) => Err(GpuError::Outdated),
+            _ => Ok(()),
+        }
+    }
+
+    fn lend(&mut self, swapchain: Swapchain, image: Option<u64>) {
+        if let Some(ResInfo::Swapchain { lent, .. }) =
+            self.res.get_mut(&swapchain.raw()).map(|e| &mut e.info)
+        {
+            *lent = image;
+        }
+    }
+}
+
+impl Perform<NextFrame> for SimGpu {
+    fn perform(&mut self, op: NextFrame) -> Result<Image, GpuError> {
+        let mut state = self.lock();
+        let image = validate::next_frame(&*state, &op)?;
+        state.current(op.0)?;
+        let id = state.add(ResInfo::Image(image), image_len(&image));
+        state.lend(op.0, Some(id));
+        state.log.push(Recorded::NextFrame(op.0, Image(id)));
+        Ok(Image(id))
+    }
+}
+
+impl Perform<Present> for SimGpu {
+    fn perform(&mut self, op: Present) -> Result<(), GpuError> {
+        let mut state = self.lock();
+        let image = validate::present(&*state, &op)?;
+        state.current(op.0)?;
+        let frame = state.res.remove(&image).map(|e| e.data).unwrap_or_default();
+        state.lend(op.0, None);
+        if let Some(w) = state.windows.get_mut(&op.0.raw()) {
+            w.frames.push(frame);
+        }
+        state.log.push(Recorded::Present(op.0));
+        Ok(())
+    }
+}
+
+impl Perform<ResizeSwapchain> for SimGpu {
+    fn perform(&mut self, op: ResizeSwapchain) -> Result<(), GpuError> {
+        let mut state = self.lock();
+        validate::resize(&*state, &op)?;
+        if let Some(ResInfo::Swapchain { width, height, .. }) =
+            state.res.get_mut(&op.swapchain.raw()).map(|e| &mut e.info)
+        {
+            (*width, *height) = (op.width, op.height);
+        }
+        if let Some(w) = state.windows.get_mut(&op.swapchain.raw()) {
+            w.resized = None;
+        }
+        state
+            .log
+            .push(Recorded::ResizeSwapchain(op.swapchain, op.width, op.height));
+        Ok(())
     }
 }
 

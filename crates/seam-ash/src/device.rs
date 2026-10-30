@@ -232,6 +232,7 @@ enum Kind {
     },
     Sampler(vk::Sampler),
     Queries(vk::QueryPool),
+    Swapchain(Box<present::Chain>),
 }
 
 impl Kind {
@@ -270,6 +271,8 @@ enum Foreign {
     Acquire(u32),
     /// Acquired from this family; released back to it when the scope ends.
     Held(u32),
+    /// A swapchain's: the swapchain owns the image and its memory.
+    Swapchain,
 }
 
 /// What has happened to a resource since its last write, for barriers.
@@ -307,6 +310,12 @@ struct Batch {
     cmd: vk::CommandBuffer,
     staging: Vec<Staging>,
     pools: Vec<vk::DescriptorPool>,
+    /// Semaphores the batch waits on (swapchain images being acquired).
+    waits: Vec<vk::Semaphore>,
+    /// Semaphores it signals when done (for presenting).
+    signals: Vec<vk::Semaphore>,
+    /// Semaphores to destroy once it is done.
+    semaphores: Vec<vk::Semaphore>,
 }
 
 /// Work submitted and not yet known to be finished.
@@ -316,6 +325,7 @@ struct InFlight {
     fence: vk::Fence,
     staging: Vec<Staging>,
     pools: Vec<vk::DescriptorPool>,
+    semaphores: Vec<vk::Semaphore>,
     /// Blocking callers and submissions waiting on the fence, outside the
     /// lock.
     holds: usize,
@@ -353,6 +363,10 @@ struct Extensions {
     /// `VK_EXT_metal_objects`.
     #[cfg(target_vendor = "apple")]
     metal: bool,
+    /// `VK_KHR_surface`, on the instance.
+    surface: Option<ash::khr::surface::Instance>,
+    /// `VK_KHR_swapchain`.
+    swapchain: Option<ash::khr::swapchain::Device>,
 }
 
 /// The optional device extensions wanted, by name, for this platform.
@@ -371,6 +385,7 @@ fn wanted_extensions() -> Vec<&'static core::ffi::CStr> {
     names.push(vk::KHR_EXTERNAL_MEMORY_WIN32_NAME);
     #[cfg(target_vendor = "apple")]
     names.push(vk::EXT_METAL_OBJECTS_NAME);
+    names.push(vk::KHR_SWAPCHAIN_NAME);
     names
 }
 
@@ -480,7 +495,7 @@ enum Groups {
 const SETS_PER_POOL: u32 = 64;
 
 struct Dev {
-    _entry: ash::Entry,
+    entry: ash::Entry,
     instance: ash::Instance,
     debug: Option<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
     /// What the debug callback writes into, kept alive until after the
@@ -842,6 +857,17 @@ impl Dev {
         if portability {
             extensions.push(vk::KHR_PORTABILITY_ENUMERATION_NAME.as_ptr());
         }
+        // Surfaces, for swapchains: whichever the loader has.
+        let mut surfaces = false;
+        for name in present::instance_extensions() {
+            if instance_extensions
+                .iter()
+                .any(|e| e.extension_name_as_c_str().is_ok_and(|n| n == name))
+            {
+                surfaces |= name == vk::KHR_SURFACE_NAME;
+                extensions.push(name.as_ptr());
+            }
+        }
         let app = vk::ApplicationInfo::default()
             .application_name(c"seam")
             .api_version(vk::API_VERSION_1_3);
@@ -1007,7 +1033,12 @@ impl Dev {
         {
             ext.metal = on(vk::EXT_METAL_OBJECTS_NAME);
         }
-        let _ = on;
+        if surfaces {
+            ext.surface = Some(ash::khr::surface::Instance::new(&entry, &instance));
+        }
+        if on(vk::KHR_SWAPCHAIN_NAME) {
+            ext.swapchain = Some(ash::khr::swapchain::Device::new(&instance, &device));
+        }
         // SAFETY: plain queries and creations on the new device.
         let (mem, pool) = unsafe {
             let mem = instance.get_physical_device_memory_properties(physical);
@@ -1036,7 +1067,7 @@ impl Dev {
             limits: limits(&props.limits, &sub),
         };
         let dev = Dev {
-            _entry: entry,
+            entry,
             instance,
             debug,
             _messages: kept_messages,
@@ -1224,15 +1255,21 @@ fn destroy_kind(device: &ash::Device, kind: Kind) {
                 memory,
                 view,
                 targets,
+                foreign,
                 ..
             } => {
                 for (_, v) in targets {
                     device.destroy_image_view(v, None);
                 }
                 device.destroy_image_view(view, None);
-                device.destroy_image(image, None);
-                device.free_memory(memory, None);
+                if !matches!(foreign, Foreign::Swapchain) {
+                    device.destroy_image(image, None);
+                    device.free_memory(memory, None);
+                }
             }
+            // Destroyed when its scope closes, with the extension's
+            // functions.
+            Kind::Swapchain(_) => {}
             Kind::Program {
                 pipeline,
                 layout,
@@ -1291,6 +1328,9 @@ impl Dev {
                 cmd,
                 staging: Vec::new(),
                 pools: Vec::new(),
+                waits: Vec::new(),
+                signals: Vec::new(),
+                semaphores: Vec::new(),
             });
         }
         Ok(self.batch.as_mut().expect("just started"))
@@ -1424,7 +1464,8 @@ impl Dev {
                         t.reads |= u.stage;
                     }
                 }
-                Kind::Program { .. } | Kind::Sampler(_) | Kind::Queries(_) => {}
+                Kind::Program { .. } | Kind::Sampler(_) | Kind::Queries(_) | Kind::Swapchain(_) => {
+                }
             }
         }
         if !buffer_barriers.is_empty() || !image_barriers.is_empty() {
@@ -1671,7 +1712,12 @@ impl Dev {
                 .create_fence(&vk::FenceCreateInfo::default(), None)
                 .map_err(vk_error)?;
             let cmds = [batch.cmd];
-            let submit = vk::SubmitInfo::default().command_buffers(&cmds);
+            let stages = std::vec![vk::PipelineStageFlags::ALL_COMMANDS; batch.waits.len()];
+            let submit = vk::SubmitInfo::default()
+                .command_buffers(&cmds)
+                .wait_semaphores(&batch.waits)
+                .wait_dst_stage_mask(&stages)
+                .signal_semaphores(&batch.signals);
             if let Err(e) = self.device.queue_submit(self.queue, &[submit], fence) {
                 self.device.destroy_fence(fence, None);
                 return Err(vk_error(e));
@@ -1684,6 +1730,7 @@ impl Dev {
             fence,
             staging: batch.staging,
             pools: batch.pools,
+            semaphores: batch.semaphores,
             holds: 0,
             signal: None,
         });
@@ -1710,6 +1757,9 @@ impl Dev {
             unsafe {
                 self.device.destroy_fence(done.fence, None);
                 self.device.free_command_buffers(self.pool, &[done.cmd]);
+                for s in &done.semaphores {
+                    self.device.destroy_semaphore(*s, None);
+                }
                 for p in &done.pools {
                     self.device.destroy_descriptor_pool(*p, None);
                 }
@@ -3710,6 +3760,11 @@ now! {
     [] Closing<crate::CreateQueries> => Result<(), GpuError>, |dev, Closing(q, _)| { dev.destroy(q.raw()); Ok(()) };
     [] crate::WriteTimestamp => Result<(), GpuError>, |dev, op| dev.write_timestamp(op);
     [] crate::BufferAddress => Result<u64, GpuError>, |dev, op| dev.address(op);
+    [] Opening<crate::CreateSwapchain> => Result<crate::Swapchain, GpuError>, |dev, Opening(op, _)| dev.create_swapchain(op);
+    [] Closing<crate::CreateSwapchain> => Result<(), GpuError>, |dev, Closing(s, _)| dev.destroy_swapchain(s);
+    [] crate::NextFrame => Result<Image, GpuError>, |dev, op| dev.next_frame(op);
+    [] crate::Present => Result<(), GpuError>, |dev, op| dev.present(op);
+    [] crate::ResizeSwapchain => Result<(), GpuError>, |dev, op| dev.resize_swapchain(op);
     ['a] Dispatch<'a> => Result<(), GpuError>, |dev, op| dev.dispatch(op);
     ['a] DispatchIndirect<'a> => Result<(), GpuError>, |dev, op| dev.dispatch_indirect(op);
     ['a] Draw<'a> => Result<(), GpuError>, |dev, op| dev.draw(op);
@@ -4184,3 +4239,4 @@ impl seam_core::future::SendInspect<DeviceInfo> for Ash {
 
 // After `now!`, which it uses.
 mod import;
+mod present;

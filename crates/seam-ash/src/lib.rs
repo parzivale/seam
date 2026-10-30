@@ -27,6 +27,9 @@
 //!   work so far to the GPU and lends a submission: [`IsDone`] says
 //!   whether it has finished, and closing the scope waits for it. So the
 //!   CPU does other work while the GPU runs.
+//! - **Presenting**: [`CreateSwapchain`] lends a [`Swapchain`] on a
+//!   window; [`NextFrame`] lends its next image, to draw into, and
+//!   [`Present`] shows it (see [Presenting](#presenting)).
 //! - **Images from elsewhere**: [`Import`] lends a Wayland client's
 //!   dmabuf ([`drm`], Linux and the BSDs), a shared Direct3D texture
 //!   ([`win32`], Windows) or an IOSurface ([`metal`], Apple systems) as an
@@ -103,6 +106,58 @@
 //! Images ([`CreateImage`]) are flat, cubes or volumes, with layers, mip
 //! levels and samples, in colour, integer, packed, depth and stencil, and
 //! BC-compressed [`Format`]s.
+//!
+//! # Presenting
+//!
+//! A swapchain is a scope on a window: an X11, Wayland or Win32 one from
+//! its [raw-window-handle](https://docs.rs/raw-window-handle) handles
+//! ([`CreateSwapchain::new`], unsafe as the window must outlive it), or
+//! none at all ([`CreateSwapchain::headless`]). Each frame, [`NextFrame`]
+//! lends an [`Image`] like any other, to draw into, copy into or read;
+//! [`Present`] sends the frame's work and shows it. When the window
+//! changes size, [`NextFrame`] or [`Present`] fails with
+//! [`GpuError::Outdated`], and [`ResizeSwapchain`] remakes its images.
+//! [`SimGpu`] keeps what each swapchain's window was shown
+//! ([`SimGpu::frames`]), and resizes it as a user would
+//! ([`SimGpu::resize_window`]).
+//!
+//! ```
+//! use seam_ash::*;
+//! use seam_core::prelude::*;
+//!
+//! /// Shows `frames` frames, each cleared to a brighter grey.
+//! fn show<G>(gpu: &mut G, program: Program, frames: u32) -> Result<(), GpuError>
+//! where
+//!     G: Provide<CreateSwapchain>
+//!         + Perform<NextFrame>
+//!         + Perform<Present>
+//!         + Perform<ResizeSwapchain>
+//!         + for<'a> Perform<Draw<'a>>,
+//! {
+//!     let chain = CreateSwapchain::headless(64, 64).format(Format::Bgra8Unorm);
+//!     gpu.acquire(chain, |gpu, chain| {
+//!         for i in 0..frames {
+//!             let image = match gpu.perform(NextFrame(*chain)) {
+//!                 Err(GpuError::Outdated) => {
+//!                     let size = ResizeSwapchain { swapchain: *chain, width: 32, height: 32 };
+//!                     gpu.perform(size)?;
+//!                     gpu.perform(NextFrame(*chain))?
+//!                 }
+//!                 image => image?,
+//!             };
+//!             let grey = i as f32 / frames as f32;
+//!             gpu.perform(Draw::new(program, image, 0).clear([grey, grey, grey, 1.0]))?;
+//!             gpu.perform(Present(*chain))?;
+//!         }
+//!         Ok(())
+//!     })
+//! }
+//! # let mut gpu = SimGpu::new();
+//! # let spirv = [0x0723_0203];
+//! # let pipeline = DrawPipeline::new(&spirv, "vs", &spirv, "fs", Format::Bgra8Unorm);
+//! # let program = CreateProgram::draw("clear", ProgramKind::Draw(pipeline), &[]);
+//! # gpu.clone().acquire(program, |_, p| show(&mut gpu, *p, 3)).unwrap();
+//! ```
 //!
 //! # Shaders
 //!
@@ -223,6 +278,7 @@ use seam_core::{Acquisition, Effect, Operation, Query};
 #[cfg(feature = "ash")]
 #[allow(unsafe_code)] // Vulkan: every call is unsafe; see the module's docs.
 mod device;
+mod present;
 mod render;
 mod sim;
 mod validate;
@@ -237,6 +293,7 @@ pub mod win32;
 #[cfg(feature = "ash")]
 pub use device::{Ash, AshOptions, Submission};
 
+pub use present::*;
 pub use render::*;
 pub use sim::{Recorded, Run, SimGpu, SimSubmission};
 
@@ -273,6 +330,8 @@ ids! {
     /// Slots for timestamps or occlusion counts, lent by
     /// [`CreateQueries`].
     Queries;
+    /// Images shown in a window in turn, lent by [`CreateSwapchain`].
+    Swapchain;
 }
 
 macro_rules! flags {
@@ -1915,6 +1974,8 @@ pub enum GpuError {
     Invalid(String),
     /// The device cannot do it.
     Unsupported(String),
+    /// The window has changed: [`ResizeSwapchain`] before the next frame.
+    Outdated,
     /// Vulkan failed with this result code.
     Vulkan(i32),
 }
@@ -1926,6 +1987,7 @@ impl core::fmt::Display for GpuError {
             Self::DeviceLost => f.write_str("the GPU device was lost"),
             Self::Invalid(why) => write!(f, "invalid GPU operation: {why}"),
             Self::Unsupported(why) => write!(f, "not supported by the GPU: {why}"),
+            Self::Outdated => f.write_str("the window has changed: resize the swapchain"),
             Self::Vulkan(code) => write!(f, "Vulkan error {code}"),
         }
     }
@@ -1956,6 +2018,9 @@ outcomes! {
     WriteTimestamp => Result<(), GpuError>;
     ReadQueries<'_> => Result<(), GpuError>;
     BufferAddress => Result<u64, GpuError>;
+    NextFrame => Result<Image, GpuError>;
+    Present => Result<(), GpuError>;
+    ResizeSwapchain => Result<(), GpuError>;
     Dispatch<'_> => Result<(), GpuError>;
     DispatchIndirect<'_> => Result<(), GpuError>;
     Draw<'_> => Result<(), GpuError>;
@@ -1992,6 +2057,11 @@ impl<B> Effect for Import<B> {
     type Key = effects::Import;
 }
 
+impl Acquisition for CreateSwapchain {
+    type Resource = Swapchain;
+    type Error = GpuError;
+}
+
 impl Acquisition for CreateQueries {
     type Resource = Queries;
     type Error = GpuError;
@@ -2021,6 +2091,7 @@ pub mod effects {
         CreateImage,
         CreateSampler,
         CreateQueries,
+        CreateSwapchain,
         CreateProgram,
         Upload,
         UploadImage,
@@ -2032,6 +2103,9 @@ pub mod effects {
         WriteTimestamp,
         ReadQueries,
         BufferAddress,
+        NextFrame,
+        Present,
+        ResizeSwapchain,
         Dispatch,
         DispatchIndirect,
         Draw,
@@ -2064,6 +2138,10 @@ keyed! {
     WriteTimestamp => WriteTimestamp;
     ReadQueries<'_> => ReadQueries;
     BufferAddress => BufferAddress;
+    CreateSwapchain => CreateSwapchain;
+    NextFrame => NextFrame;
+    Present => Present;
+    ResizeSwapchain => ResizeSwapchain;
     CreateProgram<'_> => CreateProgram;
     Upload<'_> => Upload;
     UploadImage<'_> => UploadImage;
@@ -2148,6 +2226,15 @@ pub(crate) enum ResInfo {
     },
     Image(CreateImage),
     Sampler(CreateSampler),
+    Swapchain {
+        width: u32,
+        height: u32,
+        format: Format,
+        usage: ImageUsage,
+        /// The image lent by `NextFrame`, until `Present`: a new ID each
+        /// frame.
+        lent: Option<u64>,
+    },
     Queries {
         kind: QueryKind,
         /// Which slots have been written.

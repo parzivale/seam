@@ -16,6 +16,7 @@ them turned up.
   (`Draw::new`, `.clear(..)` and `.vertices(..)` are as before);
   `CreateImage` has more fields (use `CreateImage::new` and its
   builders); so do `CreateProgram` (use its constructors) and `GpuInfo`.
+  `GpuError` has an `Outdated` variant, for swapchains.
 - `seam-ash`: `Bind::Sampled` takes the sampler that reads the image,
   `Bind::Sampled(image, sampler)`; the device's built-in sampler (linear,
   clamped to the edge) is gone. Make one with
@@ -94,6 +95,15 @@ them turned up.
   subgroups' size and operations (`SubgroupOps`). `Limits::MINIMUM` is
   what every Vulkan 1.3 device reaches, and what `SimGpu` reports, with
   every feature.
+- Presenting: `CreateSwapchain` lends a `Swapchain` on an X11 (Xlib or
+  XCB), Wayland or Win32 window, from its raw-window-handle handles, or
+  on none (`CreateSwapchain::headless`, `VK_EXT_headless_surface`), with
+  a format, a `PresentMode` and extra image usages. `NextFrame` lends its
+  next image as an `Image` to draw into, and `Present` shows it; when the
+  window changes size they fail with `GpuError::Outdated`, and
+  `ResizeSwapchain` remakes the images. `SimGpu` presents to a simulated
+  window: `SimGpu::frames` is what it was shown, and
+  `SimGpu::resize_window` resizes it as a user would.
 - Shaders in Rust, through rust-gpu: `Ash` turns on the Vulkan memory
   model where the device has it, which rust-gpu's shaders declare.
   `crates/seam-ash/shaders` is a shader crate built to SPIR-V on

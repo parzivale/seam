@@ -109,6 +109,68 @@ pub(crate) fn address(l: &impl Lookup, op: &crate::BufferAddress) -> Result<(), 
     Ok(())
 }
 
+/// Swapchain `id`: its images' description, and the frame it lent.
+pub(crate) fn swapchain(l: &impl Lookup, id: u64) -> Result<(CreateImage, Option<u64>), GpuError> {
+    match l.info(id) {
+        Some(ResInfo::Swapchain {
+            width,
+            height,
+            format,
+            usage,
+            lent,
+        }) => Ok((
+            CreateImage::new(*width, *height, *format, *usage | ImageUsage::TARGET),
+            *lent,
+        )),
+        _ => Err(gone("swapchain", id)),
+    }
+}
+
+pub(crate) fn create_swapchain(op: &crate::CreateSwapchain) -> Result<(), GpuError> {
+    if op.width == 0 || op.height == 0 {
+        return Err(invalid("a swapchain needs at least one pixel"));
+    }
+    if op.format.is_depth() || op.format.is_compressed() || op.format.is_integer() {
+        return Err(invalid(format!(
+            "a swapchain's images are colour: not {:?}",
+            op.format
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn next_frame(l: &impl Lookup, op: &crate::NextFrame) -> Result<CreateImage, GpuError> {
+    let (image, lent) = swapchain(l, op.0.raw())?;
+    if lent.is_some() {
+        return Err(invalid(
+            "next frame: present the frame the swapchain lent first",
+        ));
+    }
+    Ok(image)
+}
+
+pub(crate) fn present(l: &impl Lookup, op: &crate::Present) -> Result<u64, GpuError> {
+    match swapchain(l, op.0.raw())?.1 {
+        Some(image) => Ok(image),
+        None => Err(invalid(
+            "present: no frame to present (NextFrame lends one)",
+        )),
+    }
+}
+
+pub(crate) fn resize(l: &impl Lookup, op: &crate::ResizeSwapchain) -> Result<(), GpuError> {
+    let (_, lent) = swapchain(l, op.swapchain.raw())?;
+    if lent.is_some() {
+        return Err(invalid(
+            "resize: present the frame the swapchain lent first",
+        ));
+    }
+    if op.width == 0 || op.height == 0 {
+        return Err(invalid("a swapchain needs at least one pixel"));
+    }
+    Ok(())
+}
+
 pub(crate) struct ProgramInfo<'a> {
     pub label: &'a str,
     pub compute: bool,

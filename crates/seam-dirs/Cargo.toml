@@ -11,11 +11,11 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-seam-core = { workspace = true, features = ["env"] }
+seam-core = { workspace = true, features = ["env", "fs"] }
 
 [dev-dependencies]
-seam-std = { workspace = true, features = ["env"] }
-seam-test = { workspace = true, features = ["env"] }
+seam-std = { workspace = true, features = ["env", "fs"] }
+seam-test = { workspace = true, features = ["env", "fs"] }
 
 [package.metadata.docs.rs]
 all-features = true

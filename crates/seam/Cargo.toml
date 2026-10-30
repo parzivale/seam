@@ -60,7 +60,7 @@ smol = ["dep:seam-smol", "seam-sqlx?/smol"]
 # and one for tests. Each brings in the operation types it is built on.
 rand = ["dep:seam-rand", "random"]
 uuid = ["dep:seam-uuid", "random", "time", "std"]
-dirs = ["dep:seam-dirs", "env"]
+dirs = ["dep:seam-dirs", "env", "fs"]
 tracing = ["dep:seam-tracing"]
 notify = ["dep:seam-notify", "seam-notify?/notify", "fs", "time"]
 reqwest = ["dep:seam-reqwest", "seam-reqwest?/reqwest", "seam-reqwest?/rustls"]

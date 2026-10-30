@@ -25,6 +25,27 @@
 //! environment (the password database when `HOME` is unset, Windows' known
 //! folders), this crate reads only the environment, and answers `None`.
 //!
+//! [`UserDir`]s are where the user keeps their own files, found with
+//! [`user_dir`] (which also reads the filesystem, for XDG's
+//! `user-dirs.dirs`):
+//!
+//! | [`UserDir`] | Linux (XDG) | macOS | Windows |
+//! |---|---|---|---|
+//! | `Audio` | `XDG_MUSIC_DIR` in `user-dirs.dirs` | `~/Music` | `%USERPROFILE%\Music` |
+//! | `Desktop` | `XDG_DESKTOP_DIR` | `~/Desktop` | `%USERPROFILE%\Desktop` |
+//! | `Document` | `XDG_DOCUMENTS_DIR` | `~/Documents` | `%USERPROFILE%\Documents` |
+//! | `Download` | `XDG_DOWNLOAD_DIR` | `~/Downloads` | `%USERPROFILE%\Downloads` |
+//! | `Font` | data dir`/fonts` | `~/Library/Fonts` | `%LOCALAPPDATA%\Microsoft\Windows\Fonts` |
+//! | `Picture` | `XDG_PICTURES_DIR` | `~/Pictures` | `%USERPROFILE%\Pictures` |
+//! | `Public` | `XDG_PUBLICSHARE_DIR` | `~/Public` | `%PUBLIC%` |
+//! | `Template` | `XDG_TEMPLATES_DIR` | none | `%APPDATA%\Microsoft\Windows\Templates` |
+//! | `Video` | `XDG_VIDEOS_DIR` | `~/Movies` | `%USERPROFILE%\Videos` |
+//!
+//! On Linux an entry set to `$HOME` itself is turned off, as XDG says. On
+//! Windows these are the default places; folders the user moved elsewhere
+//! are known only to Windows' known-folder API, which this crate does not
+//! call.
+//!
 //! [`ProjectDirs`] gives a program its own directories inside those, named
 //! as `directories` names them.
 //!
@@ -361,4 +382,208 @@ impl ProjectDirs {
         }
         Some(self.inside(dir_on_async(c, dir, platform).await?, dir, platform))
     }
+}
+
+/// A user directory: where the user keeps their own files of a kind. See
+/// the [crate docs](crate) for where each is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UserDir {
+    /// Music.
+    Audio,
+    /// The desktop.
+    Desktop,
+    /// Documents.
+    Document,
+    /// Downloads.
+    Download,
+    /// The user's fonts.
+    Font,
+    /// Pictures.
+    Picture,
+    /// Files shared with other users.
+    Public,
+    /// Templates for new documents.
+    Template,
+    /// Videos.
+    Video,
+}
+
+/// Where a user directory is found.
+enum UserRule {
+    /// A key in XDG's `user-dirs.dirs`, in the config directory.
+    Xdg(&'static str),
+    /// Under a base directory.
+    Under(Dir, &'static [&'static str]),
+    /// Under the directory a variable names.
+    Var(&'static str),
+    /// The platform has none.
+    None,
+}
+
+fn user_rule(dir: UserDir, platform: Platform) -> UserRule {
+    use UserDir::*;
+    use UserRule::{Under, Var as Named, Xdg};
+    match platform {
+        Platform::Linux => match dir {
+            Audio => Xdg("XDG_MUSIC_DIR"),
+            Desktop => Xdg("XDG_DESKTOP_DIR"),
+            Document => Xdg("XDG_DOCUMENTS_DIR"),
+            Download => Xdg("XDG_DOWNLOAD_DIR"),
+            Font => Under(Dir::Data, &["fonts"]),
+            Picture => Xdg("XDG_PICTURES_DIR"),
+            Public => Xdg("XDG_PUBLICSHARE_DIR"),
+            Template => Xdg("XDG_TEMPLATES_DIR"),
+            Video => Xdg("XDG_VIDEOS_DIR"),
+        },
+        Platform::MacOs => match dir {
+            Audio => Under(Dir::Home, &["Music"]),
+            Desktop => Under(Dir::Home, &["Desktop"]),
+            Document => Under(Dir::Home, &["Documents"]),
+            Download => Under(Dir::Home, &["Downloads"]),
+            Font => Under(Dir::Home, &["Library", "Fonts"]),
+            Picture => Under(Dir::Home, &["Pictures"]),
+            Public => Under(Dir::Home, &["Public"]),
+            Template => UserRule::None,
+            Video => Under(Dir::Home, &["Movies"]),
+        },
+        Platform::Windows => match dir {
+            Audio => Under(Dir::Home, &["Music"]),
+            Desktop => Under(Dir::Home, &["Desktop"]),
+            Document => Under(Dir::Home, &["Documents"]),
+            Download => Under(Dir::Home, &["Downloads"]),
+            Font => Under(Dir::DataLocal, &["Microsoft", "Windows", "Fonts"]),
+            Picture => Under(Dir::Home, &["Pictures"]),
+            Public => Named("PUBLIC"),
+            Template => Under(Dir::Data, &["Microsoft", "Windows", "Templates"]),
+            Video => Under(Dir::Home, &["Videos"]),
+        },
+    }
+}
+
+/// `key`'s directory in `user-dirs.dirs` text: `XDG_DESKTOP_DIR="$HOME/Desktop"`.
+/// `None` if it is missing, not absolute or `$HOME`-relative, or the home
+/// directory itself (which XDG takes as the directory being turned off).
+fn parse_user_dirs(text: &str, home: &std::path::Path, key: &str) -> Option<PathBuf> {
+    let mut found = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        if name.trim() != key {
+            continue;
+        }
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .unwrap_or(value);
+        let path = if let Some(rest) = value.strip_prefix("$HOME") {
+            let rest = rest.trim_start_matches('/');
+            if rest.is_empty() {
+                None
+            } else {
+                Some(home.join(rest))
+            }
+        } else if value.starts_with('/') {
+            Some(PathBuf::from(value))
+        } else {
+            None
+        };
+        // The last line for a key wins, as in a shell.
+        found = path.filter(|p| p != home);
+    }
+    found
+}
+
+fn joined(base: PathBuf, parts: &[&str]) -> PathBuf {
+    parts.iter().fold(base, |p, part| p.join(part))
+}
+
+/// Writes each user-directory lookup in its sync, async and `Send` forms.
+macro_rules! user_dir_ways {
+    ($(
+        $(#[$m:meta])*
+        $name:ident, $dir_on:ident, $read:path, $inspect:path, [$($ask:tt)*], [$($kw:ident)?],
+        where { $($bounds:tt)* }
+    )*) => {$(
+        $(#[$m])*
+        pub $($kw)? fn $name<C, F>(c: &C, dir: UserDir, platform: Platform) -> Option<PathBuf>
+        where
+            $($bounds)*
+        {
+            match user_rule(dir, platform) {
+                UserRule::Xdg(key) => {
+                    let home = $dir_on(c, Dir::Home, platform)$($ask)*?;
+                    let config = $dir_on(c, Dir::Config, platform)$($ask)*?;
+                    let text = $read(c, &config.join("user-dirs.dirs"))$($ask)*.ok()?;
+                    parse_user_dirs(&text, &home, key)
+                }
+                UserRule::Under(base, parts) => {
+                    Some(joined($dir_on(c, base, platform)$($ask)*?, parts))
+                }
+                UserRule::Var(name) => absolute($inspect(c, Var::new(name))$($ask)*),
+                UserRule::None => None,
+            }
+        }
+    )*};
+}
+
+user_dir_ways! {
+    /// Where the user directory `dir` is on `platform`: on Linux, from
+    /// XDG's `user-dirs.dirs` in the config directory, read through `c`'s
+    /// filesystem (fonts are under the data directory); on macOS and
+    /// Windows, at their usual places in the home directory (Windows' known
+    /// folders moved elsewhere are not seen). `None` where the platform has
+    /// none, or it is not set.
+    user_dir_on, dir_on, seam_core::ops::fs::read_to_string, seam_core::Inspect::inspect, [], [],
+    where {
+        C: for<'a> seam_core::Inspect<Var<'a>>
+            + for<'a> seam_core::Lend<seam_core::ops::fs::View<'a, F>>,
+        F: for<'a> seam_core::Inspect<seam_core::ops::fs::ReadAt<'a>>,
+    }
+
+    /// [`user_dir_on`], for async capabilities.
+    user_dir_on_async, dir_on_async, seam_core::ops::fs::read_to_string_async,
+    seam_core::future::AsyncInspect::inspect_async, [.await], [async],
+    where {
+        C: for<'a> seam_core::future::AsyncInspect<Var<'a>>
+            + for<'a> seam_core::AsyncLend<seam_core::ops::fs::View<'a, F>>,
+        F: for<'a> seam_core::future::AsyncInspect<seam_core::ops::fs::ReadAt<'a>>,
+    }
+
+    /// [`user_dir_on`], for async capabilities, with a `Send` future: for
+    /// multithreaded runtimes.
+    user_dir_on_send, dir_on_send, seam_core::ops::fs::read_to_string_send,
+    seam_core::future::SendInspect::inspect_send, [.await], [async],
+    where {
+        C: for<'a> seam_core::future::SendInspect<Var<'a>>
+            + for<'a> seam_core::SendLend<seam_core::ops::fs::View<'a, F>>
+            + Sync,
+        F: for<'a> seam_core::future::SendInspect<seam_core::ops::fs::ReadAt<'a>> + Send + Sync,
+    }
+}
+
+/// Where the user directory `dir` is on this platform. See
+/// [`user_dir_on`].
+pub fn user_dir<C, F>(c: &C, dir: UserDir) -> Option<PathBuf>
+where
+    C: for<'a> seam_core::Inspect<Var<'a>>
+        + for<'a> seam_core::Lend<seam_core::ops::fs::View<'a, F>>,
+    F: for<'a> seam_core::Inspect<seam_core::ops::fs::ReadAt<'a>>,
+{
+    user_dir_on(c, dir, Platform::current())
+}
+
+/// [`user_dir`], for async capabilities.
+pub async fn user_dir_async<C, F>(c: &C, dir: UserDir) -> Option<PathBuf>
+where
+    C: for<'a> seam_core::future::AsyncInspect<Var<'a>>
+        + for<'a> seam_core::AsyncLend<seam_core::ops::fs::View<'a, F>>,
+    F: for<'a> seam_core::future::AsyncInspect<seam_core::ops::fs::ReadAt<'a>>,
+{
+    user_dir_on_async(c, dir, Platform::current()).await
 }

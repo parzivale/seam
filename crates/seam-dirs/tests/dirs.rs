@@ -99,3 +99,59 @@ fn project_dirs() {
         Path::new("/home/ada/.config/frob-nicator")
     );
 }
+
+#[test]
+fn user_dirs_from_xdg_and_by_convention() {
+    use seam_dirs::{Platform, UserDir, user_dir_on};
+    use std::path::Path;
+
+    let mut sim = seam_test::Sim::new();
+    sim.set_var("HOME", "/home/ada");
+    sim.add_dir("/home/ada/.config");
+    sim.add_file(
+        "/home/ada/.config/user-dirs.dirs",
+        "# written by xdg-user-dirs-update\n\
+         XDG_DESKTOP_DIR=\"$HOME/Schreibtisch\"\n\
+         XDG_DOWNLOAD_DIR=\"/data/downloads\"\n\
+         XDG_TEMPLATES_DIR=\"$HOME/\"\n",
+    );
+    let linux = |d| user_dir_on(&sim, d, Platform::Linux);
+    assert_eq!(
+        linux(UserDir::Desktop).as_deref(),
+        Some(Path::new("/home/ada/Schreibtisch"))
+    );
+    assert_eq!(
+        linux(UserDir::Download).as_deref(),
+        Some(Path::new("/data/downloads"))
+    );
+    // Set to the home directory: turned off.
+    assert_eq!(linux(UserDir::Template), None);
+    // Not in the file.
+    assert_eq!(linux(UserDir::Video), None);
+    // Fonts are under the data directory.
+    assert_eq!(
+        linux(UserDir::Font).as_deref(),
+        Some(Path::new("/home/ada/.local/share/fonts"))
+    );
+    // macOS, by convention.
+    assert_eq!(
+        user_dir_on(&sim, UserDir::Video, Platform::MacOs).as_deref(),
+        Some(Path::new("/home/ada/Movies"))
+    );
+    assert_eq!(user_dir_on(&sim, UserDir::Template, Platform::MacOs), None);
+    // Windows: under the profile, and %PUBLIC%.
+    sim.set_var("USERPROFILE", "/Users/ada");
+    sim.set_var("PUBLIC", "/Users/Public");
+    assert_eq!(
+        user_dir_on(&sim, UserDir::Picture, Platform::Windows).as_deref(),
+        Some(Path::new("/Users/ada/Pictures"))
+    );
+    assert_eq!(
+        user_dir_on(&sim, UserDir::Public, Platform::Windows).as_deref(),
+        Some(Path::new("/Users/Public"))
+    );
+    // No file at all: none of the XDG ones.
+    let mut bare = seam_test::Sim::new();
+    bare.set_var("HOME", "/home/bob");
+    assert_eq!(user_dir_on(&bare, UserDir::Desktop, Platform::Linux), None);
+}

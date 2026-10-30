@@ -695,7 +695,7 @@ mod win32 {
                 HandleKind::D3d12Resource => vk::ExternalMemoryHandleTypeFlags::D3D12_RESOURCE,
             };
             let vkf = vk_format(h.format);
-            let (flags, _) = Self::image_usage(usage);
+            let (flags, _) = Self::image_usage(usage, h.format);
             let mut external =
                 vk::ExternalMemoryImageCreateInfo::default().handle_types(handle_type);
             let info = vk::ImageCreateInfo::default()
@@ -814,7 +814,7 @@ mod metal {
             }
             self.retire();
             let vkf = vk_format(s.format);
-            let (flags, _) = Self::image_usage(usage);
+            let (flags, _) = Self::image_usage(usage, s.format);
             let mut surface =
                 vk::ImportMetalIOSurfaceInfoEXT::default().io_surface(s.as_ptr().as_ptr().cast());
             let info = vk::ImageCreateInfo::default()

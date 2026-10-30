@@ -75,6 +75,25 @@
 //! });
 //! assert_eq!(double(&mut gpu, &[], &[1, 2, 21]).unwrap(), [2, 4, 42]);
 //! ```
+//! # Drawing
+//!
+//! A draw program's [`DrawPipeline`] says what it draws and how: up to
+//! [`MAX_TARGETS`] colour targets ([`ColorTarget`]: a format, a [`Blend`]
+//! and a [`ColorMask`] each), a depth and stencil test ([`DepthState`]),
+//! up to [`MAX_VERTEX_BUFFERS`] vertex buffers, per vertex or per instance
+//! ([`VertexLayout`]), its [`Raster`] state (topology, culling, front face,
+//! polygon mode, primitive restart) and its samples per pixel. A [`Draw`]
+//! then gives the images: an [`Attachment`] per target (a mip level and
+//! layer, what to [`Load`] first, and a single-sampled image to resolve a
+//! multisampled one into), a [`DepthAttachment`], the vertex buffers, an
+//! [`IndexBuffer`], instances, a [`Viewport`], a scissor [`Rect`] and a
+//! stencil reference. Everything is checked against the program, the same
+//! way by every handler, before anything reaches the GPU.
+//!
+//! Images ([`CreateImage`]) are flat, cubes or volumes, with layers, mip
+//! levels and samples, in colour, integer, packed, depth and stencil, and
+//! BC-compressed [`Format`]s.
+//!
 //! # Shaders
 //!
 //! A program is SPIR-V words, from whatever compiles to it: WGSL through
@@ -194,6 +213,7 @@ use seam_core::{Acquisition, Effect, Operation, Query};
 #[cfg(feature = "ash")]
 #[allow(unsafe_code)] // Vulkan: every call is unsafe; see the module's docs.
 mod device;
+mod render;
 mod sim;
 mod validate;
 
@@ -207,6 +227,7 @@ pub mod win32;
 #[cfg(feature = "ash")]
 pub use device::{Ash, AshOptions, Submission};
 
+pub use render::*;
 pub use sim::{Recorded, Run, SimGpu, SimSubmission};
 
 macro_rules! ids {
@@ -270,6 +291,8 @@ flags! {
     BufferUsage {
         /// Vertices, for [`Draw`].
         VERTEX = 0;
+        /// Indices, for [`Draw`].
+        INDEX = 3;
         /// A uniform buffer, bound with [`Bind::Uniform`].
         UNIFORM = 1;
         /// A storage buffer, bound with [`Bind::Storage`].
@@ -280,7 +303,8 @@ flags! {
     ImageUsage {
         /// Sampled by a program, bound with [`Bind::Sampled`].
         SAMPLED = 0;
-        /// Drawn into, as the target of [`Draw`].
+        /// Drawn into, as a target of [`Draw`] (its depth, for a depth
+        /// format).
         TARGET = 1;
         /// Read and written by a program, bound with [`Bind::StorageImage`].
         STORAGE = 2;
@@ -290,31 +314,177 @@ flags! {
 /// An image's pixel format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Format {
+    /// One 8-bit channel, in [0, 1].
+    R8Unorm,
+    /// Two 8-bit channels, in [0, 1].
+    Rg8Unorm,
     /// 8-bit red, green, blue, alpha, in [0, 1].
     Rgba8Unorm,
+    /// 8-bit red, green, blue, alpha, in [-1, 1].
+    Rgba8Snorm,
     /// 8-bit blue, green, red, alpha, in [0, 1]: what displays scan out.
     Bgra8Unorm,
     /// [`Rgba8Unorm`](Self::Rgba8Unorm), stored as sRGB.
     Rgba8Srgb,
     /// [`Bgra8Unorm`](Self::Bgra8Unorm), stored as sRGB.
     Bgra8Srgb,
-    /// One 8-bit channel, in [0, 1].
-    R8Unorm,
+    /// One 8-bit unsigned integer.
+    R8Uint,
+    /// Four 8-bit unsigned integers.
+    Rgba8Uint,
+    /// One 16-bit channel, in [0, 1].
+    R16Unorm,
+    /// 16-bit red, green, blue, alpha, in [0, 1].
+    Rgba16Unorm,
+    /// One 16-bit float.
+    R16Float,
+    /// Two 16-bit floats.
+    Rg16Float,
     /// 16-bit float red, green, blue, alpha.
     Rgba16Float,
+    /// One 16-bit unsigned integer.
+    R16Uint,
+    /// One 32-bit float.
+    R32Float,
+    /// Two 32-bit floats.
+    Rg32Float,
     /// 32-bit float red, green, blue, alpha.
     Rgba32Float,
+    /// One 32-bit unsigned integer: IDs, counts.
+    R32Uint,
+    /// Two 32-bit unsigned integers.
+    Rg32Uint,
+    /// Four 32-bit unsigned integers.
+    Rgba32Uint,
+    /// One 32-bit signed integer.
+    R32Sint,
+    /// 10-bit red, green, blue and 2-bit alpha, in [0, 1], packed in 32
+    /// bits.
+    Rgb10A2Unorm,
+    /// Unsigned 11-bit red and green and 10-bit blue floats, packed in 32
+    /// bits: HDR colour without alpha.
+    Rg11B10Float,
+    /// 16-bit depth.
+    D16Unorm,
+    /// 32-bit float depth.
+    D32Float,
+    /// 24-bit depth and 8-bit stencil (not on every device: see
+    /// [`D32FloatS8Uint`](Self::D32FloatS8Uint)).
+    D24UnormS8Uint,
+    /// 32-bit float depth and 8-bit stencil.
+    D32FloatS8Uint,
+    /// BC1: RGB (and 1-bit alpha) in 8-byte 4x4 blocks.
+    Bc1Unorm,
+    /// BC1, stored as sRGB.
+    Bc1Srgb,
+    /// BC3: RGBA in 16-byte 4x4 blocks.
+    Bc3Unorm,
+    /// BC3, stored as sRGB.
+    Bc3Srgb,
+    /// BC4: one channel in 8-byte 4x4 blocks.
+    Bc4Unorm,
+    /// BC5: two channels in 16-byte 4x4 blocks: normal maps.
+    Bc5Unorm,
+    /// BC6H: unsigned HDR RGB in 16-byte 4x4 blocks.
+    Bc6hUfloat,
+    /// BC7: RGBA in 16-byte 4x4 blocks, the best quality.
+    Bc7Unorm,
+    /// BC7, stored as sRGB.
+    Bc7Srgb,
 }
 
 impl Format {
-    /// Bytes per pixel.
+    /// Its block: width and height in pixels, and size in bytes. A pixel
+    /// (1 by 1) for every format but the block-compressed ones (4 by 4).
+    pub const fn block(self) -> (u32, u32, u32) {
+        match self {
+            Self::Bc1Unorm | Self::Bc1Srgb | Self::Bc4Unorm => (4, 4, 8),
+            Self::Bc3Unorm
+            | Self::Bc3Srgb
+            | Self::Bc5Unorm
+            | Self::Bc6hUfloat
+            | Self::Bc7Unorm
+            | Self::Bc7Srgb => (4, 4, 16),
+            _ => (1, 1, self.bytes_per_pixel()),
+        }
+    }
+
+    /// Bytes per pixel, for every format but the block-compressed ones
+    /// (for which it is 0: see [`block`](Self::block)). A depth and
+    /// stencil format's is its size in memory, which uploads and downloads
+    /// do not use: they move depth alone, of `D16Unorm` and `D32Float`.
     pub const fn bytes_per_pixel(self) -> u32 {
         match self {
-            Self::R8Unorm => 1,
-            Self::Rgba8Unorm | Self::Bgra8Unorm | Self::Rgba8Srgb | Self::Bgra8Srgb => 4,
-            Self::Rgba16Float => 8,
-            Self::Rgba32Float => 16,
+            Self::R8Unorm | Self::R8Uint => 1,
+            Self::Rg8Unorm | Self::R16Unorm | Self::R16Float | Self::R16Uint | Self::D16Unorm => 2,
+            Self::Rgba8Unorm
+            | Self::Rgba8Snorm
+            | Self::Bgra8Unorm
+            | Self::Rgba8Srgb
+            | Self::Bgra8Srgb
+            | Self::Rgba8Uint
+            | Self::Rg16Float
+            | Self::R32Float
+            | Self::R32Uint
+            | Self::R32Sint
+            | Self::Rgb10A2Unorm
+            | Self::Rg11B10Float
+            | Self::D32Float
+            | Self::D24UnormS8Uint => 4,
+            Self::D32FloatS8Uint => 5,
+            Self::Rgba16Unorm | Self::Rgba16Float | Self::Rg32Float | Self::Rg32Uint => 8,
+            Self::Rgba32Float | Self::Rgba32Uint => 16,
+            Self::Bc1Unorm
+            | Self::Bc1Srgb
+            | Self::Bc3Unorm
+            | Self::Bc3Srgb
+            | Self::Bc4Unorm
+            | Self::Bc5Unorm
+            | Self::Bc6hUfloat
+            | Self::Bc7Unorm
+            | Self::Bc7Srgb => 0,
         }
+    }
+
+    /// The bytes of a `width` by `height` area, tightly packed (whole
+    /// blocks, for a compressed format).
+    pub const fn size(self, width: u32, height: u32) -> u64 {
+        let (bw, bh, bytes) = self.block();
+        (width.div_ceil(bw) as u64) * (height.div_ceil(bh) as u64) * bytes as u64
+    }
+
+    /// Whether it holds depth.
+    pub const fn is_depth(self) -> bool {
+        matches!(
+            self,
+            Self::D16Unorm | Self::D32Float | Self::D24UnormS8Uint | Self::D32FloatS8Uint
+        )
+    }
+
+    /// Whether it holds stencil.
+    pub const fn has_stencil(self) -> bool {
+        matches!(self, Self::D24UnormS8Uint | Self::D32FloatS8Uint)
+    }
+
+    /// Whether it is block-compressed: sampled and uploaded, not drawn
+    /// into.
+    pub const fn is_compressed(self) -> bool {
+        self.block().0 > 1
+    }
+
+    /// Whether it holds integers, read as integers by shaders (and not
+    /// blended or filtered).
+    pub const fn is_integer(self) -> bool {
+        matches!(
+            self,
+            Self::R8Uint
+                | Self::Rgba8Uint
+                | Self::R16Uint
+                | Self::R32Uint
+                | Self::Rg32Uint
+                | Self::Rgba32Uint
+                | Self::R32Sint
+        )
     }
 }
 
@@ -479,44 +649,11 @@ impl Bind {
     }
 }
 
-/// The format of one vertex attribute.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AttrFormat {
-    /// One `f32`.
-    F32,
-    /// Two `f32`s.
-    F32x2,
-    /// Three `f32`s.
-    F32x3,
-    /// Four `f32`s.
-    F32x4,
-    /// One `u32`.
-    U32,
-}
-
-/// One vertex attribute: at location `i` for the `i`th, `offset` bytes
-/// into each vertex.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VertexAttr {
-    /// Where it starts in the vertex.
-    pub offset: u32,
-    /// What it is.
-    pub format: AttrFormat,
-}
-
-/// How a draw combines with what the target holds.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum Blend {
-    /// Replace it.
-    #[default]
-    Replace,
-    /// Premultiplied alpha: `src + dst * (1 - src.a)`, as compositors
-    /// blend.
-    PremultipliedAlpha,
-}
-
 /// What kind of program, with its shaders (SPIR-V words).
 #[derive(Debug, Clone, Copy)]
+// A draw pipeline is larger than a compute shader, and made once per
+// program: not worth a box.
+#[allow(clippy::large_enum_variant)]
 pub enum ProgramKind<'a> {
     /// A compute shader, for [`Dispatch`].
     Compute {
@@ -525,25 +662,8 @@ pub enum ProgramKind<'a> {
         /// Its entry point.
         entry: &'a str,
     },
-    /// A vertex and a fragment shader drawing triangles, for [`Draw`].
-    Draw {
-        /// The vertex shader.
-        vertex: &'a [u32],
-        /// Its entry point.
-        vertex_entry: &'a str,
-        /// The fragment shader.
-        fragment: &'a [u32],
-        /// Its entry point.
-        fragment_entry: &'a str,
-        /// The vertex attributes, by location.
-        attrs: &'a [VertexAttr],
-        /// Bytes from one vertex to the next (0 for no vertex buffer).
-        stride: u32,
-        /// The format of the images it draws into.
-        target: Format,
-        /// How it blends.
-        blend: Blend,
-    },
+    /// A vertex and a fragment shader, and how they draw, for [`Draw`].
+    Draw(DrawPipeline<'a>),
 }
 
 /// Create a buffer of `size` bytes, lending it for a scope. Its contents
@@ -563,14 +683,37 @@ impl CreateBuffer {
     }
 }
 
+/// What shape an image is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ImageKind {
+    /// Flat, with `layers` layers (an array, if more than one).
+    #[default]
+    D2,
+    /// Six square faces per cube (`layers` is a multiple of 6: more is an
+    /// array of cubes), sampled by direction.
+    Cube,
+    /// A volume, `depth` slices deep (and one layer).
+    D3,
+}
+
 /// Create an image, lending it for a scope. Its contents start undefined
 /// (zeros in [`SimGpu`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CreateImage {
     /// Its width, in pixels; at least 1.
     pub width: u32,
     /// Its height, in pixels; at least 1.
     pub height: u32,
+    /// Its depth, in slices: more than 1 only for [`ImageKind::D3`].
+    pub depth: u32,
+    /// Its layers: array elements, or six per cube.
+    pub layers: u32,
+    /// Its mip levels, each half the size of the one before; at least 1.
+    pub mips: u32,
+    /// Samples per pixel: 1, or 2, 4, 8, ... for a multisampled target.
+    pub samples: u32,
+    /// Its shape.
+    pub kind: ImageKind,
     /// Its pixel format.
     pub format: Format,
     /// What it is for.
@@ -578,14 +721,99 @@ pub struct CreateImage {
 }
 
 impl CreateImage {
-    /// Describes a `width` by `height` image in `format`, for `usage`.
+    /// Describes a `width` by `height` image in `format`, for `usage`: one
+    /// layer, one mip level, one sample.
     pub const fn new(width: u32, height: u32, format: Format, usage: ImageUsage) -> Self {
         Self {
             width,
             height,
+            depth: 1,
+            layers: 1,
+            mips: 1,
+            samples: 1,
+            kind: ImageKind::D2,
             format,
             usage,
         }
+    }
+
+    /// A cube map (or `cubes` of them, as an array), each face `size`
+    /// square.
+    pub const fn cube(size: u32, cubes: u32, format: Format, usage: ImageUsage) -> Self {
+        let mut op = Self::new(size, size, format, usage);
+        op.kind = ImageKind::Cube;
+        op.layers = 6 * cubes;
+        op
+    }
+
+    /// A volume, `depth` slices deep.
+    pub const fn volume(
+        width: u32,
+        height: u32,
+        depth: u32,
+        format: Format,
+        usage: ImageUsage,
+    ) -> Self {
+        let mut op = Self::new(width, height, format, usage);
+        op.kind = ImageKind::D3;
+        op.depth = depth;
+        op
+    }
+
+    /// With `layers` layers: an array.
+    #[must_use]
+    pub const fn layers(mut self, layers: u32) -> Self {
+        self.layers = layers;
+        self
+    }
+
+    /// With `mips` mip levels.
+    #[must_use]
+    pub const fn mips(mut self, mips: u32) -> Self {
+        self.mips = mips;
+        self
+    }
+
+    /// With every mip level down to 1 by 1.
+    #[must_use]
+    pub const fn full_mips(mut self) -> Self {
+        let mut largest = if self.width > self.height {
+            self.width
+        } else {
+            self.height
+        };
+        if self.depth > largest {
+            largest = self.depth;
+        }
+        self.mips = 32 - largest.leading_zeros();
+        self
+    }
+
+    /// With `samples` samples per pixel.
+    #[must_use]
+    pub const fn samples(mut self, samples: u32) -> Self {
+        self.samples = samples;
+        self
+    }
+
+    /// The width, height and depth of mip level `mip`.
+    pub const fn extent(&self, mip: u32) -> (u32, u32, u32) {
+        const fn at(n: u32, mip: u32) -> u32 {
+            let v = n >> mip;
+            if v == 0 { 1 } else { v }
+        }
+        (
+            at(self.width, mip),
+            at(self.height, mip),
+            at(self.depth, mip),
+        )
+    }
+
+    /// The bytes of mip level `mip`, every layer and slice, tightly
+    /// packed: what [`UploadImage`] and [`DownloadImage`] move by default.
+    pub const fn level_bytes(&self, mip: u32) -> u64 {
+        let (w, h, d) = self.extent(mip);
+        self.format.size(w, h) * d as u64 * self.layers as u64
     }
 }
 
@@ -731,23 +959,36 @@ impl<'a> Dispatch<'a> {
     }
 }
 
-/// Draw `vertex_count` vertices (`instance_count` times) with a draw
-/// program into `target`, after clearing it to `clear` if given.
+/// Draw with a draw program: `vertex_count` vertices (or indices, with an
+/// index buffer), `instance_count` times, into its targets.
 #[derive(Debug, Clone, Copy)]
 pub struct Draw<'a> {
     /// The program.
     pub program: Program,
-    /// The image drawn into: [`ImageUsage::TARGET`], in the program's
-    /// target format.
-    pub target: Image,
-    /// Clear the target to this colour first.
-    pub clear: Option<[f32; 4]>,
-    /// The vertices, if the program reads any.
-    pub vertices: Option<Buffer>,
-    /// How many vertices.
+    /// Its colour targets, by the program's slots.
+    pub targets: [Option<Attachment>; MAX_TARGETS],
+    /// Its depth (and stencil) image, if the program tests depth.
+    pub depth: Option<DepthAttachment>,
+    /// Its vertex buffers, by the program's slots.
+    pub vertex_buffers: [Option<VertexBinding>; MAX_VERTEX_BUFFERS],
+    /// Its index buffer, for an indexed draw.
+    pub index: Option<IndexBuffer>,
+    /// How many vertices, or indices.
     pub vertex_count: u32,
     /// How many instances.
     pub instance_count: u32,
+    /// The first vertex, or index.
+    pub first: u32,
+    /// For an indexed draw: added to each index.
+    pub base_vertex: i32,
+    /// The first instance.
+    pub first_instance: u32,
+    /// Where it lands in the targets; all of them if `None`.
+    pub viewport: Option<Viewport>,
+    /// What it may write; all of the targets if `None`.
+    pub scissor: Option<Rect>,
+    /// The stencil test's reference value.
+    pub stencil_reference: u32,
     /// Its bindings, in order.
     pub bindings: &'a [Bind],
     /// Its push constants.
@@ -755,31 +996,83 @@ pub struct Draw<'a> {
 }
 
 impl<'a> Draw<'a> {
-    /// Draws `vertex_count` vertices of `program` into `target`.
+    /// Draws `vertex_count` vertices of `program` into `target` (its slot
+    /// 0), on top of what it holds.
     pub const fn new(program: Program, target: Image, vertex_count: u32) -> Self {
+        let mut targets = [None; MAX_TARGETS];
+        targets[0] = Some(Attachment::new(target));
+        Self::with_targets(program, targets, vertex_count)
+    }
+
+    /// Draws `vertex_count` vertices of `program` into `targets`.
+    pub const fn with_targets(
+        program: Program,
+        targets: [Option<Attachment>; MAX_TARGETS],
+        vertex_count: u32,
+    ) -> Self {
         Self {
             program,
-            target,
-            clear: None,
-            vertices: None,
+            targets,
+            depth: None,
+            vertex_buffers: [None; MAX_VERTEX_BUFFERS],
+            index: None,
             vertex_count,
             instance_count: 1,
+            first: 0,
+            base_vertex: 0,
+            first_instance: 0,
+            viewport: None,
+            scissor: None,
+            stencil_reference: 0,
             bindings: &[],
             push: &[],
         }
     }
 
-    /// Clears the target first.
+    /// Clears target 0 to `rgba` first.
     #[must_use]
     pub const fn clear(mut self, rgba: [f32; 4]) -> Self {
-        self.clear = Some(rgba);
+        if let Some(t) = &mut self.targets[0] {
+            t.load = Load::Clear(rgba);
+        }
         self
     }
 
-    /// Reads vertices from `buffer`.
+    /// Sets colour target `slot`.
     #[must_use]
-    pub const fn vertices(mut self, buffer: Buffer) -> Self {
-        self.vertices = Some(buffer);
+    pub const fn target(mut self, slot: usize, target: Option<Attachment>) -> Self {
+        self.targets[slot] = target;
+        self
+    }
+
+    /// Tests depth against `depth`.
+    #[must_use]
+    pub const fn depth(mut self, depth: DepthAttachment) -> Self {
+        self.depth = Some(depth);
+        self
+    }
+
+    /// Reads vertex buffer 0 from `buffer`.
+    #[must_use]
+    pub const fn vertices(self, buffer: Buffer) -> Self {
+        self.vertex_buffer(0, buffer, 0)
+    }
+
+    /// Reads vertex buffer `slot` from `buffer`, `offset` bytes in.
+    #[must_use]
+    pub const fn vertex_buffer(mut self, slot: usize, buffer: Buffer, offset: u64) -> Self {
+        self.vertex_buffers[slot] = Some(VertexBinding { buffer, offset });
+        self
+    }
+
+    /// Draws by the indices in `buffer`: `vertex_count` of them.
+    #[must_use]
+    pub const fn indexed(mut self, buffer: Buffer, format: IndexFormat) -> Self {
+        self.index = Some(IndexBuffer {
+            buffer,
+            offset: 0,
+            format,
+        });
         self
     }
 
@@ -787,6 +1080,34 @@ impl<'a> Draw<'a> {
     #[must_use]
     pub const fn instances(mut self, count: u32) -> Self {
         self.instance_count = count;
+        self
+    }
+
+    /// Starts at vertex (or index) `first`.
+    #[must_use]
+    pub const fn first(mut self, first: u32) -> Self {
+        self.first = first;
+        self
+    }
+
+    /// Lands in `viewport`.
+    #[must_use]
+    pub const fn viewport(mut self, viewport: Viewport) -> Self {
+        self.viewport = Some(viewport);
+        self
+    }
+
+    /// Writes only within `scissor`.
+    #[must_use]
+    pub const fn scissor(mut self, scissor: Rect) -> Self {
+        self.scissor = Some(scissor);
+        self
+    }
+
+    /// With stencil reference `reference`.
+    #[must_use]
+    pub const fn stencil_reference(mut self, reference: u32) -> Self {
+        self.stencil_reference = reference;
         self
     }
 
@@ -1128,6 +1449,31 @@ keyed! {
     DeviceInfo => DeviceInfo;
 }
 
+/// What a handler knows of a draw program, for checking draws against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DrawInfo {
+    pub targets: [Option<Format>; MAX_TARGETS],
+    pub depth: Option<Format>,
+    pub stencil: bool,
+    /// Each vertex buffer's stride and step.
+    pub vertex_buffers: [Option<(u32, Step)>; MAX_VERTEX_BUFFERS],
+    pub samples: u32,
+    pub topology: Topology,
+}
+
+impl DrawInfo {
+    pub(crate) fn of(p: &DrawPipeline<'_>) -> Self {
+        Self {
+            targets: p.targets.map(|t| t.map(|t| t.format)),
+            depth: p.depth.map(|d| d.format),
+            stencil: p.depth.is_some_and(|d| d.stencil.is_some()),
+            vertex_buffers: p.vertex_buffers.map(|v| v.map(|v| (v.stride, v.step))),
+            samples: p.samples,
+            topology: p.raster.topology,
+        }
+    }
+}
+
 /// Bytes of a `u32` slice, little-endian: for uploading numbers.
 pub fn u32_bytes(values: &[u32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
@@ -1168,19 +1514,14 @@ pub(crate) enum ResInfo {
         size: u64,
         usage: BufferUsage,
     },
-    Image {
-        width: u32,
-        height: u32,
-        format: Format,
-        usage: ImageUsage,
-    },
+    Image(CreateImage),
     Sampler(CreateSampler),
     Program {
         label: String,
         compute: bool,
         bindings: Vec<BindingKind>,
         push_constants: u32,
-        target: Option<Format>,
-        stride: u32,
+        /// For a draw program.
+        draw: Option<DrawInfo>,
     },
 }

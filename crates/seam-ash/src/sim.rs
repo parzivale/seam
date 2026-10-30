@@ -11,9 +11,10 @@ use seam_core::{Closing, Inspect, Opening, Perform};
 use crate::validate::{self, Lookup};
 use crate::{
     AddressMode, Bind, Buffer, CopyBuffer, CreateBuffer, CreateImage, CreateProgram, CreateSampler,
-    DeviceInfo, Dispatch, Download, DownloadImage, Draw, Filter, Finish, Format, GpuError, GpuInfo,
-    GpuKind, Image, Import, IsDone, Program, ProgramKind, ResInfo, Sampler, Submit, Upload,
-    UploadImage,
+    DepthLoad, DeviceInfo, Dispatch, Download, DownloadImage, Draw, DrawInfo, Filter, Finish,
+    Format, GpuError, GpuInfo, GpuKind, Image, Import, IndexFormat, IsDone, Load, MAX_TARGETS,
+    MAX_VERTEX_BUFFERS, Program, ProgramKind, Rect, ResInfo, Sampler, Submit, Upload, UploadImage,
+    Viewport,
 };
 
 /// What [`SimGpu`] was asked to do, in order: for tests to assert on.
@@ -55,7 +56,7 @@ pub enum Recorded {
     Draw {
         /// Its label.
         label: String,
-        /// Into which image.
+        /// Into which image: its first target (or its depth image).
         target: Image,
         /// How many vertices.
         vertex_count: u32,
@@ -92,17 +93,59 @@ pub struct Run<'a> {
     /// For each binding, its sampler, if it is a sampled image or one.
     samplers: Vec<Option<CreateSampler>>,
     slots: Vec<Slot>,
-    target: Option<usize>,
-    vertices: Option<usize>,
+    targets: [Option<Area>; MAX_TARGETS],
+    depth: Option<Area>,
+    vertex_buffers: [Option<(usize, u64)>; MAX_VERTEX_BUFFERS],
+    index: Option<(usize, u64, IndexFormat)>,
+    draw: Option<DrawArgs>,
+}
+
+/// One level and layer of an image in a slot: where its bytes are.
+#[derive(Clone, Copy)]
+struct Area {
+    slot: usize,
+    offset: usize,
+    len: usize,
+    width: u32,
+    height: u32,
+}
+
+/// What a draw was asked to draw.
+#[derive(Clone, Copy)]
+struct DrawArgs {
     vertex_count: u32,
     instance_count: u32,
+    first: u32,
+    base_vertex: i32,
+    first_instance: u32,
+    viewport: Viewport,
+    scissor: Rect,
 }
 
 struct Slot {
     id: u64,
     data: Vec<u8>,
-    size: Option<(u32, u32)>,
-    format: Option<Format>,
+    image: Option<CreateImage>,
+}
+
+/// Where level `mip`, layer (or slice) `layer` of an image is in its
+/// bytes, which hold every level in turn, each every layer (or slice) in
+/// turn, each rows top to bottom.
+pub(crate) fn area_of(op: &CreateImage, mip: u32, layer: u32) -> (usize, usize, u32, u32) {
+    let before: u64 = (0..mip).map(|m| op.level_bytes(m)).sum();
+    let (w, h, _) = op.extent(mip);
+    let one = op.format.size(w, h);
+    (
+        (before + u64::from(layer) * one) as usize,
+        one as usize,
+        w,
+        h,
+    )
+}
+
+/// An image's bytes: every level, every layer.
+pub(crate) fn image_len(op: &CreateImage) -> usize {
+    (0..op.mips).map(|m| op.level_bytes(m)).sum::<u64>() as usize
 }
 
 impl Run<'_> {
@@ -139,7 +182,17 @@ impl Run<'_> {
     /// The width and height of the image at binding `i`, or `None` for a
     /// buffer.
     pub fn image_size(&self, i: usize) -> Option<(u32, u32)> {
-        self.bound[i].and_then(|s| self.slots[s].size)
+        self.bound[i]
+            .and_then(|s| self.slots[s].image)
+            .map(|op| (op.width, op.height))
+    }
+
+    /// The description of the image at binding `i`, or `None` for a
+    /// buffer: its shape, levels, layers and format. Its bytes
+    /// ([`buffer`](Self::buffer)) hold every level in turn, largest first,
+    /// each every layer (or slice) in turn.
+    pub fn image_info(&self, i: usize) -> Option<CreateImage> {
+        self.bound[i].and_then(|s| self.slots[s].image)
     }
 
     /// The sampler at binding `i`: bound with a sampled image, or alone.
@@ -155,16 +208,33 @@ impl Run<'_> {
     ///
     /// If binding `i` is not an image, or `x`, `y` is outside it.
     pub fn texel(&self, i: usize, x: u32, y: u32) -> [f32; 4] {
+        self.texel_in(i, 0, 0, x, y)
+    }
+
+    /// The texel at `x`, `y` of mip level `mip`, layer (or slice) `layer`
+    /// of the image at binding `i`, as [`texel`](Self::texel) reads it.
+    ///
+    /// # Panics
+    ///
+    /// If binding `i` is not an image, the level, layer or texel is
+    /// outside it, or its format is block-compressed (the simulation does
+    /// not decode those).
+    pub fn texel_in(&self, i: usize, mip: u32, layer: u32, x: u32, y: u32) -> [f32; 4] {
         let slot = &self.slots[self.slot(i)];
-        let (w, h) = slot.size.expect("seam-ash: the binding is not an image");
+        let op = slot.image.expect("seam-ash: the binding is not an image");
+        assert!(
+            !op.format.is_compressed(),
+            "seam-ash: SimGpu does not decode {:?}",
+            op.format
+        );
+        let (at, _, w, h) = area_of(&op, mip, layer);
         assert!(
             x < w && y < h,
-            "seam-ash: texel {x}, {y} is outside a {w}x{h} image"
+            "seam-ash: texel {x}, {y} is outside a {w}x{h} level"
         );
-        let format = slot.format.expect("an image has a format");
-        let n = format.bytes_per_pixel() as usize;
-        let at = (y as usize * w as usize + x as usize) * n;
-        decode_pixel(format, &slot.data[at..at + n])
+        let n = op.format.bytes_per_pixel() as usize;
+        let at = at + (y as usize * w as usize + x as usize) * n;
+        decode_pixel(op.format, &slot.data[at..at + n])
     }
 
     /// Samples the image at binding `i` at `uv` (in [0, 1] across the
@@ -222,26 +292,93 @@ impl Run<'_> {
         }
     }
 
-    /// For a draw: the target image's pixels (already cleared, if the draw
-    /// clears), and its width and height.
+    /// For a draw: target 0's pixels (already loaded: cleared, if the
+    /// draw clears), and its width and height.
     ///
     /// # Panics
     ///
-    /// If this is a dispatch.
+    /// If this is a dispatch, or the draw has no target 0.
     pub fn target(&mut self) -> (&mut [u8], u32, u32) {
-        let slot = self.target.expect("seam-ash: a dispatch has no target");
-        let (w, h) = self.slots[slot].size.expect("a target is an image");
-        (&mut self.slots[slot].data, w, h)
+        self.target_at(0)
+            .expect("seam-ash: the draw has no target 0")
     }
 
-    /// For a draw: the vertex buffer's bytes, if any.
+    /// For a draw: target `slot`'s pixels (its level and layer), and its
+    /// width and height; `None` if it has none. A multisampled target is
+    /// one sample per pixel here, as if already resolved; the resolve
+    /// image gets these pixels after the emulator returns.
+    pub fn target_at(&mut self, slot: usize) -> Option<(&mut [u8], u32, u32)> {
+        let a = self.targets.get(slot).copied().flatten()?;
+        let data = &mut self.slots[a.slot].data[a.offset..a.offset + a.len];
+        Some((data, a.width, a.height))
+    }
+
+    /// For a draw: the depth image's bytes (its level and layer), and its
+    /// width and height, if it tests depth. Per pixel: `D16Unorm` a `u16`,
+    /// `D32Float` an `f32`, `D24UnormS8Uint` a `u32` with depth in the low
+    /// 24 bits and stencil in the high 8, `D32FloatS8Uint` an `f32` then a
+    /// `u8`; little-endian.
+    pub fn depth(&mut self) -> Option<(&mut [u8], u32, u32)> {
+        let a = self.depth?;
+        let data = &mut self.slots[a.slot].data[a.offset..a.offset + a.len];
+        Some((data, a.width, a.height))
+    }
+
+    /// For a draw: vertex buffer 0's bytes, from its offset, if any.
     pub fn vertices(&self) -> Option<&[u8]> {
-        self.vertices.map(|s| self.slots[s].data.as_slice())
+        self.vertex_buffer(0)
     }
 
-    /// For a draw: how many vertices and instances.
+    /// For a draw: vertex buffer `slot`'s bytes, from its offset, if any.
+    pub fn vertex_buffer(&self, slot: usize) -> Option<&[u8]> {
+        let (s, offset) = self.vertex_buffers.get(slot).copied().flatten()?;
+        Some(&self.slots[s].data[offset as usize..])
+    }
+
+    /// For an indexed draw: the vertices it draws, by index: each index of
+    /// the range drawn, plus the base vertex. `None` for a draw without
+    /// indices.
+    pub fn indices(&self) -> Option<Vec<u32>> {
+        let (s, offset, format) = self.index?;
+        let args = self.draw?;
+        let bytes = &self.slots[s].data[offset as usize..];
+        let size = format.size() as usize;
+        let first = args.first as usize;
+        Some(
+            (first..first + args.vertex_count as usize)
+                .map(|i| {
+                    let b = &bytes[i * size..(i + 1) * size];
+                    let index = match format {
+                        IndexFormat::U16 => u32::from(u16::from_le_bytes([b[0], b[1]])),
+                        IndexFormat::U32 => u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+                    };
+                    index.wrapping_add_signed(args.base_vertex)
+                })
+                .collect(),
+        )
+    }
+
+    /// For a draw: how many vertices (or indices) and instances.
     pub fn counts(&self) -> (u32, u32) {
-        (self.vertex_count, self.instance_count)
+        self.draw
+            .map_or((0, 0), |d| (d.vertex_count, d.instance_count))
+    }
+
+    /// For a draw: its first vertex (or index), and its first instance.
+    pub fn firsts(&self) -> (u32, u32) {
+        self.draw.map_or((0, 0), |d| (d.first, d.first_instance))
+    }
+
+    /// For a draw: where it lands in its targets (the whole of them, if it
+    /// gave no viewport).
+    pub fn viewport(&self) -> Option<Viewport> {
+        self.draw.map(|d| d.viewport)
+    }
+
+    /// For a draw: what it may write (the whole of its targets, if it gave
+    /// no scissor).
+    pub fn scissor(&self) -> Option<Rect> {
+        self.draw.map(|d| d.scissor)
     }
 }
 
@@ -265,6 +402,7 @@ fn wrap(i: i64, size: u32, mode: AddressMode) -> Option<u32> {
 /// One pixel of `format`, as linear RGBA.
 fn decode_pixel(format: Format, px: &[u8]) -> [f32; 4] {
     let unorm = |b: u8| f32::from(b) / 255.0;
+    let snorm = |b: u8| (f32::from(b as i8) / 127.0).max(-1.0);
     let srgb = |b: u8| {
         let c = unorm(b);
         if c <= 0.040_45 {
@@ -273,16 +411,60 @@ fn decode_pixel(format: Format, px: &[u8]) -> [f32; 4] {
             ((c + 0.055) / 1.055).powf(2.4)
         }
     };
-    let half = |i: usize| f16_value(u16::from_le_bytes([px[i], px[i + 1]]));
-    let float = |i: usize| f32::from_le_bytes([px[i], px[i + 1], px[i + 2], px[i + 3]]);
+    let u16_at = |i: usize| u16::from_le_bytes([px[i], px[i + 1]]);
+    let u32_at = |i: usize| u32::from_le_bytes([px[i], px[i + 1], px[i + 2], px[i + 3]]);
+    let unorm16 = |i: usize| f32::from(u16_at(i)) / 65535.0;
+    let half = |i: usize| f16_value(u16_at(i));
+    let float = |i: usize| f32::from_bits(u32_at(i));
     match format {
+        Format::R8Unorm => [unorm(px[0]), 0.0, 0.0, 1.0],
+        Format::Rg8Unorm => [unorm(px[0]), unorm(px[1]), 0.0, 1.0],
         Format::Rgba8Unorm => [unorm(px[0]), unorm(px[1]), unorm(px[2]), unorm(px[3])],
+        Format::Rgba8Snorm => [snorm(px[0]), snorm(px[1]), snorm(px[2]), snorm(px[3])],
         Format::Bgra8Unorm => [unorm(px[2]), unorm(px[1]), unorm(px[0]), unorm(px[3])],
         Format::Rgba8Srgb => [srgb(px[0]), srgb(px[1]), srgb(px[2]), unorm(px[3])],
         Format::Bgra8Srgb => [srgb(px[2]), srgb(px[1]), srgb(px[0]), unorm(px[3])],
-        Format::R8Unorm => [unorm(px[0]), 0.0, 0.0, 1.0],
+        Format::R8Uint => [f32::from(px[0]), 0.0, 0.0, 1.0],
+        Format::Rgba8Uint => px[..4]
+            .iter()
+            .map(|b| f32::from(*b))
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("four"),
+        Format::R16Unorm => [unorm16(0), 0.0, 0.0, 1.0],
+        Format::Rgba16Unorm => [unorm16(0), unorm16(2), unorm16(4), unorm16(6)],
+        Format::R16Float => [half(0), 0.0, 0.0, 1.0],
+        Format::Rg16Float => [half(0), half(2), 0.0, 1.0],
         Format::Rgba16Float => [half(0), half(2), half(4), half(6)],
+        Format::R16Uint => [f32::from(u16_at(0)), 0.0, 0.0, 1.0],
+        Format::R32Float => [float(0), 0.0, 0.0, 1.0],
+        Format::Rg32Float => [float(0), float(4), 0.0, 1.0],
         Format::Rgba32Float => [float(0), float(4), float(8), float(12)],
+        Format::R32Uint => [u32_at(0) as f32, 0.0, 0.0, 1.0],
+        Format::Rg32Uint => [u32_at(0) as f32, u32_at(4) as f32, 0.0, 1.0],
+        Format::Rgba32Uint => [
+            u32_at(0) as f32,
+            u32_at(4) as f32,
+            u32_at(8) as f32,
+            u32_at(12) as f32,
+        ],
+        Format::R32Sint => [u32_at(0) as i32 as f32, 0.0, 0.0, 1.0],
+        Format::Rgb10A2Unorm => {
+            let v = u32_at(0);
+            let ten = |shift: u32| ((v >> shift) & 0x3ff) as f32 / 1023.0;
+            [ten(0), ten(10), ten(20), (v >> 30) as f32 / 3.0]
+        }
+        Format::Rg11B10Float => {
+            let v = u32_at(0);
+            let small = |shift: u32, bits: u32| {
+                f16_value((((v >> shift) & ((1 << bits) - 1)) << (15 - bits)) as u16)
+            };
+            [small(0, 11), small(11, 11), small(22, 10), 1.0]
+        }
+        Format::D16Unorm => [unorm16(0), 0.0, 0.0, 1.0],
+        Format::D32Float | Format::D32FloatS8Uint => [float(0), 0.0, 0.0, 1.0],
+        Format::D24UnormS8Uint => [(u32_at(0) & 0xff_ffff) as f32 / 16_777_215.0, 0.0, 0.0, 1.0],
+        _ => unreachable!("compressed formats are not decoded"),
     }
 }
 
@@ -432,20 +614,14 @@ impl State {
                 return i;
             }
             let entry = state.res.get_mut(&id).expect("checked to exist");
-            let (size, format) = match entry.info {
-                ResInfo::Image {
-                    width,
-                    height,
-                    format,
-                    ..
-                } => (Some((width, height)), Some(format)),
-                _ => (None, None),
+            let image = match entry.info {
+                ResInfo::Image(op) => Some(op),
+                _ => None,
             };
             slots.push(Slot {
                 id,
                 data: core::mem::take(&mut entry.data),
-                size,
-                format,
+                image,
             });
             slots.len() - 1
         };
@@ -469,8 +645,59 @@ impl State {
                 _ => None,
             })
             .collect();
-        let target = run_setup.target.map(|t| slot_of(self, t.raw()));
-        let vertices = run_setup.vertices.map(|v| slot_of(self, v.raw()));
+        let mut targets = [None; MAX_TARGETS];
+        let mut depth = None;
+        let mut vertex_buffers = [None; MAX_VERTEX_BUFFERS];
+        let mut index = None;
+        let mut draw = None;
+        if let Some(d) = run_setup.draw {
+            let mut area = |state: &mut State, id: u64, mip: u32, layer: u32| -> Area {
+                let op = image_of(state, id);
+                let slot = slot_of(state, id);
+                let (offset, len, width, height) = area_of(&op, mip, layer);
+                Area {
+                    slot,
+                    offset,
+                    len,
+                    width,
+                    height,
+                }
+            };
+            for (slot, t) in d.targets.iter().enumerate() {
+                if let Some(t) = t {
+                    targets[slot] = Some(area(self, t.image.raw(), t.mip, t.layer));
+                }
+            }
+            depth = d.depth.map(|t| area(self, t.image.raw(), t.mip, t.layer));
+            for (slot, v) in d.vertex_buffers.iter().enumerate() {
+                if let Some(v) = v {
+                    vertex_buffers[slot] = Some((slot_of(self, v.buffer.raw()), v.offset));
+                }
+            }
+            index = d
+                .index
+                .map(|i| (slot_of(self, i.buffer.raw()), i.offset, i.format));
+            let size = targets
+                .iter()
+                .flatten()
+                .chain(depth.iter())
+                .next()
+                .map_or((0, 0), |a| (a.width, a.height));
+            draw = Some(DrawArgs {
+                vertex_count: d.vertex_count,
+                instance_count: d.instance_count,
+                first: d.first,
+                base_vertex: d.base_vertex,
+                first_instance: d.first_instance,
+                viewport: d.viewport.unwrap_or(Viewport::new(
+                    0.0,
+                    0.0,
+                    size.0 as f32,
+                    size.1 as f32,
+                )),
+                scissor: d.scissor.unwrap_or(Rect::new(0, 0, size.0, size.1)),
+            });
+        }
         let mut run = Run {
             label: &label,
             groups: run_setup.groups,
@@ -478,10 +705,11 @@ impl State {
             bound,
             samplers,
             slots,
-            target,
-            vertices,
-            vertex_count: run_setup.vertex_count,
-            instance_count: run_setup.instance_count,
+            targets,
+            depth,
+            vertex_buffers,
+            index,
+            draw,
         };
         emulator(&mut run);
         for slot in run.slots {
@@ -491,14 +719,20 @@ impl State {
     }
 }
 
+/// An image's description, whether its bytes are with it or lent to a
+/// run.
+fn image_of(state: &State, id: u64) -> CreateImage {
+    match state.res[&id].info {
+        ResInfo::Image(op) => op,
+        _ => unreachable!("validated as an image"),
+    }
+}
+
 struct RunSetup<'a> {
     bindings: &'a [Bind],
     push: &'a [u8],
     groups: [u32; 3],
-    target: Option<Image>,
-    vertices: Option<Buffer>,
-    vertex_count: u32,
-    instance_count: u32,
+    draw: Option<&'a Draw<'a>>,
 }
 
 impl Perform<Opening<CreateBuffer>> for SimGpu {
@@ -521,15 +755,8 @@ impl Perform<Opening<CreateBuffer>> for SimGpu {
 impl Perform<Opening<CreateImage>> for SimGpu {
     fn perform(&mut self, Opening(op, _): Opening<CreateImage>) -> Result<Image, GpuError> {
         validate::create_image(&op)?;
-        let len = op.width as usize * op.height as usize * op.format.bytes_per_pixel() as usize;
         let mut state = self.lock();
-        let info = ResInfo::Image {
-            width: op.width,
-            height: op.height,
-            format: op.format,
-            usage: op.usage,
-        };
-        let id = state.add(info, len);
+        let id = state.add(ResInfo::Image(op), image_len(&op));
         state.log.push(Recorded::CreateImage(Image(id)));
         Ok(Image(id))
     }
@@ -547,9 +774,9 @@ impl Perform<Opening<CreateSampler>> for SimGpu {
 impl Perform<Opening<CreateProgram<'_>>> for SimGpu {
     fn perform(&mut self, Opening(op, _): Opening<CreateProgram<'_>>) -> Result<Program, GpuError> {
         validate::create_program(&op)?;
-        let (compute, target, stride) = match op.kind {
-            ProgramKind::Compute { .. } => (true, None, 0),
-            ProgramKind::Draw { target, stride, .. } => (false, Some(target), stride),
+        let (compute, draw) = match &op.kind {
+            ProgramKind::Compute { .. } => (true, None),
+            ProgramKind::Draw(p) => (false, Some(DrawInfo::of(p))),
         };
         let mut state = self.lock();
         let info = ResInfo::Program {
@@ -557,8 +784,7 @@ impl Perform<Opening<CreateProgram<'_>>> for SimGpu {
             compute,
             bindings: op.bindings.to_vec(),
             push_constants: op.push_constants,
-            target,
-            stride,
+            draw,
         };
         let id = state.add(info, 0);
         state
@@ -644,12 +870,7 @@ mod dmabuf {
                 }
             }
             let mut state = self.lock();
-            let info = ResInfo::Image {
-                width: buf.width,
-                height: buf.height,
-                format,
-                usage: op.usage,
-            };
+            let info = ResInfo::Image(CreateImage::new(buf.width, buf.height, format, op.usage));
             let id = state.add(info, 0);
             *state.data(id) = pixels;
             state.log.push(Recorded::Import(Image(id)));
@@ -689,7 +910,7 @@ impl Perform<UploadImage<'_>> for SimGpu {
     fn perform(&mut self, op: UploadImage<'_>) -> Result<(), GpuError> {
         let mut state = self.lock();
         validate::whole_image(&*state, op.image.raw(), op.data.len(), "upload")?;
-        state.data(op.image.raw()).copy_from_slice(op.data);
+        state.data(op.image.raw())[..op.data.len()].copy_from_slice(op.data);
         state.log.push(Recorded::UploadImage(op.image));
         Ok(())
     }
@@ -725,10 +946,7 @@ impl Perform<Dispatch<'_>> for SimGpu {
                 bindings: op.bindings,
                 push: op.push,
                 groups: op.groups,
-                target: None,
-                vertices: None,
-                vertex_count: 0,
-                instance_count: 0,
+                draw: None,
             },
         );
         Ok(())
@@ -738,6 +956,8 @@ impl Perform<Dispatch<'_>> for SimGpu {
 /// `rgba`, in [0, 1] and linear, as one pixel of `format`.
 pub(crate) fn clear_pixel(format: Format, rgba: [f32; 4]) -> Vec<u8> {
     let unorm = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let unorm16 = |c: f32| ((c.clamp(0.0, 1.0) * 65535.0).round() as u16).to_le_bytes();
+    let snorm = |c: f32| (c.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8;
     let srgb = |c: f32| {
         let c = c.clamp(0.0, 1.0);
         let s = if c <= 0.003_130_8 {
@@ -747,18 +967,72 @@ pub(crate) fn clear_pixel(format: Format, rgba: [f32; 4]) -> Vec<u8> {
         };
         unorm(s)
     };
+    let half = |c: f32| f16_bits(c).to_le_bytes();
     let [r, g, b, a] = rgba;
+    let bytes = |parts: &[&[u8]]| parts.concat();
     match format {
+        Format::R8Unorm => std::vec![unorm(r)],
+        Format::Rg8Unorm => std::vec![unorm(r), unorm(g)],
         Format::Rgba8Unorm => std::vec![unorm(r), unorm(g), unorm(b), unorm(a)],
+        Format::Rgba8Snorm => std::vec![snorm(r), snorm(g), snorm(b), snorm(a)],
         Format::Bgra8Unorm => std::vec![unorm(b), unorm(g), unorm(r), unorm(a)],
         Format::Rgba8Srgb => std::vec![srgb(r), srgb(g), srgb(b), unorm(a)],
         Format::Bgra8Srgb => std::vec![srgb(b), srgb(g), srgb(r), unorm(a)],
-        Format::R8Unorm => std::vec![unorm(r)],
-        Format::Rgba16Float => rgba
-            .iter()
-            .flat_map(|c| f16_bits(*c).to_le_bytes())
-            .collect(),
+        Format::R8Uint => std::vec![r as u8],
+        Format::Rgba8Uint => std::vec![r as u8, g as u8, b as u8, a as u8],
+        Format::R16Unorm => unorm16(r).to_vec(),
+        Format::Rgba16Unorm => bytes(&[&unorm16(r), &unorm16(g), &unorm16(b), &unorm16(a)]),
+        Format::R16Float => half(r).to_vec(),
+        Format::Rg16Float => bytes(&[&half(r), &half(g)]),
+        Format::Rgba16Float => bytes(&[&half(r), &half(g), &half(b), &half(a)]),
+        Format::R16Uint => (r as u16).to_le_bytes().to_vec(),
+        Format::R32Float => r.to_le_bytes().to_vec(),
+        Format::Rg32Float => bytes(&[&r.to_le_bytes(), &g.to_le_bytes()]),
         Format::Rgba32Float => rgba.iter().flat_map(|c| c.to_le_bytes()).collect(),
+        Format::R32Uint => (r as u32).to_le_bytes().to_vec(),
+        Format::Rg32Uint => bytes(&[&(r as u32).to_le_bytes(), &(g as u32).to_le_bytes()]),
+        Format::Rgba32Uint => rgba
+            .iter()
+            .flat_map(|c| (*c as u32).to_le_bytes())
+            .collect(),
+        Format::R32Sint => (r as i32).to_le_bytes().to_vec(),
+        Format::Rgb10A2Unorm => {
+            let ten = |c: f32| (c.clamp(0.0, 1.0) * 1023.0).round() as u32;
+            let two = (a.clamp(0.0, 1.0) * 3.0).round() as u32;
+            (ten(r) | ten(g) << 10 | ten(b) << 20 | two << 30)
+                .to_le_bytes()
+                .to_vec()
+        }
+        Format::Rg11B10Float => {
+            // An unsigned small float is a half's exponent and the top of
+            // its mantissa.
+            let small = |c: f32, bits: u32| u32::from(f16_bits(c.max(0.0))) >> (15 - bits);
+            (small(r, 11) | small(g, 11) << 11 | small(b, 10) << 22)
+                .to_le_bytes()
+                .to_vec()
+        }
+        f if f.is_depth() => depth_pixel(f, r, 0),
+        // Compressed formats are not drawn into, so never cleared.
+        _ => std::vec![0; format.block().2 as usize],
+    }
+}
+
+/// `depth` and `stencil` as one pixel of the depth format `format`, laid
+/// out as [`Run::depth`] says.
+pub(crate) fn depth_pixel(format: Format, depth: f32, stencil: u32) -> Vec<u8> {
+    let d = depth.clamp(0.0, 1.0);
+    match format {
+        Format::D16Unorm => ((d * 65535.0).round() as u16).to_le_bytes().to_vec(),
+        Format::D32Float => d.to_le_bytes().to_vec(),
+        Format::D24UnormS8Uint => (((d * 16_777_215.0).round() as u32) | (stencil & 0xff) << 24)
+            .to_le_bytes()
+            .to_vec(),
+        Format::D32FloatS8Uint => {
+            let mut px = d.to_le_bytes().to_vec();
+            px.push(stencil as u8);
+            px
+        }
+        _ => unreachable!("a depth format"),
     }
 }
 
@@ -793,16 +1067,37 @@ impl Perform<Draw<'_>> for SimGpu {
         let label = validate::program(&*state, op.program.raw())?
             .label
             .to_owned();
-        if let Some(rgba) = op.clear {
-            let (_, _, format, _) = validate::image(&*state, op.target.raw())?;
-            let pixel = clear_pixel(format, rgba);
-            for chunk in state.data(op.target.raw()).chunks_mut(pixel.len()) {
+        for t in op.targets.iter().flatten() {
+            if let Load::Clear(rgba) = t.load {
+                let img = image_of(&state, t.image.raw());
+                let (at, len, _, _) = area_of(&img, t.mip, t.layer);
+                let pixel = clear_pixel(img.format, rgba);
+                for chunk in state.data(t.image.raw())[at..at + len].chunks_mut(pixel.len()) {
+                    chunk.copy_from_slice(&pixel);
+                }
+            }
+        }
+        if let Some(d) = op.depth
+            && let DepthLoad::Clear { depth, stencil } = d.load
+        {
+            let img = image_of(&state, d.image.raw());
+            let (at, len, _, _) = area_of(&img, d.mip, d.layer);
+            let pixel = depth_pixel(img.format, depth, stencil);
+            for chunk in state.data(d.image.raw())[at..at + len].chunks_mut(pixel.len()) {
                 chunk.copy_from_slice(&pixel);
             }
         }
+        let first = op
+            .targets
+            .iter()
+            .flatten()
+            .map(|t| t.image)
+            .chain(op.depth.map(|d| d.image))
+            .next()
+            .expect("validated: a draw writes something");
         state.log.push(Recorded::Draw {
             label: label.clone(),
-            target: op.target,
+            target: first,
             vertex_count: op.vertex_count,
             instance_count: op.instance_count,
         });
@@ -812,12 +1107,19 @@ impl Perform<Draw<'_>> for SimGpu {
                 bindings: op.bindings,
                 push: op.push,
                 groups: [0; 3],
-                target: Some(op.target),
-                vertices: op.vertices,
-                vertex_count: op.vertex_count,
-                instance_count: op.instance_count,
+                draw: Some(&op),
             },
         );
+        // Multisampled targets are kept one sample per pixel: resolving
+        // copies them.
+        for t in op.targets.iter().flatten() {
+            if let Some(r) = t.resolve {
+                let img = image_of(&state, t.image.raw());
+                let (at, len, _, _) = area_of(&img, t.mip, t.layer);
+                let pixels = state.data(t.image.raw())[at..at + len].to_vec();
+                state.data(r.raw())[..len].copy_from_slice(&pixels);
+            }
+        }
         Ok(())
     }
 }
@@ -843,7 +1145,8 @@ impl Perform<DownloadImage<'_>> for SimGpu {
     fn perform(&mut self, op: DownloadImage<'_>) -> Result<(), GpuError> {
         let mut state = self.lock();
         validate::whole_image(&*state, op.image.raw(), op.out.len(), "download")?;
-        op.out.copy_from_slice(state.data(op.image.raw()));
+        let len = op.out.len();
+        op.out.copy_from_slice(&state.data(op.image.raw())[..len]);
         state.log.push(Recorded::DownloadImage(op.image));
         Ok(())
     }

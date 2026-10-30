@@ -1,5 +1,6 @@
 //! Shaders written in Rust (`shaders/`, compiled by rust-gpu): their
 //! SPIR-V on Vulkan, and the same functions in `SimGpu`'s emulators.
+#![cfg(feature = "ash")]
 
 use seam_ash::*;
 use seam_ash_shaders as shaders;
@@ -96,16 +97,13 @@ where
         + for<'a> Perform<Draw<'a>>
         + for<'a> Perform<DownloadImage<'a>>,
 {
-    let kind = ProgramKind::Draw {
-        vertex: spirv,
-        vertex_entry: "heights_vs",
-        fragment: spirv,
-        fragment_entry: "heights_fs",
-        attrs: &[],
-        stride: 0,
-        target: Format::Rgba8Unorm,
-        blend: Blend::Replace,
-    };
+    let kind = ProgramKind::Draw(DrawPipeline::new(
+        spirv,
+        "heights_vs",
+        spirv,
+        "heights_fs",
+        Format::Rgba8Unorm,
+    ));
     let program =
         CreateProgram::draw("heights", kind, &[BindingKind::SampledImage]).push_constants(8);
     gpu.acquire(program, |gpu, program| {

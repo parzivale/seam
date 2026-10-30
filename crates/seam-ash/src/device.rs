@@ -38,11 +38,12 @@ use seam_core::{Closing, Inspect, Opening, Perform};
 
 use crate::validate::{self, Lookup};
 use crate::{
-    AddressMode, AttrFormat, Bind, BindingKind, Blend, BorderColor, Buffer, BufferUsage,
-    CopyBuffer, CreateBuffer, CreateImage, CreateProgram, CreateSampler, DeviceInfo, Dispatch,
-    Download, DownloadImage, Draw, Filter, Finish, Format, GpuError, GpuInfo, GpuKind, Image,
-    ImageUsage, Import, IsDone, Program, ProgramKind, ResInfo, Sampler, Submit, Upload,
-    UploadImage,
+    AddressMode, AttrFormat, Bind, BindingKind, BlendFactor, BlendOp, BorderColor, Buffer,
+    BufferUsage, ColorMask, ColorTarget, Compare, CopyBuffer, CreateBuffer, CreateImage,
+    CreateProgram, CreateSampler, Cull, DepthLoad, DeviceInfo, Dispatch, Download, DownloadImage,
+    Draw, DrawInfo, Filter, Finish, Format, FrontFace, GpuError, GpuInfo, GpuKind, Image,
+    ImageKind, ImageUsage, Import, IndexFormat, IsDone, Load, PolygonMode, Program, ProgramKind,
+    ResInfo, Sampler, StencilFace, StencilOp, Step, Submit, Topology, Upload, UploadImage,
 };
 
 /// How [`Ash::with`] sets Vulkan up.
@@ -210,9 +211,16 @@ enum Kind {
     Image {
         image: vk::Image,
         memory: vk::DeviceMemory,
+        /// Of every level and layer, for binding: depth alone, for a depth
+        /// and stencil format.
         view: vk::ImageView,
         layout: vk::ImageLayout,
         foreign: Foreign,
+        /// Every aspect: for barriers and copies.
+        aspect: vk::ImageAspectFlags,
+        /// Views of one level and layer, for drawing into, made as draws
+        /// need them.
+        targets: Vec<((u32, u32), vk::ImageView)>,
     },
     Program {
         pipeline: vk::Pipeline,
@@ -220,6 +228,28 @@ enum Kind {
         set_layout: vk::DescriptorSetLayout,
     },
     Sampler(vk::Sampler),
+}
+
+impl Kind {
+    /// An image, with no target views yet.
+    fn image(
+        image: vk::Image,
+        memory: vk::DeviceMemory,
+        view: vk::ImageView,
+        layout: vk::ImageLayout,
+        foreign: Foreign,
+        format: Format,
+    ) -> Self {
+        Self::Image {
+            image,
+            memory,
+            view,
+            layout,
+            foreign,
+            aspect: aspects(format),
+            targets: Vec::new(),
+        }
+    }
 }
 
 /// Whether an image's memory belongs to something outside this device (an
@@ -340,6 +370,20 @@ fn wanted_extensions() -> Vec<&'static core::ffi::CStr> {
     names
 }
 
+/// Optional features, on where the device has them; what needs one fails
+/// with `Unsupported` without it.
+#[derive(Debug, Clone, Copy, Default)]
+struct Features {
+    /// Wireframe and point polygon modes.
+    fill_mode_non_solid: bool,
+    /// Targets blended differently.
+    independent_blend: bool,
+    /// BC-compressed formats.
+    bc: bool,
+    /// Arrays of cubes.
+    cube_array: bool,
+}
+
 /// How many descriptor sets one pool holds.
 const SETS_PER_POOL: u32 = 64;
 
@@ -357,6 +401,8 @@ struct Dev {
     family: u32,
     /// The optional extensions turned on, for imports.
     ext: Extensions,
+    /// The optional features turned on.
+    features: Features,
     mem: vk::PhysicalDeviceMemoryProperties,
     pool: vk::CommandPool,
     next_id: u64,
@@ -431,25 +477,201 @@ fn rank(kind: GpuKind, prefer: Option<GpuKind>) -> u32 {
 }
 
 fn vk_format(f: Format) -> vk::Format {
+    use vk::Format as V;
     match f {
-        Format::Rgba8Unorm => vk::Format::R8G8B8A8_UNORM,
-        Format::Bgra8Unorm => vk::Format::B8G8R8A8_UNORM,
-        Format::Rgba8Srgb => vk::Format::R8G8B8A8_SRGB,
-        Format::Bgra8Srgb => vk::Format::B8G8R8A8_SRGB,
-        Format::R8Unorm => vk::Format::R8_UNORM,
-        Format::Rgba16Float => vk::Format::R16G16B16A16_SFLOAT,
-        Format::Rgba32Float => vk::Format::R32G32B32A32_SFLOAT,
+        Format::R8Unorm => V::R8_UNORM,
+        Format::Rg8Unorm => V::R8G8_UNORM,
+        Format::Rgba8Unorm => V::R8G8B8A8_UNORM,
+        Format::Rgba8Snorm => V::R8G8B8A8_SNORM,
+        Format::Bgra8Unorm => V::B8G8R8A8_UNORM,
+        Format::Rgba8Srgb => V::R8G8B8A8_SRGB,
+        Format::Bgra8Srgb => V::B8G8R8A8_SRGB,
+        Format::R8Uint => V::R8_UINT,
+        Format::Rgba8Uint => V::R8G8B8A8_UINT,
+        Format::R16Unorm => V::R16_UNORM,
+        Format::Rgba16Unorm => V::R16G16B16A16_UNORM,
+        Format::R16Float => V::R16_SFLOAT,
+        Format::Rg16Float => V::R16G16_SFLOAT,
+        Format::Rgba16Float => V::R16G16B16A16_SFLOAT,
+        Format::R16Uint => V::R16_UINT,
+        Format::R32Float => V::R32_SFLOAT,
+        Format::Rg32Float => V::R32G32_SFLOAT,
+        Format::Rgba32Float => V::R32G32B32A32_SFLOAT,
+        Format::R32Uint => V::R32_UINT,
+        Format::Rg32Uint => V::R32G32_UINT,
+        Format::Rgba32Uint => V::R32G32B32A32_UINT,
+        Format::R32Sint => V::R32_SINT,
+        Format::Rgb10A2Unorm => V::A2B10G10R10_UNORM_PACK32,
+        Format::Rg11B10Float => V::B10G11R11_UFLOAT_PACK32,
+        Format::D16Unorm => V::D16_UNORM,
+        Format::D32Float => V::D32_SFLOAT,
+        Format::D24UnormS8Uint => V::D24_UNORM_S8_UINT,
+        Format::D32FloatS8Uint => V::D32_SFLOAT_S8_UINT,
+        Format::Bc1Unorm => V::BC1_RGBA_UNORM_BLOCK,
+        Format::Bc1Srgb => V::BC1_RGBA_SRGB_BLOCK,
+        Format::Bc3Unorm => V::BC3_UNORM_BLOCK,
+        Format::Bc3Srgb => V::BC3_SRGB_BLOCK,
+        Format::Bc4Unorm => V::BC4_UNORM_BLOCK,
+        Format::Bc5Unorm => V::BC5_UNORM_BLOCK,
+        Format::Bc6hUfloat => V::BC6H_UFLOAT_BLOCK,
+        Format::Bc7Unorm => V::BC7_UNORM_BLOCK,
+        Format::Bc7Srgb => V::BC7_SRGB_BLOCK,
+    }
+}
+
+/// Every aspect of a format: for barriers, attachments and copies.
+fn aspects(f: Format) -> vk::ImageAspectFlags {
+    if f.has_stencil() {
+        vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL
+    } else if f.is_depth() {
+        vk::ImageAspectFlags::DEPTH
+    } else {
+        vk::ImageAspectFlags::COLOR
+    }
+}
+
+/// Every level and layer, of `aspect`.
+fn whole(aspect: vk::ImageAspectFlags) -> vk::ImageSubresourceRange {
+    vk::ImageSubresourceRange {
+        aspect_mask: aspect,
+        base_mip_level: 0,
+        level_count: vk::REMAINING_MIP_LEVELS,
+        base_array_layer: 0,
+        layer_count: vk::REMAINING_ARRAY_LAYERS,
     }
 }
 
 fn attr_format(f: AttrFormat) -> vk::Format {
+    use vk::Format as V;
     match f {
-        AttrFormat::F32 => vk::Format::R32_SFLOAT,
-        AttrFormat::F32x2 => vk::Format::R32G32_SFLOAT,
-        AttrFormat::F32x3 => vk::Format::R32G32B32_SFLOAT,
-        AttrFormat::F32x4 => vk::Format::R32G32B32A32_SFLOAT,
-        AttrFormat::U32 => vk::Format::R32_UINT,
+        AttrFormat::F32 => V::R32_SFLOAT,
+        AttrFormat::F32x2 => V::R32G32_SFLOAT,
+        AttrFormat::F32x3 => V::R32G32B32_SFLOAT,
+        AttrFormat::F32x4 => V::R32G32B32A32_SFLOAT,
+        AttrFormat::F16x2 => V::R16G16_SFLOAT,
+        AttrFormat::F16x4 => V::R16G16B16A16_SFLOAT,
+        AttrFormat::U32 => V::R32_UINT,
+        AttrFormat::U32x2 => V::R32G32_UINT,
+        AttrFormat::U32x3 => V::R32G32B32_UINT,
+        AttrFormat::U32x4 => V::R32G32B32A32_UINT,
+        AttrFormat::I32 => V::R32_SINT,
+        AttrFormat::I32x2 => V::R32G32_SINT,
+        AttrFormat::I32x3 => V::R32G32B32_SINT,
+        AttrFormat::I32x4 => V::R32G32B32A32_SINT,
+        AttrFormat::U8x4Norm => V::R8G8B8A8_UNORM,
+        AttrFormat::I8x4Norm => V::R8G8B8A8_SNORM,
+        AttrFormat::U16x2Norm => V::R16G16_UNORM,
+        AttrFormat::U16x4Norm => V::R16G16B16A16_UNORM,
+        AttrFormat::U8x4 => V::R8G8B8A8_UINT,
     }
+}
+
+fn samples(n: u32) -> vk::SampleCountFlags {
+    vk::SampleCountFlags::from_raw(n)
+}
+
+fn compare_op(c: Compare) -> vk::CompareOp {
+    match c {
+        Compare::Never => vk::CompareOp::NEVER,
+        Compare::Less => vk::CompareOp::LESS,
+        Compare::Equal => vk::CompareOp::EQUAL,
+        Compare::LessOrEqual => vk::CompareOp::LESS_OR_EQUAL,
+        Compare::Greater => vk::CompareOp::GREATER,
+        Compare::NotEqual => vk::CompareOp::NOT_EQUAL,
+        Compare::GreaterOrEqual => vk::CompareOp::GREATER_OR_EQUAL,
+        Compare::Always => vk::CompareOp::ALWAYS,
+    }
+}
+
+fn stencil_op(o: StencilOp) -> vk::StencilOp {
+    match o {
+        StencilOp::Keep => vk::StencilOp::KEEP,
+        StencilOp::Zero => vk::StencilOp::ZERO,
+        StencilOp::Replace => vk::StencilOp::REPLACE,
+        StencilOp::IncrementClamp => vk::StencilOp::INCREMENT_AND_CLAMP,
+        StencilOp::DecrementClamp => vk::StencilOp::DECREMENT_AND_CLAMP,
+        StencilOp::Invert => vk::StencilOp::INVERT,
+        StencilOp::IncrementWrap => vk::StencilOp::INCREMENT_AND_WRAP,
+        StencilOp::DecrementWrap => vk::StencilOp::DECREMENT_AND_WRAP,
+    }
+}
+
+fn stencil_face(f: StencilFace) -> vk::StencilOpState {
+    vk::StencilOpState {
+        fail_op: stencil_op(f.fail),
+        pass_op: stencil_op(f.pass),
+        depth_fail_op: stencil_op(f.depth_fail),
+        compare_op: compare_op(f.compare),
+        compare_mask: f.read_mask,
+        write_mask: f.write_mask,
+        reference: 0,
+    }
+}
+
+fn blend_factor(f: BlendFactor) -> vk::BlendFactor {
+    match f {
+        BlendFactor::Zero => vk::BlendFactor::ZERO,
+        BlendFactor::One => vk::BlendFactor::ONE,
+        BlendFactor::Src => vk::BlendFactor::SRC_COLOR,
+        BlendFactor::OneMinusSrc => vk::BlendFactor::ONE_MINUS_SRC_COLOR,
+        BlendFactor::Dst => vk::BlendFactor::DST_COLOR,
+        BlendFactor::OneMinusDst => vk::BlendFactor::ONE_MINUS_DST_COLOR,
+        BlendFactor::SrcAlpha => vk::BlendFactor::SRC_ALPHA,
+        BlendFactor::OneMinusSrcAlpha => vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+        BlendFactor::DstAlpha => vk::BlendFactor::DST_ALPHA,
+        BlendFactor::OneMinusDstAlpha => vk::BlendFactor::ONE_MINUS_DST_ALPHA,
+    }
+}
+
+fn blend_op(o: BlendOp) -> vk::BlendOp {
+    match o {
+        BlendOp::Add => vk::BlendOp::ADD,
+        BlendOp::Subtract => vk::BlendOp::SUBTRACT,
+        BlendOp::ReverseSubtract => vk::BlendOp::REVERSE_SUBTRACT,
+        BlendOp::Min => vk::BlendOp::MIN,
+        BlendOp::Max => vk::BlendOp::MAX,
+    }
+}
+
+fn color_target(t: &ColorTarget) -> vk::PipelineColorBlendAttachmentState {
+    let mut mask = vk::ColorComponentFlags::empty();
+    for (ours, theirs) in [
+        (ColorMask::R, vk::ColorComponentFlags::R),
+        (ColorMask::G, vk::ColorComponentFlags::G),
+        (ColorMask::B, vk::ColorComponentFlags::B),
+        (ColorMask::A, vk::ColorComponentFlags::A),
+    ] {
+        if t.write.contains(ours) {
+            mask |= theirs;
+        }
+    }
+    let state = vk::PipelineColorBlendAttachmentState::default().color_write_mask(mask);
+    match t.blend.equations() {
+        None => state,
+        Some((color, alpha)) => state
+            .blend_enable(true)
+            .src_color_blend_factor(blend_factor(color.src))
+            .dst_color_blend_factor(blend_factor(color.dst))
+            .color_blend_op(blend_op(color.op))
+            .src_alpha_blend_factor(blend_factor(alpha.src))
+            .dst_alpha_blend_factor(blend_factor(alpha.dst))
+            .alpha_blend_op(blend_op(alpha.op)),
+    }
+}
+
+/// A clear value for `rgba` in `format`: integer formats take the values as
+/// integers.
+fn clear_color(format: Format, rgba: [f32; 4]) -> vk::ClearValue {
+    let color = match format {
+        Format::R32Sint => vk::ClearColorValue {
+            int32: rgba.map(|c| c as i32),
+        },
+        f if f.is_integer() => vk::ClearColorValue {
+            uint32: rgba.map(|c| c as u32),
+        },
+        _ => vk::ClearColorValue { float32: rgba },
+    };
+    vk::ClearValue { color }
 }
 
 fn descriptor_type(k: BindingKind) -> vk::DescriptorType {
@@ -462,21 +684,6 @@ fn descriptor_type(k: BindingKind) -> vk::DescriptorType {
         BindingKind::StorageImage => vk::DescriptorType::STORAGE_IMAGE,
     }
 }
-
-const COLOR: vk::ImageSubresourceRange = vk::ImageSubresourceRange {
-    aspect_mask: vk::ImageAspectFlags::COLOR,
-    base_mip_level: 0,
-    level_count: 1,
-    base_array_layer: 0,
-    layer_count: 1,
-};
-
-const COLOR_LAYER: vk::ImageSubresourceLayers = vk::ImageSubresourceLayers {
-    aspect_mask: vk::ImageAspectFlags::COLOR,
-    mip_level: 0,
-    base_array_layer: 0,
-    layer_count: 1,
-};
 
 impl Dev {
     fn open(
@@ -594,13 +801,25 @@ impl Dev {
             .dynamic_rendering(true)
             .synchronization2(true);
         // The Vulkan memory model, where the device has it: shaders from
-        // rust-gpu declare it.
+        // rust-gpu declare it. And the optional core features.
         let mut has12 = vk::PhysicalDeviceVulkan12Features::default();
         // SAFETY: a plain query.
-        unsafe {
+        let has10 = unsafe {
             let mut f2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut has12);
             instance.get_physical_device_features2(physical, &mut f2);
-        }
+            f2.features
+        };
+        let features = Features {
+            fill_mode_non_solid: has10.fill_mode_non_solid == vk::TRUE,
+            independent_blend: has10.independent_blend == vk::TRUE,
+            bc: has10.texture_compression_bc == vk::TRUE,
+            cube_array: has10.image_cube_array == vk::TRUE,
+        };
+        let f10 = vk::PhysicalDeviceFeatures::default()
+            .fill_mode_non_solid(features.fill_mode_non_solid)
+            .independent_blend(features.independent_blend)
+            .texture_compression_bc(features.bc)
+            .image_cube_array(features.cube_array);
         let mut f12 = vk::PhysicalDeviceVulkan12Features::default()
             .vulkan_memory_model(has12.vulkan_memory_model == vk::TRUE)
             .vulkan_memory_model_device_scope(has12.vulkan_memory_model_device_scope == vk::TRUE);
@@ -619,6 +838,7 @@ impl Dev {
         let device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queues)
             .enabled_extension_names(&enabled_ptrs)
+            .enabled_features(&f10)
             .push_next(&mut f13)
             .push_next(&mut f12);
         // SAFETY: `physical` came from this instance, and supports the
@@ -691,6 +911,7 @@ impl Dev {
             queue,
             family,
             ext,
+            features,
             mem,
             pool,
             next_id: 0,
@@ -850,8 +1071,12 @@ fn destroy_kind(device: &ash::Device, kind: Kind) {
                 image,
                 memory,
                 view,
+                targets,
                 ..
             } => {
+                for (_, v) in targets {
+                    device.destroy_image_view(v, None);
+                }
                 device.destroy_image_view(view, None);
                 device.destroy_image(image, None);
                 device.free_memory(memory, None);
@@ -958,6 +1183,7 @@ impl Dev {
                     image,
                     layout,
                     foreign,
+                    aspect,
                     ..
                 } => {
                     let want = u.layout.expect("an image use names its layout");
@@ -987,7 +1213,7 @@ impl Dev {
                                 .src_queue_family_index(src_family)
                                 .dst_queue_family_index(dst_family)
                                 .image(*image)
-                                .subresource_range(COLOR),
+                                .subresource_range(whole(*aspect)),
                         );
                     }
                     *layout = want;
@@ -1360,6 +1586,7 @@ impl Dev {
         let mut usage = vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST;
         for (ours, theirs) in [
             (BufferUsage::VERTEX, vk::BufferUsageFlags::VERTEX_BUFFER),
+            (BufferUsage::INDEX, vk::BufferUsageFlags::INDEX_BUFFER),
             (BufferUsage::UNIFORM, vk::BufferUsageFlags::UNIFORM_BUFFER),
             (BufferUsage::STORAGE, vk::BufferUsageFlags::STORAGE_BUFFER),
         ] {
@@ -1420,45 +1647,108 @@ impl Dev {
         self.create_image_as(op, false)
     }
 
-    /// A view of all of `image`; `opaque` reads alpha as 1 (for formats
-    /// with an unused alpha), where the view is only sampled.
+    /// A view of `image`: of every level and layer, for binding, or of
+    /// one (`level` and `layer`), for drawing into. A depth and stencil
+    /// image's view for binding sees depth alone. `opaque` reads alpha as
+    /// 1 (for formats with an unused alpha), where the view is only
+    /// sampled.
     fn view(
         &self,
         image: vk::Image,
-        format: vk::Format,
-        usage: ImageUsage,
+        op: &CreateImage,
+        one: Option<(u32, u32)>,
         opaque: bool,
     ) -> Result<vk::ImageView, GpuError> {
         let mut components = vk::ComponentMapping::default();
-        if opaque && usage == ImageUsage::SAMPLED {
+        if opaque && op.usage == ImageUsage::SAMPLED {
             components.a = vk::ComponentSwizzle::ONE;
         }
+        let (view_type, range) = match one {
+            Some((level, layer)) => {
+                // A slice of a volume is a layer of its 2D view (the image
+                // is made 2D-array-compatible for this).
+                let range = vk::ImageSubresourceRange {
+                    aspect_mask: aspects(op.format),
+                    base_mip_level: level,
+                    level_count: 1,
+                    base_array_layer: layer,
+                    layer_count: 1,
+                };
+                (vk::ImageViewType::TYPE_2D, range)
+            }
+            None => {
+                let aspect = if op.format.is_depth() {
+                    vk::ImageAspectFlags::DEPTH
+                } else {
+                    vk::ImageAspectFlags::COLOR
+                };
+                let ty = match (op.kind, op.layers) {
+                    (ImageKind::D2, 1) => vk::ImageViewType::TYPE_2D,
+                    (ImageKind::D2, _) => vk::ImageViewType::TYPE_2D_ARRAY,
+                    (ImageKind::Cube, 6) => vk::ImageViewType::CUBE,
+                    (ImageKind::Cube, _) => vk::ImageViewType::CUBE_ARRAY,
+                    (ImageKind::D3, _) => vk::ImageViewType::TYPE_3D,
+                };
+                (ty, whole(aspect))
+            }
+        };
         let info = vk::ImageViewCreateInfo::default()
             .image(image)
-            .view_type(vk::ImageViewType::TYPE_2D)
-            .format(format)
+            .view_type(view_type)
+            .format(vk_format(op.format))
             .components(components)
-            .subresource_range(COLOR);
-        // SAFETY: a live image, created with this format.
+            .subresource_range(range);
+        // SAFETY: a live image, created with this format, holding the
+        // range.
         unsafe { self.device.create_image_view(&info, None) }.map_err(vk_error)
     }
 
-    /// The image usage and format features for `usage`.
-    fn image_usage(usage: ImageUsage) -> (vk::ImageUsageFlags, vk::FormatFeatureFlags) {
+    /// The view of image `id` for drawing into level `level`, layer
+    /// `layer`: made the first time, then kept with the image.
+    fn target_view(&mut self, id: u64, level: u32, layer: u32) -> Result<vk::ImageView, GpuError> {
+        let res = &self.res[&id];
+        let (Kind::Image { image, targets, .. }, ResInfo::Image(op)) = (&res.kind, &res.info)
+        else {
+            unreachable!("validated as an image")
+        };
+        if let Some((_, v)) = targets.iter().find(|(k, _)| *k == (level, layer)) {
+            return Ok(*v);
+        }
+        let (image, op) = (*image, *op);
+        let view = self.view(image, &op, Some((level, layer)), false)?;
+        let Kind::Image { targets, .. } = &mut self.res.get_mut(&id).expect("live").kind else {
+            unreachable!()
+        };
+        targets.push(((level, layer), view));
+        Ok(view)
+    }
+
+    /// The image usage and format features for `usage`, of `format`.
+    fn image_usage(
+        usage: ImageUsage,
+        format: Format,
+    ) -> (vk::ImageUsageFlags, vk::FormatFeatureFlags) {
         let mut flags = vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST;
         let mut features =
             vk::FormatFeatureFlags::TRANSFER_SRC | vk::FormatFeatureFlags::TRANSFER_DST;
+        let target = if format.is_depth() {
+            (
+                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT,
+            )
+        } else {
+            (
+                vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                vk::FormatFeatureFlags::COLOR_ATTACHMENT,
+            )
+        };
         for (ours, theirs, feature) in [
             (
                 ImageUsage::SAMPLED,
                 vk::ImageUsageFlags::SAMPLED,
                 vk::FormatFeatureFlags::SAMPLED_IMAGE,
             ),
-            (
-                ImageUsage::TARGET,
-                vk::ImageUsageFlags::COLOR_ATTACHMENT,
-                vk::FormatFeatureFlags::COLOR_ATTACHMENT,
-            ),
+            (ImageUsage::TARGET, target.0, target.1),
             (
                 ImageUsage::STORAGE,
                 vk::ImageUsageFlags::STORAGE,
@@ -1476,8 +1766,19 @@ impl Dev {
     fn create_image_as(&mut self, op: CreateImage, opaque: bool) -> Result<Image, GpuError> {
         validate::create_image(&op)?;
         self.retire();
+        if op.format.is_compressed() && !self.features.bc {
+            return Err(GpuError::Unsupported(format!(
+                "{:?}: this device has no BC-compressed formats",
+                op.format
+            )));
+        }
+        if op.kind == ImageKind::Cube && op.layers > 6 && !self.features.cube_array {
+            return Err(GpuError::Unsupported(
+                "this device has no arrays of cubes".into(),
+            ));
+        }
         let format = vk_format(op.format);
-        let (usage, features) = Self::image_usage(op.usage);
+        let (usage, features) = Self::image_usage(op.usage, op.format);
         // SAFETY: a plain query.
         let props = unsafe {
             self.instance
@@ -1489,17 +1790,63 @@ impl Dev {
                 op.format, op.usage
             )));
         }
+        let (image_type, flags) = match op.kind {
+            ImageKind::D2 => (vk::ImageType::TYPE_2D, vk::ImageCreateFlags::empty()),
+            ImageKind::Cube => (
+                vk::ImageType::TYPE_2D,
+                vk::ImageCreateFlags::CUBE_COMPATIBLE,
+            ),
+            ImageKind::D3 if op.usage.contains(ImageUsage::TARGET) => (
+                vk::ImageType::TYPE_3D,
+                vk::ImageCreateFlags::TYPE_2D_ARRAY_COMPATIBLE,
+            ),
+            ImageKind::D3 => (vk::ImageType::TYPE_3D, vk::ImageCreateFlags::empty()),
+        };
+        // SAFETY: a plain query.
+        let limits = unsafe {
+            self.instance.get_physical_device_image_format_properties(
+                self.physical,
+                format,
+                image_type,
+                vk::ImageTiling::OPTIMAL,
+                usage,
+                flags,
+            )
+        };
+        let fits = limits.is_ok_and(|l| {
+            l.sample_counts.contains(samples(op.samples))
+                && l.max_mip_levels >= op.mips
+                && l.max_array_layers >= op.layers
+                && l.max_extent.width >= op.width
+                && l.max_extent.height >= op.height
+                && l.max_extent.depth >= op.depth
+        });
+        if !fits {
+            return Err(GpuError::Unsupported(format!(
+                "this device cannot make a {}x{}x{} {:?} {:?} image with {} layers, {} mip levels and {} samples for {:?}",
+                op.width,
+                op.height,
+                op.depth,
+                op.kind,
+                op.format,
+                op.layers,
+                op.mips,
+                op.samples,
+                op.usage
+            )));
+        }
         let info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
+            .flags(flags)
+            .image_type(image_type)
             .format(format)
             .extent(vk::Extent3D {
                 width: op.width,
                 height: op.height,
-                depth: 1,
+                depth: op.depth,
             })
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
+            .mip_levels(op.mips)
+            .array_layers(op.layers)
+            .samples(samples(op.samples))
             .tiling(vk::ImageTiling::OPTIMAL)
             .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
@@ -1525,7 +1872,7 @@ impl Dev {
                 self.device.free_memory(memory, None);
                 return Err(vk_error(e));
             }
-            match self.view(image, format, op.usage, opaque) {
+            match self.view(image, &op, None, opaque) {
                 Ok(v) => (image, memory, v),
                 Err(e) => {
                     self.device.destroy_image(image, None);
@@ -1535,19 +1882,15 @@ impl Dev {
             }
         };
         let id = self.add(
-            ResInfo::Image {
-                width: op.width,
-                height: op.height,
-                format: op.format,
-                usage: op.usage,
-            },
-            Kind::Image {
+            ResInfo::Image(op),
+            Kind::image(
                 image,
                 memory,
                 view,
-                layout: vk::ImageLayout::UNDEFINED,
-                foreign: Foreign::No,
-            },
+                vk::ImageLayout::UNDEFINED,
+                Foreign::No,
+                op.format,
+            ),
         );
         Ok(Image(id))
     }
@@ -1570,6 +1913,7 @@ impl Dev {
     /// only the device, which Vulkan lets any thread use.
     fn build_program(
         device: &ash::Device,
+        features: Features,
         op: &CreateProgram<'_>,
     ) -> Result<(ResInfo, Kind), GpuError> {
         validate::create_program(op)?;
@@ -1611,8 +1955,8 @@ impl Dev {
                 }
             }
         };
-        let built = Self::pipeline(device, op, layout);
-        let (pipeline, compute, target, stride) = match built {
+        let built = Self::pipeline(device, features, op, layout);
+        let (pipeline, compute) = match built {
             Ok(p) => p,
             Err(e) => {
                 // SAFETY: nothing uses them yet.
@@ -1629,8 +1973,10 @@ impl Dev {
                 compute,
                 bindings: op.bindings.to_vec(),
                 push_constants: op.push_constants,
-                target,
-                stride,
+                draw: match &op.kind {
+                    ProgramKind::Draw(p) => Some(DrawInfo::of(p)),
+                    ProgramKind::Compute { .. } => None,
+                },
             },
             Kind::Program {
                 pipeline,
@@ -1642,9 +1988,10 @@ impl Dev {
 
     fn pipeline(
         device: &ash::Device,
+        features: Features,
         op: &CreateProgram<'_>,
         layout: vk::PipelineLayout,
-    ) -> Result<(vk::Pipeline, bool, Option<Format>, u32), GpuError> {
+    ) -> Result<(vk::Pipeline, bool), GpuError> {
         let bad_entry = || {
             crate::invalid(format!(
                 "program `{}`: an entry point holds a NUL byte",
@@ -1670,20 +2017,28 @@ impl Dev {
                     made
                 };
                 let pipeline = made.map_err(|(_, e)| vk_error(e))?[0];
-                Ok((pipeline, true, None, 0))
+                Ok((pipeline, true))
             }
-            ProgramKind::Draw {
-                vertex,
-                vertex_entry,
-                fragment,
-                fragment_entry,
-                attrs,
-                stride,
-                target,
-                blend,
-            } => {
-                let vs = Self::shader(device, vertex, op.label)?;
-                let fs = match Self::shader(device, fragment, op.label) {
+            ProgramKind::Draw(p) => {
+                if p.raster.polygon != PolygonMode::Fill && !features.fill_mode_non_solid {
+                    return Err(GpuError::Unsupported(format!(
+                        "program `{}`: this device draws only filled polygons",
+                        op.label
+                    )));
+                }
+                let targets: Vec<&ColorTarget> = p.targets.iter().flatten().collect();
+                if targets
+                    .windows(2)
+                    .any(|w| (w[0].blend, w[0].write) != (w[1].blend, w[1].write))
+                    && !features.independent_blend
+                {
+                    return Err(GpuError::Unsupported(format!(
+                        "program `{}`: this device blends every target the same",
+                        op.label
+                    )));
+                }
+                let vs = Self::shader(device, p.vertex, op.label)?;
+                let fs = match Self::shader(device, p.fragment, op.label) {
                     Ok(m) => m,
                     Err(e) => {
                         // SAFETY: unused.
@@ -1699,7 +2054,7 @@ impl Dev {
                     }
                 };
                 let (Ok(vname), Ok(fname)) =
-                    (CString::new(vertex_entry), CString::new(fragment_entry))
+                    (CString::new(p.vertex_entry), CString::new(p.fragment_entry))
                 else {
                     destroy_modules();
                     return Err(bad_entry());
@@ -1714,59 +2069,111 @@ impl Dev {
                         .module(fs)
                         .name(&fname),
                 ];
-                let vbind = [vk::VertexInputBindingDescription {
-                    binding: 0,
-                    stride,
-                    input_rate: vk::VertexInputRate::VERTEX,
-                }];
-                let vattrs: Vec<vk::VertexInputAttributeDescription> = attrs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, a)| vk::VertexInputAttributeDescription {
-                        location: i as u32,
-                        binding: 0,
-                        format: attr_format(a.format),
-                        offset: a.offset,
-                    })
-                    .collect();
-                let vbind: &[vk::VertexInputBindingDescription] =
-                    if stride > 0 { &vbind } else { &[] };
+                let mut vbinds = Vec::new();
+                let mut vattrs = Vec::new();
+                for (slot, layout) in p.vertex_buffers.iter().enumerate() {
+                    let Some(layout) = layout else { continue };
+                    vbinds.push(vk::VertexInputBindingDescription {
+                        binding: slot as u32,
+                        stride: layout.stride,
+                        input_rate: match layout.step {
+                            Step::Vertex => vk::VertexInputRate::VERTEX,
+                            Step::Instance => vk::VertexInputRate::INSTANCE,
+                        },
+                    });
+                    vattrs.extend(layout.attrs.iter().map(|a| {
+                        vk::VertexInputAttributeDescription {
+                            location: a.location,
+                            binding: slot as u32,
+                            format: attr_format(a.format),
+                            offset: a.offset,
+                        }
+                    }));
+                }
                 let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
-                    .vertex_binding_descriptions(vbind)
+                    .vertex_binding_descriptions(&vbinds)
                     .vertex_attribute_descriptions(&vattrs);
                 let assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-                    .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+                    .topology(match p.raster.topology {
+                        Topology::PointList => vk::PrimitiveTopology::POINT_LIST,
+                        Topology::LineList => vk::PrimitiveTopology::LINE_LIST,
+                        Topology::LineStrip => vk::PrimitiveTopology::LINE_STRIP,
+                        Topology::TriangleList => vk::PrimitiveTopology::TRIANGLE_LIST,
+                        Topology::TriangleStrip => vk::PrimitiveTopology::TRIANGLE_STRIP,
+                        Topology::TriangleFan => vk::PrimitiveTopology::TRIANGLE_FAN,
+                    })
+                    .primitive_restart_enable(p.raster.restart);
                 let viewport = vk::PipelineViewportStateCreateInfo::default()
                     .viewport_count(1)
                     .scissor_count(1);
                 let raster = vk::PipelineRasterizationStateCreateInfo::default()
-                    .polygon_mode(vk::PolygonMode::FILL)
-                    .cull_mode(vk::CullModeFlags::NONE)
-                    .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                    .polygon_mode(match p.raster.polygon {
+                        PolygonMode::Fill => vk::PolygonMode::FILL,
+                        PolygonMode::Line => vk::PolygonMode::LINE,
+                        PolygonMode::Point => vk::PolygonMode::POINT,
+                    })
+                    .cull_mode(match p.raster.cull {
+                        Cull::None => vk::CullModeFlags::NONE,
+                        Cull::Front => vk::CullModeFlags::FRONT,
+                        Cull::Back => vk::CullModeFlags::BACK,
+                    })
+                    .front_face(match p.raster.front_face {
+                        FrontFace::CounterClockwise => vk::FrontFace::COUNTER_CLOCKWISE,
+                        FrontFace::Clockwise => vk::FrontFace::CLOCKWISE,
+                    })
                     .line_width(1.0);
                 let multisample = vk::PipelineMultisampleStateCreateInfo::default()
-                    .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-                let mut attachment = vk::PipelineColorBlendAttachmentState::default()
-                    .color_write_mask(vk::ColorComponentFlags::RGBA);
-                if blend == Blend::PremultipliedAlpha {
-                    attachment = attachment
-                        .blend_enable(true)
-                        .src_color_blend_factor(vk::BlendFactor::ONE)
-                        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                        .color_blend_op(vk::BlendOp::ADD)
-                        .src_alpha_blend_factor(vk::BlendFactor::ONE)
-                        .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                        .alpha_blend_op(vk::BlendOp::ADD);
+                    .rasterization_samples(samples(p.samples));
+                let mut depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default();
+                if let Some(d) = p.depth {
+                    depth_stencil = depth_stencil
+                        .depth_test_enable(d.compare != Compare::Always || d.write)
+                        .depth_write_enable(d.write)
+                        .depth_compare_op(compare_op(d.compare));
+                    if let Some((front, back)) = d.stencil {
+                        depth_stencil = depth_stencil
+                            .stencil_test_enable(true)
+                            .front(stencil_face(front))
+                            .back(stencil_face(back));
+                    }
                 }
-                let attachments = [attachment];
+                // Colour attachments are numbered as the program's slots,
+                // empty slots unused.
+                let last = p
+                    .targets
+                    .iter()
+                    .rposition(Option::is_some)
+                    .map_or(0, |i| i + 1);
+                let attachments: Vec<vk::PipelineColorBlendAttachmentState> = p.targets[..last]
+                    .iter()
+                    .map(|t| match t {
+                        Some(t) => color_target(t),
+                        None => vk::PipelineColorBlendAttachmentState::default(),
+                    })
+                    .collect();
+                let formats: Vec<vk::Format> = p.targets[..last]
+                    .iter()
+                    .map(|t| t.map_or(vk::Format::UNDEFINED, |t| vk_format(t.format)))
+                    .collect();
                 let color_blend =
                     vk::PipelineColorBlendStateCreateInfo::default().attachments(&attachments);
-                let dynamics = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+                let mut dynamics = std::vec![vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+                if p.depth.is_some_and(|d| d.stencil.is_some()) {
+                    dynamics.push(vk::DynamicState::STENCIL_REFERENCE);
+                }
                 let dynamic =
                     vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamics);
-                let formats = [vk_format(target)];
-                let mut rendering =
-                    vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&formats);
+                let depth_format = p
+                    .depth
+                    .map_or(vk::Format::UNDEFINED, |d| vk_format(d.format));
+                let stencil_format = match p.depth {
+                    Some(d) if d.format.has_stencil() => depth_format,
+                    _ => vk::Format::UNDEFINED,
+                };
+                let mut rendering = vk::PipelineRenderingCreateInfo::default()
+                    .color_attachment_formats(&formats)
+                    .depth_attachment_format(depth_format)
+                    .stencil_attachment_format(stencil_format);
                 let info = vk::GraphicsPipelineCreateInfo::default()
                     .push_next(&mut rendering)
                     .stages(&stages)
@@ -1775,6 +2182,7 @@ impl Dev {
                     .viewport_state(&viewport)
                     .rasterization_state(&raster)
                     .multisample_state(&multisample)
+                    .depth_stencil_state(&depth_stencil)
                     .color_blend_state(&color_blend)
                     .dynamic_state(&dynamic)
                     .layout(layout);
@@ -1785,7 +2193,7 @@ impl Dev {
                 };
                 destroy_modules();
                 let pipeline = made.map_err(|(_, e)| vk_error(e))?[0];
-                Ok((pipeline, false, Some(target), stride))
+                Ok((pipeline, false))
             }
         }
     }
@@ -1826,23 +2234,33 @@ impl Dev {
         Ok(())
     }
 
+    /// Image `id` and the copy of its level 0, every layer, to or from a
+    /// tightly packed buffer: depth alone, for a depth format.
     fn image_region(&self, id: u64) -> (vk::Image, vk::BufferImageCopy) {
         let res = &self.res[&id];
-        let (Kind::Image { image, .. }, ResInfo::Image { width, height, .. }) =
-            (&res.kind, &res.info)
-        else {
+        let (Kind::Image { image, .. }, ResInfo::Image(op)) = (&res.kind, &res.info) else {
             unreachable!()
+        };
+        let aspect = if op.format.is_depth() {
+            vk::ImageAspectFlags::DEPTH
+        } else {
+            vk::ImageAspectFlags::COLOR
         };
         let region = vk::BufferImageCopy {
             buffer_offset: 0,
             buffer_row_length: 0,
             buffer_image_height: 0,
-            image_subresource: COLOR_LAYER,
+            image_subresource: vk::ImageSubresourceLayers {
+                aspect_mask: aspect,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: op.layers,
+            },
             image_offset: vk::Offset3D::default(),
             image_extent: vk::Extent3D {
-                width: *width,
-                height: *height,
-                depth: 1,
+                width: op.width,
+                height: op.height,
+                depth: op.depth,
             },
         };
         (*image, region)
@@ -1954,19 +2372,51 @@ impl Dev {
         validate::draw(&*self, &op)?;
         self.retire();
         let mut uses = self.binding_uses(op.bindings, false);
-        uses.push(Use {
-            id: op.target.raw(),
+        let color = Use {
+            id: 0,
             stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
             access: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
                 | vk::AccessFlags2::COLOR_ATTACHMENT_READ,
             write: true,
             layout: Some(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
-        });
-        if let Some(v) = op.vertices {
+        };
+        for t in op.targets.iter().flatten() {
             uses.push(Use {
-                id: v.raw(),
+                id: t.image.raw(),
+                ..color
+            });
+            if let Some(r) = t.resolve {
+                uses.push(Use {
+                    id: r.raw(),
+                    ..color
+                });
+            }
+        }
+        if let Some(d) = op.depth {
+            uses.push(Use {
+                id: d.image.raw(),
+                stage: vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+                access: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+                    | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                write: true,
+                layout: Some(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
+            });
+        }
+        for v in op.vertex_buffers.iter().flatten() {
+            uses.push(Use {
+                id: v.buffer.raw(),
                 stage: vk::PipelineStageFlags2::VERTEX_ATTRIBUTE_INPUT,
                 access: vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
+                write: false,
+                layout: None,
+            });
+        }
+        if let Some(i) = op.index {
+            uses.push(Use {
+                id: i.buffer.raw(),
+                stage: vk::PipelineStageFlags2::INDEX_INPUT,
+                access: vk::AccessFlags2::INDEX_READ,
                 write: false,
                 layout: None,
             });
@@ -1978,61 +2428,162 @@ impl Dev {
         } else {
             Some(self.descriptor_set(set_layout, op.bindings)?)
         };
-        let target = &self.res[&op.target.raw()];
-        let (Kind::Image { view, .. }, ResInfo::Image { width, height, .. }) =
-            (&target.kind, &target.info)
-        else {
+        // The render area: the targets' size, at the level drawn into.
+        let first = op
+            .targets
+            .iter()
+            .flatten()
+            .map(|t| (t.image, t.mip))
+            .chain(op.depth.map(|d| (d.image, d.mip)))
+            .next()
+            .expect("validated: a draw writes something");
+        let ResInfo::Image(first_op) = self.res[&first.0.raw()].info else {
             unreachable!()
         };
-        let (view, width, height) = (*view, *width, *height);
-        let vertex_buffer = op.vertices.map(|v| {
-            let Kind::Buffer { buffer, .. } = self.res[&v.raw()].kind else {
+        let (width, height, _) = first_op.extent(first.1);
+        let last = op
+            .targets
+            .iter()
+            .rposition(Option::is_some)
+            .map_or(0, |i| i + 1);
+        let mut colors = Vec::with_capacity(last);
+        for t in &op.targets[..last] {
+            let Some(t) = t else {
+                colors.push(vk::RenderingAttachmentInfo::default());
+                continue;
+            };
+            let ResInfo::Image(img) = self.res[&t.image.raw()].info else {
+                unreachable!()
+            };
+            let view = self.target_view(t.image.raw(), t.mip, t.layer)?;
+            let (load, clear) = match t.load {
+                Load::Keep => (vk::AttachmentLoadOp::LOAD, [0.0; 4]),
+                Load::Clear(rgba) => (vk::AttachmentLoadOp::CLEAR, rgba),
+                Load::Discard => (vk::AttachmentLoadOp::DONT_CARE, [0.0; 4]),
+            };
+            let mut info = vk::RenderingAttachmentInfo::default()
+                .image_view(view)
+                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .load_op(load)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .clear_value(clear_color(img.format, clear));
+            if let Some(r) = t.resolve {
+                let rview = self.target_view(r.raw(), 0, 0)?;
+                info = info
+                    .resolve_mode(vk::ResolveModeFlags::AVERAGE)
+                    .resolve_image_view(rview)
+                    .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+            }
+            colors.push(info);
+        }
+        let depth = match op.depth {
+            Some(d) => {
+                let view = self.target_view(d.image.raw(), d.mip, d.layer)?;
+                let (load, depth, stencil) = match d.load {
+                    DepthLoad::Keep => (vk::AttachmentLoadOp::LOAD, 1.0, 0),
+                    DepthLoad::Clear { depth, stencil } => {
+                        (vk::AttachmentLoadOp::CLEAR, depth, stencil)
+                    }
+                    DepthLoad::Discard => (vk::AttachmentLoadOp::DONT_CARE, 1.0, 0),
+                };
+                let ResInfo::Image(img) = self.res[&d.image.raw()].info else {
+                    unreachable!()
+                };
+                Some((
+                    vk::RenderingAttachmentInfo::default()
+                        .image_view(view)
+                        .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                        .load_op(load)
+                        .store_op(if d.store {
+                            vk::AttachmentStoreOp::STORE
+                        } else {
+                            vk::AttachmentStoreOp::DONT_CARE
+                        })
+                        .clear_value(vk::ClearValue {
+                            depth_stencil: vk::ClearDepthStencilValue { depth, stencil },
+                        }),
+                    img.format.has_stencil(),
+                ))
+            }
+            None => None,
+        };
+        let buffer_of = |res: &HashMap<u64, Res>, b: Buffer| {
+            let Kind::Buffer { buffer, .. } = res[&b.raw()].kind else {
                 unreachable!()
             };
             buffer
-        });
-        let clear = vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: op.clear.unwrap_or([0.0; 4]),
-            },
         };
-        let attachment = [vk::RenderingAttachmentInfo::default()
-            .image_view(view)
-            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .load_op(if op.clear.is_some() {
-                vk::AttachmentLoadOp::CLEAR
-            } else {
-                vk::AttachmentLoadOp::LOAD
+        let vertex_buffers: Vec<(u32, vk::Buffer, u64)> = op
+            .vertex_buffers
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, v)| {
+                v.map(|v| (slot as u32, buffer_of(&self.res, v.buffer), v.offset))
             })
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .clear_value(clear)];
+            .collect();
+        let index = op.index.map(|i| {
+            let ty = match i.format {
+                IndexFormat::U16 => vk::IndexType::UINT16,
+                IndexFormat::U32 => vk::IndexType::UINT32,
+            };
+            (buffer_of(&self.res, i.buffer), i.offset, ty)
+        });
         let area = vk::Rect2D {
             offset: vk::Offset2D::default(),
             extent: vk::Extent2D { width, height },
         };
-        let rendering = vk::RenderingInfo::default()
+        let mut rendering = vk::RenderingInfo::default()
             .render_area(area)
             .layer_count(1)
-            .color_attachments(&attachment);
-        // SAFETY: the target is in COLOR_ATTACHMENT_OPTIMAL in the
-        // pipeline's format; the set and push constants match its layout.
+            .color_attachments(&colors);
+        if let Some((depth, stencil)) = &depth {
+            rendering = rendering.depth_attachment(depth);
+            if *stencil {
+                rendering = rendering.stencil_attachment(depth);
+            }
+        }
+        let viewport = op.viewport.map_or(
+            vk::Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: width as f32,
+                height: height as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            },
+            |v| vk::Viewport {
+                x: v.x,
+                y: if v.height < 0.0 { v.y - v.height } else { v.y },
+                width: v.width,
+                height: v.height,
+                min_depth: v.min_depth,
+                max_depth: v.max_depth,
+            },
+        );
+        let scissor = op.scissor.map_or(area, |r| vk::Rect2D {
+            offset: vk::Offset2D { x: r.x, y: r.y },
+            extent: vk::Extent2D {
+                width: r.width,
+                height: r.height,
+            },
+        });
+        let stencil = matches!(&depth, Some((_, true)));
+        // SAFETY: every attachment is in its attachment layout and the
+        // pipeline's formats; the set and push constants match its layout;
+        // the buffers were validated.
         unsafe {
             self.device.cmd_begin_rendering(cmd, &rendering);
             self.device
                 .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
-            self.device.cmd_set_viewport(
-                cmd,
-                0,
-                &[vk::Viewport {
-                    x: 0.0,
-                    y: 0.0,
-                    width: width as f32,
-                    height: height as f32,
-                    min_depth: 0.0,
-                    max_depth: 1.0,
-                }],
-            );
-            self.device.cmd_set_scissor(cmd, 0, &[area]);
+            self.device.cmd_set_viewport(cmd, 0, &[viewport]);
+            self.device.cmd_set_scissor(cmd, 0, &[scissor]);
+            if stencil && self.program_has_stencil(op.program.raw()) {
+                self.device.cmd_set_stencil_reference(
+                    cmd,
+                    vk::StencilFaceFlags::FRONT_AND_BACK,
+                    op.stencil_reference,
+                );
+            }
             if let Some(set) = set {
                 self.device.cmd_bind_descriptor_sets(
                     cmd,
@@ -2047,16 +2598,44 @@ impl Dev {
                 self.device
                     .cmd_push_constants(cmd, layout, vk::ShaderStageFlags::ALL, 0, op.push);
             }
-            if let Some(buffer) = vertex_buffer {
-                self.device.cmd_bind_vertex_buffers(cmd, 0, &[buffer], &[0]);
+            for (slot, buffer, offset) in vertex_buffers {
+                self.device
+                    .cmd_bind_vertex_buffers(cmd, slot, &[buffer], &[offset]);
             }
             if op.vertex_count > 0 && op.instance_count > 0 {
-                self.device
-                    .cmd_draw(cmd, op.vertex_count, op.instance_count, 0, 0);
+                match index {
+                    Some((buffer, offset, ty)) => {
+                        self.device.cmd_bind_index_buffer(cmd, buffer, offset, ty);
+                        self.device.cmd_draw_indexed(
+                            cmd,
+                            op.vertex_count,
+                            op.instance_count,
+                            op.first,
+                            op.base_vertex,
+                            op.first_instance,
+                        );
+                    }
+                    None => self.device.cmd_draw(
+                        cmd,
+                        op.vertex_count,
+                        op.instance_count,
+                        op.first,
+                        op.first_instance,
+                    ),
+                }
             }
             self.device.cmd_end_rendering(cmd);
         }
         Ok(())
+    }
+
+    /// Whether draw program `id` has a stencil test (and so a dynamic
+    /// stencil reference).
+    fn program_has_stencil(&self, id: u64) -> bool {
+        matches!(
+            &self.res[&id].info,
+            ResInfo::Program { draw: Some(d), .. } if d.stencil
+        )
     }
 
     /// Records a copy into a staging buffer and submits: the first half of
@@ -2488,7 +3067,8 @@ now! {
 /// Compiles on the calling thread, outside the lock.
 impl Perform<Opening<CreateProgram<'_>>> for Ash {
     fn perform(&mut self, Opening(op, _): Opening<CreateProgram<'_>>) -> Result<Program, GpuError> {
-        let built = Dev::build_program(&self.shared.device, &op)?;
+        let features = self.dev().features;
+        let built = Dev::build_program(&self.shared.device, features, &op)?;
         Ok(self.dev().add_program(built))
     }
 }
@@ -2507,38 +3087,44 @@ struct DrawSpec {
     vertex_entry: String,
     fragment: Vec<u32>,
     fragment_entry: String,
-    attrs: Vec<crate::VertexAttr>,
-    stride: u32,
-    target: Format,
-    blend: Blend,
+    /// Each vertex buffer's attributes; the layouts borrow them back.
+    attrs: [Vec<crate::VertexAttr>; crate::MAX_VERTEX_BUFFERS],
+    /// The pipeline, its borrowed parts replaced by those above.
+    pipeline: crate::DrawPipeline<'static>,
 }
 
 impl ProgramSpec {
     fn of(op: &CreateProgram<'_>) -> Self {
         let (compute, draw) = match op.kind {
             ProgramKind::Compute { spirv, entry } => (Some((spirv.to_vec(), entry.into())), None),
-            ProgramKind::Draw {
-                vertex,
-                vertex_entry,
-                fragment,
-                fragment_entry,
-                attrs,
-                stride,
-                target,
-                blend,
-            } => (
-                None,
-                Some(DrawSpec {
-                    vertex: vertex.to_vec(),
-                    vertex_entry: vertex_entry.into(),
-                    fragment: fragment.to_vec(),
-                    fragment_entry: fragment_entry.into(),
-                    attrs: attrs.to_vec(),
-                    stride,
-                    target,
-                    blend,
-                }),
-            ),
+            ProgramKind::Draw(p) => {
+                let attrs = p
+                    .vertex_buffers
+                    .map(|v| v.map_or(Vec::new(), |v| v.attrs.to_vec()));
+                let mut pipeline = crate::DrawPipeline::new(&[], "", &[], "", Format::Rgba8Unorm);
+                pipeline.targets = p.targets;
+                pipeline.depth = p.depth;
+                pipeline.raster = p.raster;
+                pipeline.samples = p.samples;
+                pipeline.vertex_buffers = p.vertex_buffers.map(|v| {
+                    v.map(|v| crate::VertexLayout {
+                        stride: v.stride,
+                        step: v.step,
+                        attrs: &[],
+                    })
+                });
+                (
+                    None,
+                    Some(DrawSpec {
+                        vertex: p.vertex.to_vec(),
+                        vertex_entry: p.vertex_entry.into(),
+                        fragment: p.fragment.to_vec(),
+                        fragment_entry: p.fragment_entry.into(),
+                        attrs,
+                        pipeline,
+                    }),
+                )
+            }
         };
         Self {
             label: op.label.into(),
@@ -2552,16 +3138,19 @@ impl ProgramSpec {
     fn op(&self) -> CreateProgram<'_> {
         let kind = match (&self.compute, &self.draw) {
             (Some((spirv, entry)), _) => ProgramKind::Compute { spirv, entry },
-            (_, Some(d)) => ProgramKind::Draw {
-                vertex: &d.vertex,
-                vertex_entry: &d.vertex_entry,
-                fragment: &d.fragment,
-                fragment_entry: &d.fragment_entry,
-                attrs: &d.attrs,
-                stride: d.stride,
-                target: d.target,
-                blend: d.blend,
-            },
+            (_, Some(d)) => {
+                let mut p: crate::DrawPipeline<'_> = d.pipeline;
+                p.vertex = &d.vertex;
+                p.vertex_entry = &d.vertex_entry;
+                p.fragment = &d.fragment;
+                p.fragment_entry = &d.fragment_entry;
+                for (layout, attrs) in p.vertex_buffers.iter_mut().zip(&d.attrs) {
+                    if let Some(layout) = layout {
+                        layout.attrs = attrs;
+                    }
+                }
+                ProgramKind::Draw(p)
+            }
             _ => unreachable!("one of the two"),
         };
         CreateProgram {
@@ -2635,6 +3224,7 @@ impl Ash {
     async fn create_program_async(&self, op: &CreateProgram<'_>) -> Result<Program, GpuError> {
         validate::create_program(op)?;
         let spec = ProgramSpec::of(op);
+        let features = self.dev().features;
         let compiling = Arc::new(Compiling::default());
         let device = self.shared.device.clone();
         let theirs = (Arc::clone(&compiling), device.clone());
@@ -2643,7 +3233,7 @@ impl Ash {
             .stack_size(8 * 1024 * 1024)
             .spawn(move || {
                 let (compiling, device) = theirs;
-                let built = Dev::build_program(&device, &spec.op());
+                let built = Dev::build_program(&device, features, &spec.op());
                 let mut state = compiling
                     .state
                     .lock()

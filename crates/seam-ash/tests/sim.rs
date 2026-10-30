@@ -45,16 +45,7 @@ fn draws_clear_their_target_and_run_their_emulator() {
         pixels[..4].copy_from_slice(&[255; 4]);
         assert_eq!(w, 2);
     });
-    let kind = ProgramKind::Draw {
-        vertex: &[],
-        vertex_entry: "vs",
-        fragment: &[],
-        fragment_entry: "fs",
-        attrs: &[],
-        stride: 0,
-        target: Format::Bgra8Unorm,
-        blend: Blend::Replace,
-    };
+    let kind = ProgramKind::Draw(DrawPipeline::new(&[], "vs", &[], "fs", Format::Bgra8Unorm));
     let pixels = gpu
         .acquire(CreateProgram::draw("dot", kind, &[]), |gpu, program| {
             gpu.acquire(
@@ -228,4 +219,91 @@ fn a_closed_sampler_cannot_be_bound() {
         })
         .unwrap_err();
     assert!(err.to_string().contains("SampledImage"), "{err}");
+}
+
+/// A draw's emulator sees what it draws into and from: its targets
+/// (loaded as asked), its depth, its vertex and index buffers, its
+/// viewport and scissor; a multisampled target is resolved after.
+#[test]
+fn emulators_see_targets_depth_buffers_and_indices() {
+    let mut gpu = SimGpu::new();
+    gpu.emulate("scene", |run| {
+        assert_eq!(run.counts(), (3, 2));
+        // Indices 2, 1, 0 (from the second), plus the base vertex.
+        assert_eq!(run.indices(), Some(vec![12, 11, 10]));
+        assert_eq!(&run.vertex_buffer(1).unwrap()[..2], &[9, 9]);
+        assert_eq!(run.viewport(), Some(Viewport::new(0.0, 0.0, 2.0, 2.0)));
+        assert_eq!(run.scissor(), Some(Rect::new(1, 0, 1, 2)));
+        let (depth, w, h) = run.depth().unwrap();
+        assert_eq!((w, h), (2, 2));
+        assert_eq!(bytes_f32(depth), [1.0; 4]);
+        let (t1, ..) = run.target_at(1).unwrap();
+        assert_eq!(t1, [0, 0, 255, 255].repeat(4));
+        // Target 0 is kept: it starts as zeros. Draw one pixel.
+        let (t0, ..) = run.target();
+        assert_eq!(t0, [0; 16]);
+        t0[4..8].copy_from_slice(&[1, 2, 3, 4]);
+    });
+    let format = Format::Rgba8Unorm;
+    let pipeline = DrawPipeline::new(&[], "vs", &[], "fs", format)
+        .target(1, Some(ColorTarget::new(format)))
+        .vertex_buffer(1, VertexLayout::new(2, &[]).per_instance())
+        .depth(DepthState::new(Format::D32Float))
+        .samples(4);
+    let ms = CreateImage::new(2, 2, format, ImageUsage::TARGET).samples(4);
+    let ms_depth = CreateImage::new(2, 2, Format::D32Float, ImageUsage::TARGET).samples(4);
+    let plain = CreateImage::new(2, 2, format, ImageUsage::TARGET);
+    let indices: Vec<u8> = [0u16, 2, 1, 0]
+        .iter()
+        .flat_map(|i| i.to_le_bytes())
+        .collect();
+    let resolved = gpu
+        .acquire(
+            CreateProgram::draw("scene", ProgramKind::Draw(pipeline), &[]),
+            |gpu, program| {
+                gpu.acquire(ms, |gpu, a| {
+                    gpu.acquire(ms, |gpu, b| {
+                        gpu.acquire(ms_depth, |gpu, depth| {
+                            gpu.acquire(plain, |gpu, resolved| {
+                                gpu.acquire(
+                                    CreateBuffer::new(4, BufferUsage::VERTEX),
+                                    |gpu, inst| {
+                                        gpu.acquire(
+                                            CreateBuffer::new(8, BufferUsage::INDEX),
+                                            |gpu, idx| {
+                                                gpu.perform(Upload::new(*inst, &[9, 9, 9, 9]))?;
+                                                gpu.perform(Upload::new(*idx, &indices))?;
+                                                let mut targets = [None; MAX_TARGETS];
+                                                targets[0] =
+                                                    Some(Attachment::new(*a).resolve(*resolved));
+                                                targets[1] = Some(
+                                                    Attachment::new(*b).clear([0.0, 0.0, 1.0, 1.0]),
+                                                );
+                                                let mut draw =
+                                                    Draw::with_targets(*program, targets, 3)
+                                                        .depth(DepthAttachment::new(*depth))
+                                                        .vertex_buffer(1, *inst, 0)
+                                                        .indexed(*idx, IndexFormat::U16)
+                                                        .instances(2)
+                                                        .first(1)
+                                                        .scissor(Rect::new(1, 0, 1, 2));
+                                                draw.base_vertex = 10;
+                                                gpu.perform(draw)?;
+                                                let mut out = vec![0; 16];
+                                                gpu.perform(DownloadImage::new(
+                                                    *resolved, &mut out,
+                                                ))?;
+                                                Ok::<_, GpuError>(out)
+                                            },
+                                        )
+                                    },
+                                )
+                            })
+                        })
+                    })
+                })
+            },
+        )
+        .unwrap();
+    assert_eq!(resolved, [0, 0, 0, 0, 1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0]);
 }

@@ -208,25 +208,23 @@ fn fs(in: Out) -> @location(0) vec4<f32> { return in.color; }";
 fn drawing_into_an_image() {
     let Some(mut gpu) = gpu() else { return };
     let spirv = wgsl(TRIANGLE);
-    let kind = ProgramKind::Draw {
-        vertex: &spirv,
-        vertex_entry: "vs",
-        fragment: &spirv,
-        fragment_entry: "fs",
-        attrs: &[
-            VertexAttr {
-                offset: 0,
-                format: AttrFormat::F32x2,
-            },
-            VertexAttr {
-                offset: 8,
-                format: AttrFormat::F32x4,
-            },
-        ],
-        stride: 24,
-        target: Format::Rgba8Unorm,
-        blend: Blend::Replace,
-    };
+    let kind = ProgramKind::Draw(
+        DrawPipeline::new(&spirv, "vs", &spirv, "fs", Format::Rgba8Unorm).vertices(
+            24,
+            &[
+                VertexAttr {
+                    location: 0,
+                    offset: 0,
+                    format: AttrFormat::F32x2,
+                },
+                VertexAttr {
+                    location: 1,
+                    offset: 8,
+                    format: AttrFormat::F32x4,
+                },
+            ],
+        ),
+    );
     // A triangle covering the left half: x from -1 to 0.
     #[rustfmt::skip]
     let vertices = f32_bytes(&[
@@ -365,16 +363,10 @@ void main() { color = texture(tex, uv); }",
         eprintln!("skipping: glslang is not installed");
         return;
     };
-    let kind = ProgramKind::Draw {
-        vertex: &vs,
-        vertex_entry: "main",
-        fragment: &fs,
-        fragment_entry: "main",
-        attrs: &[],
-        stride: 0,
-        target: Format::Rgba8Unorm,
-        blend: Blend::PremultipliedAlpha,
-    };
+    let kind = ProgramKind::Draw(
+        DrawPipeline::new(&vs, "main", &fs, "main", Format::Rgba8Unorm)
+            .blend(Blend::PremultipliedAlpha),
+    );
     // A 2x2 texture, all half-transparent white, premultiplied.
     let texture = [128u8, 128, 128, 128].repeat(4);
     let pixels = gpu
@@ -497,16 +489,13 @@ void main() { out_color = color; }",
         eprintln!("skipping: glslang is not installed");
         return;
     };
-    let kind = ProgramKind::Draw {
-        vertex: &vs,
-        vertex_entry: "main",
-        fragment: &fs,
-        fragment_entry: "main",
-        attrs: &[],
-        stride: 0,
-        target: Format::Rgba8Unorm,
-        blend: Blend::Replace,
-    };
+    let kind = ProgramKind::Draw(DrawPipeline::new(
+        &vs,
+        "main",
+        &fs,
+        "main",
+        Format::Rgba8Unorm,
+    ));
     let program = CreateProgram::draw("heights", kind, &[BindingKind::SampledImage]);
     let bind = |t, s| vec![Bind::Sampled(t, s)];
 
@@ -551,16 +540,13 @@ fn vs(@builtin(vertex_index) i: u32) -> Out {
 @fragment
 fn fs(in: Out) -> @location(0) vec4<f32> { return in.color; }",
     );
-    let kind = ProgramKind::Draw {
-        vertex: &shader,
-        vertex_entry: "vs",
-        fragment: &shader,
-        fragment_entry: "fs",
-        attrs: &[],
-        stride: 0,
-        target: Format::Rgba8Unorm,
-        blend: Blend::Replace,
-    };
+    let kind = ProgramKind::Draw(DrawPipeline::new(
+        &shader,
+        "vs",
+        &shader,
+        "fs",
+        Format::Rgba8Unorm,
+    ));
     let program = CreateProgram::draw(
         "heights",
         kind,

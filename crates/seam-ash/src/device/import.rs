@@ -51,7 +51,7 @@ impl Dev {
                 .src_queue_family_index(family)
                 .dst_queue_family_index(owner)
                 .image(*image)
-                .subresource_range(COLOR)];
+                .subresource_range(super::whole(vk::ImageAspectFlags::COLOR))];
             // SAFETY: `cmd` is recording and the image is alive.
             unsafe {
                 self.device.cmd_pipeline_barrier2(
@@ -296,7 +296,7 @@ mod dmabuf {
             self.retire();
             let (format, opaque) = buf.format.format().expect("validated");
             let vkf = vk_format(format);
-            let (_, features) = Self::image_usage(usage);
+            let (_, features) = Self::image_usage(usage, format);
             let wanted = features
                 & !(vk::FormatFeatureFlags::TRANSFER_SRC | vk::FormatFeatureFlags::TRANSFER_DST);
             let modifier = self.modifiers(vkf).into_iter().find(|m| {
@@ -328,7 +328,7 @@ mod dmabuf {
         ) -> Result<Image, GpuError> {
             let plane = &buf.planes[0];
             let vkf = vk_format(format);
-            let (all, _) = Self::image_usage(usage);
+            let (all, _) = Self::image_usage(usage, format);
             // Transfers only where the layout allows them.
             let mut flags =
                 all & !(vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST);
@@ -384,7 +384,12 @@ mod dmabuf {
                     self.device.free_memory(memory, None);
                     return Err(vk_error(e));
                 }
-                match self.view(image, vkf, usage, opaque) {
+                match self.view(
+                    image,
+                    &CreateImage::new(buf.width, buf.height, format, usage),
+                    None,
+                    opaque,
+                ) {
                     Ok(v) => (image, memory, v),
                     Err(e) => {
                         self.device.destroy_image(image, None);
@@ -394,20 +399,16 @@ mod dmabuf {
                 }
             };
             let id = self.add(
-                ResInfo::Image {
-                    width: buf.width,
-                    height: buf.height,
-                    format,
-                    usage,
-                },
-                Kind::Image {
+                ResInfo::Image(CreateImage::new(buf.width, buf.height, format, usage)),
+                Kind::image(
                     image,
                     memory,
                     view,
                     // What the owner left it in: its contents are kept.
-                    layout: vk::ImageLayout::GENERAL,
-                    foreign: Foreign::Acquire(self.foreign_family()),
-                },
+                    vk::ImageLayout::GENERAL,
+                    Foreign::Acquire(self.foreign_family()),
+                    format,
+                ),
             );
             Ok(Image(id))
         }
@@ -757,7 +758,12 @@ mod win32 {
                     self.device.free_memory(memory, None);
                     return Err(vk_error(e));
                 }
-                match self.view(image, vkf, usage, false) {
+                match self.view(
+                    image,
+                    &CreateImage::new(h.width, h.height, h.format, usage),
+                    None,
+                    false,
+                ) {
                     Ok(v) => (image, memory, v),
                     Err(e) => {
                         self.device.destroy_image(image, None);
@@ -767,19 +773,15 @@ mod win32 {
                 }
             };
             let id = self.add(
-                ResInfo::Image {
-                    width: h.width,
-                    height: h.height,
-                    format: h.format,
-                    usage,
-                },
-                Kind::Image {
+                ResInfo::Image(CreateImage::new(h.width, h.height, h.format, usage)),
+                Kind::image(
                     image,
                     memory,
                     view,
-                    layout: vk::ImageLayout::GENERAL,
-                    foreign: Foreign::Acquire(vk::QUEUE_FAMILY_EXTERNAL),
-                },
+                    vk::ImageLayout::GENERAL,
+                    Foreign::Acquire(vk::QUEUE_FAMILY_EXTERNAL),
+                    h.format,
+                ),
             );
             Ok(Image(id))
         }
@@ -853,7 +855,12 @@ mod metal {
                     self.device.free_memory(memory, None);
                     return Err(vk_error(e));
                 }
-                match self.view(image, vkf, usage, false) {
+                match self.view(
+                    image,
+                    &CreateImage::new(s.width, s.height, s.format, usage),
+                    None,
+                    false,
+                ) {
                     Ok(v) => (image, memory, v),
                     Err(e) => {
                         self.device.destroy_image(image, None);
@@ -863,20 +870,16 @@ mod metal {
                 }
             };
             let id = self.add(
-                ResInfo::Image {
-                    width: s.width,
-                    height: s.height,
-                    format: s.format,
-                    usage,
-                },
-                Kind::Image {
+                ResInfo::Image(CreateImage::new(s.width, s.height, s.format, usage)),
+                Kind::image(
                     image,
                     memory,
                     view,
                     // Its contents are kept (Metal has no layouts to lose).
-                    layout: vk::ImageLayout::GENERAL,
-                    foreign: Foreign::No,
-                },
+                    vk::ImageLayout::GENERAL,
+                    Foreign::No,
+                    s.format,
+                ),
             );
             Ok(Image(id))
         }

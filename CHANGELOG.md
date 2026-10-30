@@ -7,6 +7,14 @@ and fixes for what writing them turned up.
 
 ### Breaking
 
+- `seam-ash`: `ProgramKind::Draw` holds a `DrawPipeline`
+  (`DrawPipeline::new(vertex, entry, fragment, entry, format)`, then
+  `.vertices(stride, attrs)`, `.blend(..)`, ...); `VertexAttr` has a
+  location; `Draw`'s `target`, `clear` and `vertices` fields are `targets`
+  (`Attachment`s), each attachment's `load`, and `vertex_buffers`
+  (`Draw::new`, `.clear(..)` and `.vertices(..)` are as before);
+  `CreateImage` has more fields (use `CreateImage::new` and its
+  builders).
 - `seam-ash`: `Bind::Sampled` takes the sampler that reads the image,
   `Bind::Sampled(image, sampler)`; the device's built-in sampler (linear,
   clamped to the edge) is gone. Make one with
@@ -25,6 +33,31 @@ and fixes for what writing them turned up.
   HLSL's). Every stage samples, the vertex stage too. `SimGpu`'s
   emulators sample the same way on the CPU (`Run::sample`, `sample_with`,
   `texel`).
+- Rendering: a draw program is a `DrawPipeline` (`ProgramKind::Draw`),
+  with up to 8 colour targets, each with its own `Blend` (replace,
+  premultiplied or straight alpha, additive, multiply, or any equations)
+  and `ColorMask`; a depth and stencil test (`DepthState`, `Compare`,
+  `StencilFace`, `StencilOp`); up to 8 vertex buffers, per vertex or per
+  instance, with more attribute formats (`f16`, `u8`/`i8`/`u16`
+  normalized, integer vectors) and explicit locations; topology (points,
+  lines, strips, fans), culling, front face, wireframe and primitive
+  restart (`Raster`); and multisampling. A `Draw` gives an `Attachment`
+  per target (a level and layer, `Load::Keep`, `Clear` or `Discard`, and
+  a resolve image), a `DepthAttachment`, vertex buffers with offsets, an
+  index buffer (`BufferUsage::INDEX`, `u16` or `u32`), first vertex, base
+  vertex and first instance, a viewport, a scissor and a stencil
+  reference. Each is checked against the program the same way by `Ash`
+  and `SimGpu`, whose emulators see every target, the depth image, the
+  vertex and index buffers (`Run::target_at`, `depth`, `vertex_buffer`,
+  `indices`, `viewport`, `scissor`), with loads applied and resolves
+  done after.
+- Images: `CreateImage` has a kind (flat, cube, volume), layers, mip
+  levels and samples, and formats beyond 8-bit colour: one- and
+  two-channel, 16- and 32-bit float and integer, snorm, packed 10-bit and
+  11-bit float, depth and depth-stencil, and BC1 to BC7 compressed.
+  Optional device features (wireframe, independent blending, BC, cube
+  arrays) are turned on where the device has them, and fail with
+  `Unsupported` where it does not.
 - Shaders in Rust, through rust-gpu: `Ash` turns on the Vulkan memory
   model where the device has it, which rust-gpu's shaders declare.
   `crates/seam-ash/shaders` is a shader crate built to SPIR-V on

@@ -118,6 +118,7 @@ fn the_os_reports_a_new_file() -> io::Result<()> {
 
 /// The async form waits without blocking its executor: on one thread, the
 /// task writing the file runs while the watch waits.
+#[cfg(feature = "notify")]
 #[test]
 fn async_waits_leave_the_executor_free() -> io::Result<()> {
     use seam_notify::Notify;

@@ -57,6 +57,7 @@
 //! # In a program
 //!
 //! ```no_run
+//! # #[cfg(feature = "notify")] {
 //! use seam_core::io;
 //! use seam_core::ops::time::Timeout;
 //! use seam_core::prelude::*;
@@ -82,7 +83,8 @@
 //! // Any executor: Tokio here; smol, or futures-rs', the same.
 //! let changed = seam_tokio::block_on(config_changed::<_, seam_notify::NotifyWatcher>(&mut Notify::new()))?;
 //! println!("{changed:?}");
-//! # Ok::<(), io::Error>(())
+//! # }
+//! # Ok::<(), seam_core::io::Error>(())
 //! ```
 //!
 //! Through the `seam` crate, this crate is `seam::notify` (feature `notify`,

@@ -19,6 +19,7 @@
 //!
 //! # In tests
 //! ```
+//! # #[cfg(feature = "sqlite")] {
 //! use seam_core::prelude::*;
 //! use seam_sqlx::{Begin, Sqlx, Value, execute_async, fetch_all_async};
 //!
@@ -36,6 +37,7 @@
 //!     let rows = fetch_all_async(&mut db, "SELECT body FROM notes ORDER BY id", &[]).await.unwrap();
 //!     assert_eq!(rows[1].get("body"), Some(&Value::from("second")));
 //! });
+//! # }
 //! ```
 //!
 //! Queries are runtime SQL with `?` placeholders (`$1` on Postgres). Pass
@@ -45,6 +47,7 @@
 //! # In a program
 //!
 //! ```no_run
+//! # #[cfg(feature = "sqlite")] {
 //! use seam_core::io;
 //! use seam_core::prelude::*;
 //! use seam_sqlx::{Execute, Fetch, Sqlx, Value, execute_send, fetch_optional_send};
@@ -70,7 +73,8 @@
 //!     println!("{} visits", visit(&mut db, "/").await?);
 //!     io::Result::Ok(())
 //! })?;
-//! # Ok::<(), io::Error>(())
+//! # }
+//! # Ok::<(), seam_core::io::Error>(())
 //! ```
 //!
 //! In a root, `Sqlx` routes [`effects::Execute`], [`effects::Fetch`],

@@ -47,6 +47,7 @@
 //! helpers, or `perform_send(Fetch(..))` for any request.
 //!
 //! ```no_run
+//! # #[cfg(feature = "reqwest")] {
 //! use seam_core::io;
 //! use seam_reqwest::{Fetch, Reqwest, get_text_send};
 //!
@@ -63,7 +64,8 @@
 //! println!("{}", seam_tokio::block_on(latest_version(&mut http))?);
 //! // ...or under smol, the same handler.
 //! println!("{}", seam_smol::block_on(latest_version(&mut http))?);
-//! # Ok::<(), io::Error>(())
+//! # }
+//! # Ok::<(), seam_core::io::Error>(())
 //! ```
 //!
 //! A configured client (timeouts, proxies, headers) goes in with

@@ -25,7 +25,7 @@ fn now<C: Inspect<Now>>(c: &C) -> Duration {
 }
 
 /// Receives until nothing has arrived for `quiet`. Generic, so it runs on
-/// any backend's channels.
+/// any handler's channels.
 fn drain_until_quiet<R>(rx: &mut R, quiet: Duration) -> Vec<u32>
 where
     R: Perform<Timeout<RecvMsg<u32>>>,

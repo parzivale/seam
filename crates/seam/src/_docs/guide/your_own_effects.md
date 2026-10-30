@@ -95,7 +95,7 @@ impl Perform<BindMount> for Linux {
 impl Perform<Unmount> for Linux { /* rustix::mount::unmount */ }
 ```
 
-At the edge, put it in a root next to the backend:
+At the edge, put it in a root next to the handler:
 
 ```rust,ignore
 let mut root = seam::root![
@@ -356,13 +356,13 @@ serves many) is set up, checked and written out once.
 - **Effects built from other effects.** A handler can hold another
   capability and perform through it: a store kept in files is a
   `FileStore<C>` whose `Put` writes through `C`'s `CreateAtomic`. It then
-  runs on every backend, the simulation included, and on the simulated
+  runs on every handler, the simulation included, and on the simulated
   runtime and threads its interleavings are explored like any other. See
   the `custom_ops` example.
 - **Another implementation of seam's own effects** (a different
   filesystem, a remote clock) implements seam's operations and is listed in
   a root under seam's keys (`fx::View`, `fx::Now`, ...) in place of a
-  backend.
+  handler.
 - **Scoped effects** of your own implement
   [`Acquisition`](crate::Acquisition), and the handler implements
   `Perform<Opening<A>>` and `Perform<Closing<A>>` (or `Inspect`, for a

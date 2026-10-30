@@ -1,7 +1,7 @@
-//! A pure test backend for seam.
+//! A pure test handler for seam.
 //!
 //! [`Sim`] is a simulated world, and a handler like any other: it
-//! implements the same effects as the real backends, but the clock is
+//! implements the same effects as the real handlers, but the clock is
 //! virtual, randomness is a seeded PRNG, the filesystem and network live in
 //! memory, commands are scripted and stdio is captured. Its only real
 //! effect is allocation. The crate is linted with seam's own `clippy.toml`,

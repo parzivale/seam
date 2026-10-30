@@ -6,8 +6,9 @@ a simulated one.
 ## Dependencies
 
 Pick the capability groups the core uses (`env`, `io-std`, ...), and
-separately the backends: `std` for the program (with `tokio` or `smol`
-beside it if the core is async), `test` for its tests. No capability group turns a backend on, so a library holding a core
+separately the handler crates: `std` for the program (with `tokio` or
+`smol` beside it if the core is async), `test` for its tests. No
+capability group turns a handler crate on, so a library holding a core
 depends on the groups alone.
 
 ```toml
@@ -56,19 +57,19 @@ The bounds read as:
   name, so the bound covers every lifetime (`for<'a>`). `Inspect` is for
   queries, which change nothing, so it needs only `&self`.
 - `Provide<OpenStdout<O>>`: it may open standard output, as a handle of
-  the backend's type `O`, for the length of a scope. `print` opens it,
+  the handler's type `O`, for the length of a scope. `print` opens it,
   writes and closes it.
 - `O: for<'a> Perform<Write<'a>>`: that handle can be written to.
 
-`O` is never named by the caller; Rust infers it from the backend.
+`O` is never named by the caller; Rust infers it from the handler.
 
 Operations live in `seam::ops`, one module per capability group. Helpers
 built from them (`print`, `read_to_string`, `write_file`, `random_u64`, ...)
-sit beside them and work on every backend.
+sit beside them and work on every handler.
 
 ## Running it
 
-In `main`, pass a real backend. `Std` is a zero-sized value that performs
+In `main`, pass a real handler. `Std` is a zero-sized value that performs
 each operation with std:
 
 ```rust,ignore
@@ -79,7 +80,7 @@ fn main() -> seam::io::Result<()> {
 
 For an async program, write the core with the async traits and pass
 `seam::tokio::Tokio` or `seam::smol::Smol` (see [the async guide](crate::_docs::guide::async_and_concurrency)).
-For a program that takes different effects from different backends, or
+For a program that takes different effects from different handlers, or
 has effects of its own, pass a [root](crate::_docs::guide::roots).
 
 ## Testing it
@@ -151,7 +152,7 @@ with a message naming both:
 error[E0277]: `C` does not have the capability to perform `Sleep`
 ```
 
-The same message appears when a backend does not implement an operation,
+The same message appears when a handler does not implement an operation,
 or when a feature that provides it is off.
 
 ## Keeping the core honest
@@ -163,7 +164,7 @@ that does not go through a capability.
 
 ## Next
 
-- [Roots](crate::_docs::guide::roots): several backends and your own effects in one
+- [Roots](crate::_docs::guide::roots): several handlers and your own effects in one
   capability.
 - [Resources](crate::_docs::guide::resources): files, sockets and tasks.
 - [Testing](crate::_docs::guide::testing): the simulated world in detail.

@@ -43,7 +43,7 @@ Three things follow:
 - **Signatures are an audit.** A function's bounds list everything it can
   do. A core bounded on `Open<'a, ReadOnly, F>` cannot write a file, and
   one with no network bounds cannot reach the network.
-- **Backends are interchangeable.** The same core runs on std, on Tokio,
+- **Handlers are interchangeable.** The same core runs on std, on Tokio,
   in the simulation, or on a mix of them through a [`Root`](crate::Root).
 
 ## seam as an effect system
@@ -132,12 +132,12 @@ so the atomicity is part of the signature rather than a law.
 | Koka, Eff, OCaml 5 | inferred effect rows (OCaml 5: untyped) | yes | yes | a language of its own |
 | Haskell `mtl`, `polysemy`, `effectful` | type classes or effect rows | yes | partly to fully | a language of its own |
 | sans-IO protocol crates | none (the protocol returns events) | the caller drives I/O | no | covers I/O only, per protocol |
-| traits per dependency (`trait Clock`, `trait Store`) | yes, per project | yes | no | each project writes its own, with no shared backends or simulation |
+| traits per dependency (`trait Clock`, `trait Store`) | yes, per project | yes | no | each project writes its own, with no shared handlers or simulation |
 | `cap-std` | capability values for files and sockets | no | no | security, not testing: real effects only |
 
 The closest everyday comparison is the last-but-one row: injecting a
 `Clock` trait so a test can pass a fake one. seam is that idea made
-uniform: one set of operation types for every effect, backends that
+uniform: one set of operation types for every effect, handlers that
 implement all of them, a simulation that implements all of them
 deterministically, and a way to combine handlers per effect.
 
@@ -154,5 +154,5 @@ deterministically, and a way to combine handlers per effect.
   guarantee.
 
 In return, a core is plain Rust, on stable, with no allocation or dynamic
-dispatch added, that runs on any backend and is tested on a simulated
+dispatch added, that runs on any handler and is tested on a simulated
 world.

@@ -21,7 +21,7 @@
 //! [`Rustix`] is sync: these calls return at once (a mount, at worst, after a
 //! moment), so the lifts make it async too, for any executor. In a root, it
 //! serves the keys of `seam_unix::effects` it is listed for, beside the
-//! backends for the rest:
+//! handlers for the rest:
 //!
 //! ```no_run
 //! use seam_core::effects as fx;

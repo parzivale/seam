@@ -11,7 +11,7 @@
 //! core with `Send` bounds, and the same function is tested against the
 //! in-memory network in `seam::test`, with no sockets and no runtime.
 //!
-//! `main` builds a root of two backends: Tokio for the network and stdio,
+//! `main` builds a root of two handlers: Tokio for the network and stdio,
 //! and std for the command-line arguments, which have nothing to do with
 //! Tokio.
 
@@ -67,7 +67,7 @@ where
 /// The task that handles one connection: owns a clone of the capability,
 /// for logging, and borrows the stream the listener accepted for it. A named
 /// type, so that `serve`'s bounds can name it, and nothing is boxed. `O` is
-/// the backend's standard output type, which the task logs to.
+/// the handler's standard output type, which the task logs to.
 struct Echo<C, O>(C, PhantomData<fn() -> O>);
 
 impl<C, O, S> TaskBody<S> for Echo<C, O>

@@ -143,7 +143,7 @@ pub trait Perform<O: Operation> {
 /// The lifts are opt-in, rather than for every type, so that a
 /// [`Root`](crate::Root) can forward each form to its parts itself: a sync
 /// part's operations through the sync traits, an async part's through the
-/// async ones. Every capability type in seam's backends implements it.
+/// async ones. Every capability type in seam's handlers implements it.
 pub trait Capability {}
 
 /// Anything that can inspect can also perform the same query, the way

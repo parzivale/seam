@@ -1,4 +1,4 @@
-//! The Tokio backend for seam.
+//! The Tokio handler for seam.
 //!
 //! [`Tokio`] performs seam operations with Tokio.
 //! It implements the async traits in [`seam_core::future`], including the
@@ -64,9 +64,8 @@
 //!
 //! # With the other crates
 //!
-//! A program on Tokio takes what Tokio does not have from the other
-//! backends, in the same root, and the wrapper crates' handlers sit beside
-//! them:
+//! A program on Tokio routes what Tokio does not handle to other handlers
+//! in the same root, the wrapper crates' among them:
 //!
 //! | For | Use |
 //! |---|---|
@@ -117,7 +116,7 @@
 //! With `test-util`, `Now` follows Tokio's pausable clock.
 #![forbid(unsafe_code)]
 
-/// The Tokio backend's capability.
+/// The Tokio handler's capability.
 ///
 /// It holds no state. Every operation it supports is a real effect, and must
 /// run inside a Tokio runtime. It is `Clone`, so a core can hand a copy to

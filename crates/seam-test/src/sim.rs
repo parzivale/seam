@@ -3,7 +3,7 @@
 //!
 //! [`Sim`] is a handler like any other: it implements seam's `Perform` and
 //! `Inspect` for every effect it simulates, exactly as `Std` and `Tokio`
-//! do, so a core takes `&mut sim` wherever it takes a real backend, and a
+//! do, so a core takes `&mut sim` wherever it takes a real handler, and a
 //! root lists it under the effects it should serve.
 //!
 //! Its world is made of states, one per area:
@@ -238,12 +238,12 @@ impl core::fmt::Debug for Shared {
     }
 }
 
-/// A simulated world: the test backend's handler.
+/// A simulated world: seam-test's handler.
 ///
 /// It implements seam's effects as `Std` does, with a virtual clock,
 /// seeded random numbers, an in-memory filesystem and network, scripted
 /// commands and captured stdio. Create one per test, set up the world it
-/// starts in, hand it to the core in place of a real backend, then assert on
+/// starts in, hand it to the core in place of a real handler, then assert on
 /// what the core left behind.
 ///
 /// Every clone is the same world, so a part of a root that works over the

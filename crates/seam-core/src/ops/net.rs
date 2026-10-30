@@ -1,6 +1,6 @@
 //! Networking.
 //!
-//! Sockets are acquisitions, generic over the backend's socket types: a
+//! Sockets are acquisitions, generic over the handler's socket types: a
 //! core acquires one for the length of a scope (see
 //! [`acquire`](crate::acquire)). Reading and writing a connected stream use
 //! [`io`](super::io). DNS is an effect too: resolve names with

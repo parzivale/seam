@@ -21,7 +21,7 @@
 //! | [`TzDb`] | [`TimeZoneFor`], [`SystemTimeZone`] | sync, and async through the lifts | TZif files through its capability's `View`; `TZ` through its `Var` |
 //! | [`Bundled`] (feature `bundled`) | [`TimeZoneFor`] | sync, and async through the lifts | nothing: the database is compiled in |
 //!
-//! The helpers also need `WallClock`, which every backend has: `Std`,
+//! The helpers also need `WallClock`, which every handler has: `Std`,
 //! `Tokio`, `Smol` and a `Sim`.
 //! The helpers read the wall clock through seam too: [`timestamp`],
 //! [`now_zoned`], [`now_in`] and [`now_local`], each in sync, `_async` and

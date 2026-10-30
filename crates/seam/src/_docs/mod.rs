@@ -9,7 +9,7 @@
 //! | [`what_is_seam`] | what problem seam solves, what it is in effect-system terms, and how it compares to other approaches |
 //! | [`guide`] | usage guides, from a first core to effects and simulated parts of your own |
 //! | [`world_files`] | the world-file format: every directive and expectation, and how parts add blocks of their own |
-//! | [`implementation`] | how seam works inside: the traits, the lifts, scopes, roots, the backends and the simulation |
+//! | [`implementation`] | how seam works inside: the traits, the lifts, scopes, roots, the handlers and the simulation |
 //!
 //! Start with [`what_is_seam`] for the idea, then
 //! [`guide::getting_started`] for the code.

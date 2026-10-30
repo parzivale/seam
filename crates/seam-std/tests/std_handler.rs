@@ -1,4 +1,4 @@
-//! Runs the std backend against the real OS.
+//! Runs the std handler against the real OS.
 #![cfg(feature = "full")]
 
 use seam_core::io;
@@ -24,7 +24,7 @@ use seam_std::Std;
 use seam_std::fs::AtomicFile;
 
 /// Edits a file in place through one handle: every file handle operation.
-/// Generic, so it runs on any backend.
+/// Generic, so it runs on any handler.
 fn edit_in_place<C, F, R>(c: &mut C, path: &std::path::Path) -> io::Result<()>
 where
     C: for<'a> Provide<Open<'a, ReadWrite, F>> + for<'a> Lend<View<'a, R>>,

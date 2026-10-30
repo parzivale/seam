@@ -2,7 +2,7 @@
 //!
 //! Spawning is an [`Acquisition`](crate::Acquisition): a task handle (or a
 //! task set) exists only inside a scope, like a file or a socket. What a
-//! task is depends on the backend: a future on async backends (Tokio, the
+//! task is depends on the handler: a future on async handlers (Tokio, the
 //! simulated runtime), a closure on an OS thread for `seam-std`. Threads
 //! cannot be aborted, so on `seam-std` a scope that fails waits for its
 //! threads instead, and handles do not implement [`Abort`]. When the scope succeeds,
@@ -22,7 +22,7 @@
 //! | [`SpawnWith`] | a handle to a task that owns a resource acquired for it, such as an accepted connection | no |
 //!
 //! None of these needs `alloc`; whether spawning allocates is up to the
-//! backend (Tokio allocates every task). With `alloc`, `Spawn::boxed` and
+//! handler (Tokio allocates every task). With `alloc`, `Spawn::boxed` and
 //! `SpawnWith::boxed` take futures and closures whose types cannot be named,
 //! at the cost of a box.
 //!
@@ -66,7 +66,7 @@
 //! # Capabilities inside tasks
 //!
 //! A task is `'static`, so it cannot borrow the capability that spawned it.
-//! Give it its own: the root capabilities of the real backends are `Clone`,
+//! Give it its own: the root capabilities of the real handlers are `Clone`,
 //! so a core can bound `C: Clone + Send + 'static` and move a clone in.
 
 use core::fmt;
@@ -75,9 +75,9 @@ use core::marker::PhantomData;
 
 /// Spawn one task, providing a handle of type `H` for the length of a
 /// scope. Closing the handle waits for the task; dropping it aborts it,
-/// or, on backends that cannot abort (threads), waits for it.
+/// or, on handlers that cannot abort (threads), waits for it.
 ///
-/// The task `F` is whatever the backend runs: a future on async backends
+/// The task `F` is whatever the handler runs: a future on async handlers
 /// (Tokio, the simulated runtime), a closure on threads (`seam-std`).
 pub struct Spawn<F, H> {
     /// The task: a future, or on threads a closure.
@@ -85,13 +85,13 @@ pub struct Spawn<F, H> {
     handle: PhantomData<fn() -> H>,
 }
 
-/// Open an empty set of tasks of the backend's type `S`, for the length of
+/// Open an empty set of tasks of the handler's type `S`, for the length of
 /// a scope. In the scope, perform [`SpawnInto`] on the set to add tasks and
 /// [`JoinNext`] to collect their outputs as they finish.
 ///
 /// Closing the set waits for every task still in it and reports the first
 /// failure; dropping it aborts them all. Storing the tasks is the
-/// backend's business: seam itself allocates nothing.
+/// handler's business: seam itself allocates nothing.
 pub struct SpawnSet<S> {
     set: PhantomData<fn() -> S>,
 }
@@ -100,7 +100,7 @@ pub struct SpawnSet<S> {
 ///
 /// A set with a fixed capacity hands the task back when it is full. As
 /// with [`Spawn`], the task is a future or a closure, depending on the
-/// backend.
+/// handler.
 pub struct SpawnInto<F> {
     /// The task: a future, or on threads a closure.
     pub task: F,
@@ -233,9 +233,9 @@ pub struct IsFinished;
 pub struct YieldNow;
 
 /// How many tasks can usefully run at the same time: the number of
-/// threads a backend can run in parallel. At least 1.
+/// threads a handler can run in parallel. At least 1.
 ///
-/// For sizing a pool of workers. On the std and Tokio backends this is
+/// For sizing a pool of workers. On the std and Tokio handlers this is
 /// `std::thread::available_parallelism`; in the simulation it is whatever
 /// the test sets.
 #[derive(Debug, Clone, Copy, Default)]

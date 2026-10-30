@@ -1,6 +1,6 @@
 [package]
 name = "seam-rs-smol"
-description = "smol backend for seam: async implementations of seam operations over smol."
+description = "smol handler for seam: async implementations of seam operations over smol."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

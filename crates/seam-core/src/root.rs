@@ -6,7 +6,7 @@
 //! `Now` routes by `effects::Now`, `Open` in mode `M` by `effects::Open<M>`,
 //! and so on. The root forwards each operation to the part listed for its
 //! effect, in whichever form (sync, async, `Send`) that part implements it.
-//! So one root can mix backends, sync and async parts, simulated parts and
+//! So one root can mix handlers, sync and async parts, simulated parts and
 //! a program's own, and grants the core exactly the effects it lists:
 //!
 //! ```

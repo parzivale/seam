@@ -66,7 +66,7 @@
 //!
 //! # Implementing a provider
 //!
-//! Backends implement `Perform<Opening<A>>` and `Perform<Closing<A>>` (or
+//! Handlers implement `Perform<Opening<A>>` and `Perform<Closing<A>>` (or
 //! the async forms, or `Inspect` for a scope that is a query). An
 //! [`Opening`] carries a [`Token`], which only this crate can create, so a
 //! core cannot open a resource outside a scope. A provider can still pass
@@ -265,7 +265,7 @@ macro_rules! scope_trait {
 scope_trait! {
     /// The capability to provide resources of kind `A`: to perform opening
     /// and closing them. Cores bound on this and call
-    /// [`acquire`](Self::acquire); backends implement the two operations.
+    /// [`acquire`](Self::acquire); handlers implement the two operations.
     #[diagnostic::on_unimplemented(
         message = "`{Self}` cannot provide `{A}`",
         label = "missing capability `Provide<{A}>`",

@@ -1,4 +1,4 @@
-//! The futures-rs backend for seam.
+//! The futures-rs handler for seam.
 //!
 //! futures-rs is the runtime-agnostic half of async Rust: channels, locks,
 //! executors, the `AsyncRead`/`AsyncWrite` traits and `Stream`. This crate
@@ -31,7 +31,7 @@
 //! go through [`Executor`] and `Spawn`.
 //!
 //! futures-rs has no clock, network or filesystem, so neither does this
-//! backend: take those from `Tokio`, `Smol`, `Std` or the simulation in
+//! handler: take those from `Tokio`, `Smol`, `Std` or the simulation in
 //! the same root.
 //!
 //! ```
@@ -57,7 +57,7 @@
 //! ```
 //! # In a program
 //!
-//! Futures' parts sit beside a backend that has the rest. Here, smol gives
+//! Futures' parts sit beside a handler that has the rest. Here, smol gives
 //! the clock, and [`time::within`] races a channel receive against it:
 //!
 //! ```no_run

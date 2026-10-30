@@ -88,7 +88,7 @@ pub struct Seek(pub SeekFrom);
 /// `PeerAddr`. Shutting down the write half tells the peer the request is
 /// complete while the read half goes on reading the reply. The stream itself should not be read or written
 /// while it is split. Closing the scope gives the halves back to the
-/// stream; a failed scope drops them, and with some backends (Tokio) that
+/// stream; a failed scope drops them, and with some handlers (Tokio) that
 /// closes the stream, so give up on the stream after a failed split.
 pub struct Split<R, W> {
     halves: core::marker::PhantomData<fn() -> (R, W)>,

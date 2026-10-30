@@ -34,7 +34,7 @@ fn jitter<C: for<'a> Perform<FillRandom<'a>> + Perform<Sleep>>(c: &mut C) {
 
 ## Primitives and helpers
 
-The operations are **primitives**: the smallest effects a backend must
+The operations are **primitives**: the smallest effects, the ones handlers
 provide, such as `Read` and `Write` on a handle, `Open` a file, `FillRandom`.
 Everything that can be built from them is, in seam-core, as plain functions
 next to the operations: `read_exact`, `write_all`, `read_file`,
@@ -42,7 +42,7 @@ next to the operations: `read_exact`, `write_all`, `read_file`,
 `resolve`, `connect_any`, `random_u64`, `random_range`, `shuffle`,
 `sleep_until`, `tick`, `var_or`, `print`, `println`, `read_line`,
 `run_checked`, `try_send`, and `BufReader` for lines (or any delimited
-record) from any handle. A backend implements only the primitives, and every helper then
+record) from any handle. A handler implements only the primitives, and every helper then
 works on it, so lines come from stdin, a socket, a child or a file alike.
 
 Rust cannot be generic over sync and async, or over whether a future is
@@ -62,7 +62,7 @@ A stream or child can be split for the length of a scope (`Split`,
 direction, so a core reads and writes at once without sharing a handle.
 
 Files open in a mode named by a type, `Open<'a, ReadOnly, F>`,
-`Open<'a, WriteOnly, F>`, ..., and a backend's handle implements `Read` or
+`Open<'a, WriteOnly, F>`, ..., and a handler's handle implements `Read` or
 `Write` only for modes that allow it. A core bounded on `ReadOnly` cannot
 write, and that is checked at compile time.
 
@@ -85,10 +85,10 @@ where
 | Crate | What it is |
 |---|---|
 | [`seam-core`](https://github.com/parzivale/seam/tree/main/crates/seam-core) (`seam-rs-core`) | The traits (`Operation`, `Query`, `Inspect`, `Perform`, `Provide`/`Lend` and their async forms, `block_on`), the operation and acquisition types, and a `prelude`. `no_std`. |
-| [`seam-std`](https://github.com/parzivale/seam/tree/main/crates/seam-std) (`seam-rs-std`) | The std backend: a `Std` capability (used alone, or as a part of a `Root`) and newtype handles (`File`, `TcpStream`, ...) that expose no std I/O traits. |
-| [`seam-tokio`](https://github.com/parzivale/seam/tree/main/crates/seam-tokio) (`seam-rs-tokio`) | The Tokio backend: a `Tokio` capability implementing the async and `Send` capability traits, for time, files, the network, stdio, processes, signals, tasks and channels. |
-| [`seam-smol`](https://github.com/parzivale/seam/tree/main/crates/seam-smol) (`seam-rs-smol`) | The smol backend: a `Smol` capability implementing the async and `Send` traits, for time, files, the network, stdio, processes, Ctrl-C (Unix), tasks and channels. |
-| [`seam-futures`](https://github.com/parzivale/seam/tree/main/crates/seam-futures) (`seam-rs-futures`) | The futures-rs backend: `Futures` (channels and shared cells that need no runtime) and `Executor` (tasks on any futures-rs executor), futures-io adapters both ways, `Stream`s of messages, lines and directory entries, and helpers that need concurrency within a task (`within`, `copy_bidirectional`, `pipe_through`). |
+| [`seam-std`](https://github.com/parzivale/seam/tree/main/crates/seam-std) (`seam-rs-std`) | The std handler: a `Std` capability (used alone, or as a part of a `Root`) and newtype handles (`File`, `TcpStream`, ...) that expose no std I/O traits. |
+| [`seam-tokio`](https://github.com/parzivale/seam/tree/main/crates/seam-tokio) (`seam-rs-tokio`) | The Tokio handler: a `Tokio` capability implementing the async and `Send` capability traits, for time, files, the network, stdio, processes, signals, tasks and channels. |
+| [`seam-smol`](https://github.com/parzivale/seam/tree/main/crates/seam-smol) (`seam-rs-smol`) | The smol handler: a `Smol` capability implementing the async and `Send` traits, for time, files, the network, stdio, processes, Ctrl-C (Unix), tasks and channels. |
+| [`seam-futures`](https://github.com/parzivale/seam/tree/main/crates/seam-futures) (`seam-rs-futures`) | The futures-rs handler: `Futures` (channels and shared cells that need no runtime) and `Executor` (tasks on any futures-rs executor), futures-io adapters both ways, `Stream`s of messages, lines and directory entries, and helpers that need concurrency within a task (`within`, `copy_bidirectional`, `pipe_through`). |
 | [`seam-jiff`](https://github.com/parzivale/seam/tree/main/crates/seam-jiff) (`seam-rs-jiff`) | Time zones as effects, over jiff: `TimeZoneFor` and `SystemTimeZone` queries, answered by `TzDb` (the tz database, read through the filesystem of any capability, so a `Sim` decides what the zones are) or `Bundled` (compiled in), and `now_in`, `now_local` and friends over `WallClock`. |
 | [`seam-rand`](https://github.com/parzivale/seam/tree/main/crates/seam-rand) (`seam-rs-rand`) | rand on seam's randomness: any `FillRandom` capability as a rand RNG, or a rand generator seeded from it. `no_std`. |
 | [`seam-uuid`](https://github.com/parzivale/seam/tree/main/crates/seam-uuid) (`seam-rs-uuid`) | v4 UUIDs from `FillRandom`, time-ordered v7 UUIDs from `WallClock` and `FillRandom`. |
@@ -100,7 +100,7 @@ where
 | [`seam-ash`](https://github.com/parzivale/seam/tree/main/crates/seam-ash) (`seam-rs-ash`) | The GPU as effects, over Vulkan through ash: buffers, images and programs as scopes; uploads, copies, dispatches, draws and downloads as operations; every barrier and layout transition worked out by the handler. `Import` brings in a Wayland client's dmabuf, a shared Direct3D texture or an IOSurface without a CPU copy. `Ash` is real Vulkan 1.3, blocking or async from one implementation; `SimGpu` moves real bytes and runs programs by CPU functions in tests. |
 | [`seam-unix`](https://github.com/parzivale/seam/tree/main/crates/seam-unix) (`seam-rs-unix`) | Unix effects: mounts, `chmod`/`chown`, symlinks, IDs, signals, the host name, the umask; and `SimUnix`, which simulates them. |
 | [`seam-rustix`](https://github.com/parzivale/seam/tree/main/crates/seam-rustix), [`seam-nix`](https://github.com/parzivale/seam/tree/main/crates/seam-nix) | `seam-unix`'s effects performed with rustix, or with nix. |
-| [`seam-test`](https://github.com/parzivale/seam/tree/main/crates/seam-test) (`seam-rs-test`) | The pure test backend: a `Sim` world with a virtual clock, seeded randomness, in-memory filesystem and network, scripted commands and captured stdio. Its only real effect is allocation. |
+| [`seam-test`](https://github.com/parzivale/seam/tree/main/crates/seam-test) (`seam-rs-test`) | The pure test handler: a `Sim` world with a virtual clock, seeded randomness, in-memory filesystem and network, scripted commands and captured stdio. Its only real effect is allocation. |
 | [`seam`](https://github.com/parzivale/seam/tree/main/crates/seam) (`seam-rs`) | Re-exports everything, behind feature flags. `no_std` by default. |
 
 ## Features
@@ -108,10 +108,10 @@ where
 `seam` has no default features: you get the traits and `Push`, with no std.
 
 Features come in two independent kinds. Capability groups choose which
-operations exist; backends choose where effects really happen. **No
-capability group turns on a backend**: that is always the end user's
-choice. A library can depend on `seam` with just the groups its core needs,
-and only the binary (or its tests) picks a backend.
+operations exist; handler crates bring in the handlers that perform them.
+**No capability group turns on a handler crate**: that is always the end
+user's choice. A library can depend on `seam` with just the groups its core
+needs, and only the binary (or its tests) picks handlers.
 
 | Capability group | Gives you |
 |---|---|
@@ -121,32 +121,34 @@ and only the binary (or its tests) picks a backend.
 | `alloc` | `Spawn::boxed` and `SpawnWith::boxed`, for tasks of unnameable type; the helpers that return owned data (`read_to_end`, `read_file`, `resolve`, ...). Each has a primitive beneath it that fills a buffer you pass. |
 | `io`, `net`, `io-std`, `signal` | Those operation types. No std needed. |
 | `fs`, `process`, `env` | Those operation types. Links std for their types (`Path`, `Command`, `OsString`). `env` includes `SetVar` and `RemoveVar`, which std serves only through `WritableEnv` (see Roots). |
-| `full` | Every capability group. Still no backend. |
+| `full` | Every capability group. Still no handler. |
 
-| Backend | Gives you |
+| Handler crate | Gives you |
 |---|---|
-| `std` | The std backend, `seam::stdlib`. |
-| `tokio` | The Tokio backend, `seam::tokio`. |
-| `futures` | The futures-rs backend, `seam::futures`. |
+| `std` | `Std`, the std handler, `seam::stdlib`. |
+| `tokio` | `Tokio`, the Tokio handler, `seam::tokio`. |
+| `futures` | `Futures` and `Executor`, the futures-rs handlers, `seam::futures`. |
 | `jiff`, `jiff-bundled` | Time zones over jiff, `seam::jiff`; `jiff-bundled` adds the compiled-in tz database. |
-| `smol` | The smol backend, `seam::smol`. |
+| `smol` | `Smol`, the smol handler, `seam::smol`. |
 | `rand`, `uuid`, `dirs`, `tracing`, `notify`, `reqwest`, `sqlx` | The wrapper of that crate, as `seam::rand`, `seam::uuid`, and so on. |
 | `ash` | The GPU over Vulkan, `seam::ash`. |
 | `unix`, `rustix`, `nix` | Unix effects, `seam::unix`, and their handlers over rustix (`seam::rustix`) and nix (`seam::nix`). |
-| `test` | The pure test backend, `seam::test`. No std on its own. |
+| `test` | `Sim`, the pure test handler, `seam::test`. No std on its own. |
 | `rt-multi-thread`, `test-util` | Tokio runtime options, named as in Tokio. Only with `tokio`. |
 
-A backend implements exactly the capability groups that are enabled, so
+Each handler implements the operations of exactly the capability groups
+that are enabled, so
 `features = ["tokio", "rt", "net", "time"]` gives you Tokio-backed
 networking and clocks and nothing else.
 
-## Backends
+## Handlers
 
-A program picks one backend for what waits (or none, if it is sync) and
-puts `Std` beside it for the environment and randomness; the wrapper
-crates' handlers sit next to them in the same root.
+A root routes each effect to the handler listed for it. A program usually
+takes what waits from one async handler (or none, if it is sync), the
+environment and randomness from `Std`, and each wrapper's effects from
+that wrapper's handler, all in the same root.
 
-| Backend | Forms | Covers |
+| Handler | Forms | Covers |
 |---|---|---|
 | `Std` (`seam::stdlib`) | sync, and async through the lifts (blocking) | the environment, arguments, randomness, clocks, files, the network, stdio, processes, threads, channels |
 | `Tokio` (`seam::tokio`) | async, `Send` | time, files, the network, stdio, processes, signals, tasks, channels |
@@ -154,11 +156,11 @@ crates' handlers sit next to them in the same root.
 | `Futures`, `Executor` (`seam::futures`) | async, any executor | channels and locks that need no runtime, tasks on any futures-rs executor, futures-io adapters, `within` |
 | `Sim` (`seam::test`) | sync and async | the whole world, simulated: for tests |
 
-Every wrapper crate works with every backend:
+Each wrapper crate's handler sits beside any of these, under any executor:
 
 | Crate | Real handler | Forms | Needs in the root |
 |---|---|---|---|
-| `seam::jiff` | `TzDb` (`Bundled`) | sync; async through the lifts | `WallClock` (any backend); `TzDb` reads through `Std`'s filesystem |
+| `seam::jiff` | `TzDb` (`Bundled`) | sync; async through the lifts | `WallClock` (any handler); `TzDb` reads through `Std`'s filesystem |
 | `seam::rand` | none: an RNG over the capability | sync (`FillRandom` never waits, so async cores use it too) | `FillRandom` from `Std` |
 | `seam::uuid` | none: helpers | sync, async, `Send` | `FillRandom` from `Std`, and `WallClock` for v7 |
 | `seam::dirs` | none: helpers | all three | `Var` from `Std` |
@@ -178,14 +180,14 @@ show it in a program and in a test.
 A program's edge can hand its core one capability built from parts: a
 `Root`. Each part lists the effects it serves, by their keys
 (`effects::Now`, `effects::View`, `effects::Open<WriteOnly>`, ...), so one
-root can mix backends, sync and async parts, simulated parts, and the
+root can mix handlers, sync and async parts, simulated parts, and the
 program's own effects, and grants the core exactly what it lists:
 
 ```rust
 use seam::effects as fx;
 
 let mut root = seam::root![
-    Std<fx::Var, fx::FillRandom>,           // a backend, and the effects it serves
+    Std<fx::Var, fx::FillRandom>,           // a handler, and the effects it serves
     Tokio<fx::Now, fx::Sleep, fx::View, fx::TcpBind>,
     Redis<Get, Put>::connect(url)?,         // built by one of its constructors
 ];
@@ -203,9 +205,9 @@ A core asking for an effect the root does not list fails to compile: "the
 root `Parts<..>` has no part for `fx::Open<WriteOnly>`". `Open` is keyed by
 its mode, so a part can be granted reading without writing.
 
-Each backend covers only what it is for: Tokio and smol have no
+Each handler covers only what it is for: Tokio and smol have no
 environment or randomness, so a Tokio or smol program takes those from
-`Std` (see [Backends](#backends)). `Std` and `Tokio`
+`Std` (see [Handlers](#handlers)). `Std` and `Tokio`
 are zero-sized, and so is a root of them. `Std` only reads the
 environment; to change it (`SetVar`, `RemoveVar`), serve `fx::SetVar` and
 `fx::RemoveVar` with `seam_std::env::WritableEnv`, which is `unsafe` to
@@ -230,7 +232,7 @@ crate. `root.part::<fx::Var>()` gives back a part; a named form
 the struct a name, for when the root's type must be written out.
 Capability types opt in to seam's lifts (an `Inspect` is also a `Perform`,
 a sync operation also works from async code) with
-`impl Capability for MyType {}`; every type in seam's backends does.
+`impl Capability for MyType {}`; every type in seam's handlers does.
 
 ## I/O errors
 
@@ -288,7 +290,7 @@ struct Memory(BTreeMap<String, String>);
 impl Capability for Memory {}
 // ... the same two impls, on a map
 
-// 4. At the edge, put the real one in a root next to a backend.
+// 4. At the edge, put the real one in a root next to a handler.
 let mut root = seam::root![
     Std<fx::Var, fx::OpenStdout>,
     Redis<Get, Put>::connect()?,
@@ -301,17 +303,17 @@ visit(&mut root, "home")?;
   runtimes, returning `impl Future<Output = ...> + Send`.
 - **Effects built on other effects** wrap a capability and use its
   operations: a store kept in a file is a `FileStore<C>` whose `Put` writes
-  through `C`'s `CreateAtomic`. It then runs on every backend, the
+  through `C`'s `CreateAtomic`. It then runs on every handler, the
   simulation included, and on the simulated runtime and threads its
   interleavings are explored like any other effects. See
   [`custom_ops`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/custom_ops.rs).
 - **Another implementation of seam's effects** (another filesystem, say)
   implements seam's operations, so it is listed in a root under seam's keys
-  (`fx::View`, `fx::Open<ReadOnly>`, ...) in place of a backend.
+  (`fx::View`, `fx::Open<ReadOnly>`, ...) in place of a handler.
 
 ## Testing a core
 
-`seam-test`'s `Sim` stands in for a real backend. Set up the world, run the
+`seam-test`'s `Sim` stands in for a real handler. Set up the world, run the
 core, assert on what it left behind:
 
 ```rust
@@ -509,7 +511,7 @@ can check exactly when one fired.
 
 ## Keeping the core honest
 
-The newtype handles stop effects leaking out of the backends, but nothing in
+The newtype handles stop effects leaking out of the handlers, but nothing in
 the type system stops a core crate from calling `std::fs::read` directly.
 [`templates/clippy.toml`](https://github.com/parzivale/seam/blob/main/templates/clippy.toml) bans the std and Tokio
 effect APIs (and shared-state types); copy it into each crate that should stay

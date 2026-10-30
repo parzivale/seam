@@ -37,8 +37,8 @@ tracks it. Control effects (errors, early return, async suspension) use
 ## Operation types
 
 `seam-core::ops` defines the operation types, one module per capability
-feature, so a core written against them runs on any backend. They are
-**primitives**: the smallest set of effects every backend provides (see
+feature, so a core written against them runs on any handler. They are
+**primitives**: the smallest set of effects, the ones handlers implement (see
 **Primitives and helpers** below for what is built from them).
 
 - `io` (on handles): `Read`, `Write`, `Flush`, `Seek(SeekFrom)` with seam's
@@ -87,9 +87,9 @@ feature, so a core written against them runs on any backend. They are
   unnameable futures and closures instead. Tasks are `'static`, so they get
   their own clone of the root capability (`Std` and `Tokio` are `Clone`).
 
-Outcome types must be constructible without the OS, or a test backend could
+Outcome types must be constructible without the OS, or a test handler could
 not produce them. So `Now` returns seam's own `time::Instant` (a duration
-since a backend-chosen epoch) instead of `std::time::Instant`, `Metadata`
+since a handler-chosen epoch) instead of `std::time::Instant`, `Metadata`
 returns `fs::FileInfo` instead of `std::fs::Metadata`, and `RunCommand`
 returns `process::Output` instead of `std::process::Output`.
 
@@ -121,8 +121,8 @@ rename on close, and Tokio's blocking pool needs owned paths, which Tokio
 itself copies. Listing a directory is an acquisition rather than a query
 returning a `Vec`, so a core holds one entry at a time and can stop early.
 
-Acquisitions are generic over the backend's handle type (`Open<'a, M, F>`), since
-each backend has its own. Bounds name the handle as a type parameter and
+Acquisitions are generic over the handler's handle type (`Open<'a, M, F>`), since
+each handler has its own. Bounds name the handle as a type parameter and
 inference fills it in.
 
 `Push<T>` (outcome `Result<(), Rejected<T>>`) lets tests count or cap the
@@ -148,8 +148,8 @@ functions beside the operations they use, not as operations:
 | `try_send`, `try_recv` | `SendMsg`/`RecvMsg` with a `Timeout` of zero |
 | `store` | `Update` |
 
-A backend then implements only the primitives, and each helper works on
-every backend, and on every handle that has the primitives it needs: lines
+A handler then implements only the primitives, and each helper works on
+every handler, and on every handle that has the primitives it needs: lines
 come from stdin, a socket, a child or a file through the same `BufReader`.
 The reader keeps what it read past a record, in the core, where std's
 `BufReader` would keep it; a stream is read through one reader for as long
@@ -182,7 +182,7 @@ not, each because the built version would be worse in a way that matters:
   has no way to read two at once.
 
 **Modes as types.** `Open<'a, M, F>` names its mode as a type, `ReadOnly`,
-`WriteOnly`, `Append` or `ReadWrite`, and a backend's `File<M>` implements
+`WriteOnly`, `Append` or `ReadWrite`, and a handler's `File<M>` implements
 `Read` only for readable modes and `Write`, `SetLen` and the syncs only for
 writable ones. A core bounded on `Open<'a, ReadOnly, F>` cannot write, and
 the compiler checks it, so bounds stay an audit even though reading a file
@@ -205,15 +205,15 @@ is now "open, then read".
   closes, and closing a writable file syncs it, where `std::fs::write` does
   not.
 
-## Backends
+## Handlers
 
-Each backend has a zero-sized capability (`Std`, `Tokio`), used alone or as
+Each handler has a zero-sized capability (`Std`, `Tokio`), used alone or as
 a part of a `Root`, constructed at the edge, and newtype handles that
 expose no std or Tokio I/O traits and no way back to the inner value. Every
 effect on them goes through `Perform`/`Inspect`.
 
 In the `seam` umbrella crate, capability-group features (`fs`, `time`, ...)
-never enable a backend; backends (`std`, `tokio`, `test`) are only ever
+never enable a handler crate; handler crates (`std`, `tokio`, `test`) are only ever
 enabled by the end user. Tokio's runtime options (`rt`, ...) do nothing
 without `tokio`.
 
@@ -225,7 +225,7 @@ names (`rt`, `rt-multi-thread`, `fs`, `net`, `time`, `process`, `io-std`,
 `macros` and `parking_lot` are not mirrored: `#[tokio::main]` cannot be
 re-exported without exposing Tokio itself.
 
-## Test backend
+## Test handler
 
 `seam-test` provides `Sim`, a simulated world implementing every operation
 group with no real effects other than allocation:
@@ -361,7 +361,7 @@ reporting, so one run shows every difference.
 
 **Parts read their own blocks.** `World` is the one trait the simulation
 adds, and it is not an effect trait: `Sim` and a program's fakes handle
-effects with ordinary `Perform` and `Inspect` impls, like any backend, and
+effects with ordinary `Perform` and `Inspect` impls, like any handler, and
 `World` only describes a handler's state. A simulated part of a root
 implements it: the top-level blocks it reads, `load`, `to_world`, and
 `check` (by default the subset above). `Sim` is one such part, reading the blocks above; a fake of a
@@ -412,7 +412,7 @@ operations, so a scope is a collection of effects like any other, and
 everything built for operations works for scopes without a second set of
 traits: the async and `Send` forms, the lifts from sync, a `Root` routing
 them to a part by kind, and a wrapper forwarding every `Perform<O>`. A
-backend implements `Perform<Opening<A>>` and `Perform<Closing<A>>`.
+handler implements `Perform<Opening<A>>` and `Perform<Closing<A>>`.
 
 The body borrows the resource, so it cannot keep, leak or drop it, and gets
 the capability back, so it can perform other effects and nest scopes. `Ok`
@@ -462,7 +462,7 @@ core cannot move a resource, `SpawnWith` has the provider acquire one on a
 task's behalf (a listener accepting a connection into a new task that owns
 it), and `SpawnSet` opens a set to spawn a batch into, since handles cannot
 be collected outside their scopes. Neither allocates in seam; storing tasks
-is the backend's business, so a backend for an executor with static task
+is the handler's business, so a handler for an executor with static task
 storage could implement them without `alloc`.
 
 **Threads.** On `seam-std` a task is a closure on its own OS thread, so
@@ -501,17 +501,17 @@ with generation counters (runtime detection of stale handles).
   implement both (`seam-tokio` does this with a macro).
 - `seam-tokio` futures are `Send` and are tested on Tokio's multithreaded
   runtime.
-- Raising does not make a backend non-blocking: a raised `Std` operation
+- Raising does not make a handler non-blocking: a raised `Std` operation
   blocks the runtime's thread. That is documented, not prevented. Blocking
   only some operations from being raised was considered (a marker per
-  backend and operation that the async lifts require) and dropped: it is
+  handler and operation that the async lifts require) and dropped: it is
   slow rather than wrong, is sometimes what a program wants (a CLI under
   `block_on`, a test, an instant operation like `Now`), and would cost two
-  traits and a list of marks per backend.
+  traits and a list of marks per handler.
 
 ## Shared state
 
-Shared state is an effect, so channels and cells come from the backend and
+Shared state is an effect, so channels and cells come from the handler and
 every send, receive, load and update is an operation. On the deterministic
 runtime that makes them schedulable: a receive waits until a message
 arrives, a send waits for room, and a receiver waiting on an idle channel is
@@ -547,7 +547,7 @@ what lets a timed-out send hand its value back (`SendError::Full(value)`),
 which a generic `Elapsed` could not. A timeout of zero is a non-blocking
 attempt, so the `Try*` operations are `Timeout` with zero, kept for clarity.
 
-Expiry has no effect, which each backend gets differently:
+Expiry has no effect, which each handler gets differently:
 
 - **seam-std** sets the socket's own read or write timeout around the call
   (zero: nonblocking), and waits on condvars with a deadline for channels and
@@ -604,7 +604,7 @@ in the same form. Two things make that legal in Rust:
   sync operation is an async one) would collide with the root's own
   forwarding impls: both would claim, say, `AsyncPerform<Sleep>` for the
   root. So the lifts apply only to types that implement `Capability`, a
-  marker every backend type carries and `Root` does not. The root then
+  marker every handler type carries and `Root` does not. The root then
   forwards each form itself, which is what lets a sync `Std` part and an
   async `Tokio` part sit in one root. The cost is one line on each
   capability type a program writes: `impl Capability for Memory {}`.
@@ -630,7 +630,7 @@ parameter that only a method call could infer, and the root forwards
 through trait impls.
 
 A part can serve any number of effects, which is how a whole
-backend (`Std`, `Tokio`, `Sim`, `ThreadSim`) is a part as it stands; nothing
+handler (`Std`, `Tokio`, `Sim`, `ThreadSim`) is a part as it stands; nothing
 had to be split. `root!` names its generated struct's type parameters
 itself, not after the fields, so a part's name never shadows a path in the
 keys. `root!` is sugar: it evaluates to the root, defining a struct
@@ -638,7 +638,7 @@ generic over its keyed parts' types (so they are inferred from the
 values) with its `Pick` impls; a named form defines a plain struct
 instead.
 
-Each backend covers only what it is for. `seam-tokio` has no environment
+Each handler covers only what it is for. `seam-tokio` has no environment
 or randomness, since Tokio has nothing to add to them; a Tokio program
 takes `Var` and `FillRandom` from `Std` in the same root. A root
 has no singleton or lock: roots are built at the edge, and the clippy template
@@ -676,7 +676,7 @@ Not implemented yet:
 
 - **Signals.** `CtrlC` on `seam-std`, which needs a dependency
   (`signal-hook` or `ctrlc`). Other signals (`SIGTERM`, `SIGHUP`, or any by
-  number) on every backend, for graceful shutdown.
+  number) on every handler, for graceful shutdown.
 - **Time.** `SleepUntil(Instant)` and an interval timer, so a periodic loop
   does not drift.
 - **Network.** TCP options (`nodelay`, keepalive, TTL); connected UDP
@@ -692,9 +692,9 @@ Not implemented yet:
 - **Environment.** `SetCurrentDir` (safe in std, unlike `set_var`) and
   listing every variable.
 - **A lint for blocking under async.** A `dylint` lint, in its own crate,
-  warning where a concrete backend meets an async bound for an operation it
+  warning where a concrete handler meets an async bound for an operation it
   does not mark as instant (`block_on(core(&mut Std))` with a core
-  that reads files). It needs a per-backend `Instant<O>` marker for the
+  that reads files). It needs a per-handler `Instant<O>` marker for the
   operations that never wait, and checks after monomorphization; users
   would run it with `cargo dylint`.
 - **Polish.** An optional run-time message on `io::Error` behind `alloc`;

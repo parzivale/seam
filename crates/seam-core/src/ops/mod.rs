@@ -1,11 +1,11 @@
 //! Operation types for common effects, one module per capability feature.
 //!
-//! Backends (`seam-std`, `seam-tokio`, `seam-test`) implement
+//! Handlers (`Std`, `Tokio`, `Sim`, ...) implement
 //! [`Inspect`](crate::Inspect) and [`Perform`](crate::Perform) for these
-//! types, so a core written against them runs on any backend.
+//! types, so a core written against them runs on any handler.
 //!
-//! The operations are **primitives**: the smallest effects a backend must
-//! provide. Everything that can be built from them is, in these modules, as
+//! The operations are **primitives**: the smallest effects, the ones
+//! handlers implement. Everything that can be built from them is, in these modules, as
 //! plain functions in three forms (sync, `_async`, `_send`): reading a
 //! whole file, writing all of a buffer, reading lines, resolving every
 //! address of a name, and so on. A few effects that could be built that way
@@ -33,7 +33,7 @@
 //! socket, spawning a task) are [`Acquisition`](crate::Acquisition)s, not
 //! operations: a core never owns the file or socket, it acquires one for the
 //! length of a scope (see [`acquire`](crate::acquire)). They are generic over
-//! the backend's handle type; the core names it as a type parameter with the
+//! the handler's handle type; the core names it as a type parameter with the
 //! bounds it needs, and performs the operations in `io` or `net` on it:
 //!
 //! ```
@@ -55,7 +55,7 @@
 //! # }
 //! ```
 //!
-//! The caller picks `F` by passing a backend: `save(&mut Std, ..)`
+//! The caller picks `F` by passing a handler: `save(&mut Std, ..)`
 //! infers `seam_std::fs::File<WriteOnly>`.
 
 /// Implements `Operation` (and optionally `Query`) for a list of types.

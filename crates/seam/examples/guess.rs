@@ -18,8 +18,8 @@ use std::cmp::Ordering;
 use seam::prelude::*;
 
 /// Plays one game. Returns the number of guesses, or `None` if the player
-/// ran out of input. `I` and `O` are the backend's standard input and
-/// output; both are inferred from the backend.
+/// ran out of input. `I` and `O` are the handler's standard input and
+/// output; both are inferred from the handler.
 fn play<C, I, O>(c: &mut C) -> io::Result<Option<u32>>
 where
     C: for<'r> Perform<FillRandom<'r>> + Provide<OpenStdin<I>> + Provide<OpenStdout<O>>,

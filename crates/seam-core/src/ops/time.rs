@@ -68,26 +68,26 @@ pub struct Now;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WallClock;
 
-/// A point on a backend's monotonic clock.
+/// A point on a handler's monotonic clock.
 ///
-/// It is a duration since an epoch the backend picks (process start for
+/// It is a duration since an epoch the handler picks (process start for
 /// `seam-std`, zero for `seam-test`), so instants are only comparable with
-/// others from the same backend in the same run. Unlike
+/// others from the same handler in the same run. Unlike
 /// `std::time::Instant`, it can be constructed without reading a clock,
 /// which is what lets test fakes produce one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Instant(Duration);
 
 impl Instant {
-    /// The backend's epoch.
+    /// The handler's epoch.
     pub const EPOCH: Self = Self(Duration::ZERO);
 
-    /// The instant `since` after the backend's epoch.
+    /// The instant `since` after the handler's epoch.
     pub const fn from_epoch(since: Duration) -> Self {
         Self(since)
     }
 
-    /// How long after the backend's epoch this is.
+    /// How long after the handler's epoch this is.
     pub const fn since_epoch(self) -> Duration {
         self.0
     }
@@ -215,7 +215,7 @@ impl<O> Timeout<O> {
 /// [`Timeout`]. `timed_out` gives the outcome (for an acquisition, the
 /// error) that reports giving up.
 ///
-/// Backends call it to build what an expired `Timeout` returns; cores
+/// Handlers call it to build what an expired `Timeout` returns; cores
 /// do not need it.
 pub trait TimesOut {
     /// What an expiry produces: the operation's outcome, or the

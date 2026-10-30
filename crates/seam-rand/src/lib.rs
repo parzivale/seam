@@ -63,7 +63,7 @@
 //!
 //! # Notes
 //! The RNG is not marked `CryptoRng`: whether seam's randomness is fit for
-//! cryptography depends on the backend (a `Sim`'s is not).
+//! cryptography depends on the handler (a `Sim`'s is not).
 //!
 //! Cores should not call rand's `rng()`, `random()` or `make_rng()`, which
 //! read the system directly; seam's `templates/clippy.toml` bans them.

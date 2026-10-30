@@ -1,4 +1,4 @@
-//! The smol backend for seam.
+//! The smol handler for seam.
 //!
 //! [`Smol`] performs seam operations with smol: time, the filesystem, the
 //! network, stdio, processes, Ctrl-C (Unix), tasks and channels. It
@@ -34,9 +34,8 @@
 //!
 //! # With the other crates
 //!
-//! A program on smol takes what smol does not have from the other
-//! backends, in the same root, and the wrapper crates' handlers sit beside
-//! them:
+//! A program on smol routes what smol does not handle to other handlers
+//! in the same root, the wrapper crates' among them:
 //!
 //! | For | Use |
 //! |---|---|
@@ -58,7 +57,7 @@
 //!
 //! # Handles
 //!
-//! As in the other backends, files and sockets are newtypes that expose no
+//! As in the other handlers, files and sockets are newtypes that expose no
 //! smol I/O traits. When a scope succeeds a file is flushed and synced and
 //! a stream's write half is shut down; when it fails, panics or is
 //! cancelled, they are dropped. `Split` lends a stream as two clones of it
@@ -84,7 +83,7 @@ use core::future::Future;
 #[cfg(feature = "time")]
 use core::time::Duration;
 
-/// The smol backend's capability. It holds no state; it is `Copy`, so a
+/// The smol handler's capability. It holds no state; it is `Copy`, so a
 /// core can hand one to each task it spawns.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Smol;

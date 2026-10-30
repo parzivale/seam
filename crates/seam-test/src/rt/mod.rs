@@ -58,7 +58,7 @@
 //!
 //! `AsyncSim` provides `Spawn` and `SpawnSet`, and the runtime's listeners
 //! provide `SpawnWith<Accept<_>, ..>`, with the same rules as the real
-//! backends: a successful scope waits for its tasks, a failed or cancelled
+//! handlers: a successful scope waits for its tasks, a failed or cancelled
 //! one aborts them, and `Detach` opts out. A panic in a task is caught and
 //! reported as `JoinError::Panicked`. When `block_on` returns, tasks still
 //! running are dropped.

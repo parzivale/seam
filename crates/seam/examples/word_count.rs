@@ -48,9 +48,9 @@ where
     Ok(counts)
 }
 
-/// The program. `Q` is the backend's shared cell, `S` its set of threads,
+/// The program. `Q` is the handler's shared cell, `S` its set of threads,
 /// `R` its read-only file and `O` its standard output; all are inferred from
-/// the backend.
+/// the handler.
 fn run<C, Q, S, R, O>(c: &mut C) -> io::Result<()>
 where
     C: Inspect<Args>

@@ -2,7 +2,7 @@
 //!
 //! 1. [`getting_started`]: a first core, run on the real world and tested
 //!    on a simulated one.
-//! 2. [`roots`]: combining backends and your own parts into one
+//! 2. [`roots`]: combining handlers and your own parts into one
 //!    capability.
 //! 3. [`resources`]: files, sockets, tasks and other things a core uses for
 //!    the length of a scope.

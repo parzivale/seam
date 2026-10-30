@@ -1,4 +1,4 @@
-//! Timeouts on the std backend, against real threads and sockets.
+//! Timeouts on the std handler, against real threads and sockets.
 #![cfg(feature = "full")]
 
 use seam_core::io;

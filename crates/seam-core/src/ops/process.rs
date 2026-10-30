@@ -92,7 +92,7 @@ pub struct Exit(pub i32);
 /// What a finished command produced.
 ///
 /// A seam type rather than `std::process::Output`, whose `ExitStatus` cannot
-/// be constructed portably, so that test backends can produce one.
+/// be constructed portably, so that test handlers can produce one.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Output {
     /// The exit code, or `None` if the process was killed by a signal.

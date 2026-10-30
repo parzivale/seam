@@ -1,6 +1,6 @@
 [package]
 name = "seam-rs-tokio"
-description = "Tokio backend for seam: async implementations of seam operations over Tokio."
+description = "Tokio handler for seam: async implementations of seam operations over Tokio."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

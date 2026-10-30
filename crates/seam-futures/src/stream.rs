@@ -22,7 +22,7 @@ mod sync {
     use seam_core::ops::sync::RecvMsg;
 
     /// The messages `rx` receives, ending when every sender is gone (or,
-    /// on a backend that cannot wait, when none is waiting).
+    /// on a handler that cannot wait, when none is waiting).
     pub fn messages<R, T>(rx: &mut R) -> impl Stream<Item = T> + '_
     where
         R: AsyncPerform<RecvMsg<T>>,

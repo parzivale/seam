@@ -15,10 +15,11 @@ the longer record of decisions and the alternatives that were set aside.
 | `seam` | `seam-rs` | re-exports, behind features | the above, optionally |
 
 Features come in two independent kinds. **Capability groups** (`fs`, `net`,
-`time`, ...) decide which operation types exist, and in whichever backends
-are on, their implementations. **Backends** (`std`, `tokio`, `test`) decide
-where effects really happen. No group turns on a backend, so a library
-depends on the groups its core needs and only the binary picks a backend.
+`time`, ...) decide which operation types exist, and in whichever handler
+crates are on, their implementations. **Handler crates** (`std`, `tokio`,
+`test`) bring in the handlers that perform them. No group turns on a
+handler crate, so a library depends on the groups its core needs and only
+the binary picks handlers.
 
 ## Operations
 
@@ -38,9 +39,9 @@ borrow their inputs (`Var<'a>` holds `&'a OsStr`, `Read<'a>` a
 `&'a mut [u8]`), so describing one allocates nothing; the cost is
 higher-ranked bounds, `for<'a> Perform<Read<'a>>`.
 
-Outcomes are types a test backend can build: seam's own `io::Error` (a
+Outcomes are types a test handler can build: seam's own `io::Error` (a
 kind and a `&'static str`, carrying the original `std::io::Error` when
-there is one), `time::Instant` (a duration since a backend-chosen epoch),
+there is one), `time::Instant` (a duration since a handler-chosen epoch),
 `fs::FileInfo`, `process::Output`. std's equivalents cannot be constructed
 without the OS.
 
@@ -59,7 +60,7 @@ pub trait Inspect<Q: Query> {
 
 A capability is any value implementing these. A handler is an impl:
 `impl Perform<Sleep> for Std`. Dispatch is static: a core generic over
-`C: Perform<Sleep>` is monomorphized per backend, and `c.perform(op)` is a
+`C: Perform<Sleep>` is monomorphized per handler, and `c.perform(op)` is a
 direct call.
 
 ### Lifts, and why they are opt-in
@@ -77,7 +78,7 @@ impl<T: Perform<O> + Capability + ?Sized, O: Operation> AsyncPerform<O> for T { 
 They require `Capability`, a marker trait. Without it, the lifts would
 collide with types that implement the async forms themselves. `Root` is the
 case that matters: it forwards each form to its parts, so a lift that also
-claimed `AsyncPerform<Sleep>` for the root would conflict. Every backend
+claimed `AsyncPerform<Sleep>` for the root would conflict. Every handler
 type carries the marker, and a handler of your own adds one line,
 `impl Capability for MyType {}`.
 
@@ -98,12 +99,12 @@ the thread; without, it spins.
 
 ## Primitives and helpers
 
-Backends implement **primitives**, the smallest effects: `Read` and
+Handlers implement **primitives**, the smallest effects: `Read` and
 `Write` on a handle, `Open`, `View` and `ReadAt`, `FillRandom`, ...
 Everything that can be built from primitives is a plain function in
 seam-core beside them (`read_exact`, `read_file`, `write_file`,
-`create_dir_all`, `print`, `BufReader`), so a backend implements less and
-every helper works on every backend and every handle.
+`create_dir_all`, `print`, `BufReader`), so a handler implements less and
+every helper works on every handler and every handle.
 
 Four effects that could be built from others stay primitives, because the
 built version would be worse: `CreateAtomic` (its cleanup must run in
@@ -217,7 +218,7 @@ part's type:
   inequality, which cannot be stated, or an index parameter that only a
   method call can infer, and the root forwards through trait impls.
 
-## Backends
+## Handlers
 
 `Std` and `Tokio` are zero-sized and `Copy`; a root of them is too. They
 hand out handles as newtypes (`File<M>`, `TcpStream`, ...) that expose no

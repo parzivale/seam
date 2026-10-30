@@ -2,7 +2,7 @@
 
 `seam::test::Sim` is a simulated world that implements every operation
 seam defines. A test sets the world up, hands it to the core in place of a
-real backend, and checks what the core left behind. Its only real effect is
+real handler, and checks what the core left behind. Its only real effect is
 allocation.
 
 ## Determinism
@@ -141,7 +141,7 @@ can read its own world-file blocks: see
 
 Effect laws (writing a file then reading it gives back what was written;
 `put` then `get` returns the value) are checked as tests. Writing the test
-once, generically, and running it on a real backend in a temporary
+once, generically, and running it on a real handler in a temporary
 directory and on the `Sim` checks both, and keeps the simulation honest:
 
 ```rust,ignore

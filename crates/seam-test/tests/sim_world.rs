@@ -1,5 +1,5 @@
 //! The simulation is a handler like any other: cores take it where they
-//! take a backend, roots list it as a part, and a program's own fakes sit
+//! take a handler, roots list it as a part, and a program's own fakes sit
 //! beside it, reading and writing their own world-file blocks.
 #![cfg(all(feature = "std", feature = "time"))]
 
@@ -18,7 +18,7 @@ fn nap<C: Perform<Sleep> + Inspect<Now>>(c: &mut C, secs: u64) -> Duration {
 }
 
 #[test]
-fn a_core_runs_on_the_simulation_as_on_a_backend() {
+fn a_core_runs_on_the_simulation_as_on_a_handler() {
     let mut sim = Sim::new();
     assert_eq!(nap(&mut sim, 5), Duration::from_secs(5));
     assert_eq!(nap(&mut sim, 5), Duration::from_secs(10));

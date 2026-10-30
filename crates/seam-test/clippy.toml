@@ -1,6 +1,6 @@
 # Copy into a crate that should stay sans-effect. It bans reaching around
 # seam to std or Tokio directly, so every effect has to arrive as a
-# capability bound. Backends (seam-std, seam-tokio) must not use this file.
+# capability bound. Handler crates (seam-std, seam-tokio) must not use this file.
 disallowed-types = [
     { path = "std::fs::File", reason = "take `Perform<Open<F>>` instead" },
     { path = "std::fs::OpenOptions", reason = "take `Perform<Open<F>>` instead" },

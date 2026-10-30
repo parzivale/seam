@@ -36,7 +36,7 @@ async fn timeout<T>(
 
 /// A generic core: runs `job` on each input concurrently. The future type
 /// is a parameter, inferred from `job`, so nothing is boxed, and the set's
-/// storage is the backend's business.
+/// storage is the handler's business.
 async fn fan_out<C, S, J, Fut>(c: &mut C, inputs: Vec<u64>, job: J) -> Result<Vec<u64>, JoinError>
 where
     C: AsyncProvide<SpawnSet<S>> + Send,

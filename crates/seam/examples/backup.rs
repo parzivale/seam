@@ -35,8 +35,8 @@ const MANIFEST: &str = "MANIFEST";
 /// copy and delete files, write files atomically, and print. It cannot touch
 /// the network, run commands, or read environment variables.
 ///
-/// `F` is the backend's atomic file type, `D` its directory listing type and
-/// `O` its standard output type; all are inferred from the backend.
+/// `F` is the handler's atomic file type, `D` its directory listing type and
+/// `O` its standard output type; all are inferred from the handler.
 trait BackupEnv<F: AtomicWrite, D: Listing, O: Output>:
     Inspect<Args>
     + Inspect<WallClock>

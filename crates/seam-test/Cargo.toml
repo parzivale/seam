@@ -1,6 +1,6 @@
 [package]
 name = "seam-rs-test"
-description = "A pure test backend for seam: a simulated world whose only real effect is allocation."
+description = "A pure test handler for seam: a simulated world whose only real effect is allocation."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

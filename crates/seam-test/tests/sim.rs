@@ -43,7 +43,7 @@ use seam_test::net::{TcpListener, TcpStream, UdpSocket};
 use seam_test::{Sim, catch_exit};
 
 /// Edits a file in place through one handle: every file handle operation.
-/// Generic, so it runs on any backend.
+/// Generic, so it runs on any handler.
 fn edit_in_place<C, F, R>(c: &mut C, path: &std::path::Path) -> io::Result<()>
 where
     C: for<'a> Provide<Open<'a, ReadWrite, F>> + for<'a> Lend<View<'a, R>>,

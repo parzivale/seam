@@ -70,10 +70,10 @@ smol (`seam::smol::Smol`, run with `seam::smol::block_on`) covers the
 same, with Ctrl-C for signals, and pairs with `Std` the same way.
 futures-rs (`seam::futures`) adds what needs no runtime at all: channels
 and locks, tasks on any futures-rs executor, and `within` to race a
-future against a backend's clock.
+future against a handler's clock.
 
 The wrapper crates' async handlers (`Reqwest`, `Sqlx`, `Notify`, `Ash`)
-work under any of them; see the [README](https://github.com/parzivale/seam#backends)
+work under any of them; see the [README](https://github.com/parzivale/seam#handlers)
 for what each needs.
 
 A sync operation raised to async still blocks: a `Std` file read inside an
@@ -138,7 +138,7 @@ rt.block_on(|mut sim| async move {
 On `seam-std`, `Spawn`, `SpawnSet` and `SpawnWith` run closures on OS
 threads, with the same scope rules, except that a thread cannot be aborted:
 a scope that fails joins it. Channels and cells (`Channel`, `SendMsg`,
-`RecvMsg`, `Share`, `Load`, `Update`) come from the backend like every
+`RecvMsg`, `Share`, `Load`, `Update`) come from the handler like every
 other effect, so threads share state only through operations.
 
 `seam::test::threads::Threads` tests such cores: each simulated thread is a

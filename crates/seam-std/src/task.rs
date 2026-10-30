@@ -1,6 +1,6 @@
 //! Tasks on OS threads: [`JoinHandle`] and [`TaskSet`].
 //!
-//! On this backend a task is a closure, `FnOnce() -> T + Send + 'static`,
+//! On this handler a task is a closure, `FnOnce() -> T + Send + 'static`,
 //! run on its own thread. Give it its own capability by moving a clone of
 //! `Std` in. Joining blocks the calling thread.
 //!

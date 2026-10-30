@@ -11,7 +11,7 @@
 //! allocates nothing.
 //!
 //! An [`Open`] names its mode as a type: [`ReadOnly`], [`WriteOnly`],
-//! [`Append`] or [`ReadWrite`]. A backend's file handle implements `Read`
+//! [`Append`] or [`ReadWrite`]. A handler's file handle implements `Read`
 //! only for readable modes and `Write` only for writable ones, so a core
 //! bounded on `Open<'a, ReadOnly, F>` cannot write, and its bounds say so.
 //!
@@ -169,7 +169,7 @@ pub struct CopyFile<'a> {
 }
 
 /// The mode an [`Open`] opens a file in, as a type: [`ReadOnly`],
-/// [`WriteOnly`], [`Append`] or [`ReadWrite`]. Sealed: backends match on
+/// [`WriteOnly`], [`Append`] or [`ReadWrite`]. Sealed: handlers match on
 /// these four.
 pub trait Mode: sealed::Sealed + Send + Sync + 'static {
     /// Whether the file is opened for reading.
@@ -220,7 +220,7 @@ modes! {
     ReadWrite: true true false [Readable Writable];
 }
 
-/// Open a file in mode `M`, producing a handle of type `F`: the backend's
+/// Open a file in mode `M`, producing a handle of type `F`: the handler's
 /// file type for that mode, for example `seam_std::fs::File<M>`.
 ///
 /// When the scope succeeds, a file opened for writing is flushed and
@@ -377,7 +377,7 @@ pub fn is_temp_name(name: &std::ffi::OsStr) -> bool {
 /// What [`Metadata`] reports about a path.
 ///
 /// A seam type rather than `std::fs::Metadata`, which cannot be constructed
-/// outside std, so that test backends can produce one.
+/// outside std, so that test handlers can produce one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileInfo {
     /// What the path is.

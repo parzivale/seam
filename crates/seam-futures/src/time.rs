@@ -3,10 +3,10 @@
 //! futures-rs has no clock of its own, but seam does: [`within`] races a
 //! future against `Sleep` on whatever clock it is given (Tokio, the
 //! simulated runtime's virtual clock, ...). This is a `Timeout` for
-//! operations whose backend has none, such as a `Futures` channel.
+//! operations whose handler has none, such as a `Futures` channel.
 //!
 //! The losing side is dropped, so the raced future must be safe to cancel:
-//! every waiting operation in seam's backends is.
+//! every waiting operation in seam's handlers is.
 //!
 //! The clock must sleep asynchronously. `Std`'s sleep blocks the thread
 //! inside the poll, so with `Std` the race always waits the full time.

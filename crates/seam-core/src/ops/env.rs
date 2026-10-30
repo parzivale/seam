@@ -72,7 +72,7 @@ impl<'a> SetVar<'a> {
     }
 
     /// Whether the name and value are ones every platform accepts: the
-    /// check a backend makes before setting the variable.
+    /// check a handler makes before setting the variable.
     pub fn check(&self) -> io::Result<()> {
         check_name(self.name)?;
         if self.value.as_encoded_bytes().contains(&0) {
@@ -93,7 +93,7 @@ impl<'a> RemoveVar<'a> {
         }
     }
 
-    /// The check a backend makes before removing the variable.
+    /// The check a handler makes before removing the variable.
     pub fn check(&self) -> io::Result<()> {
         check_name(self.name)
     }

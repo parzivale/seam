@@ -1,4 +1,4 @@
-//! Roots built from parts: real backends mixed, simulated parts, and a
+//! Roots built from parts: real handlers mixed, simulated parts, and a
 //! program's own effects alongside seam's.
 #![cfg(all(feature = "std", feature = "tokio", feature = "test", feature = "full"))]
 
@@ -56,7 +56,7 @@ impl Perform<Put> for Memory {
     }
 }
 
-// ---- cores: bounded exactly as they would be on one backend ----
+// ---- cores: bounded exactly as they would be on one handler ----
 
 /// Remembers who visited, using the store, the environment and the clock.
 fn visit<C>(c: &mut C) -> String

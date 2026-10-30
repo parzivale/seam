@@ -14,19 +14,19 @@
 //!
 //! | The core is | Bound on | Runs with |
 //! |---|---|---|
-//! | sync | `Perform`/`Inspect` | any sync backend, `Sim` |
+//! | sync | `Perform`/`Inspect` | any sync handler, `Sim` |
 //! | async, single-threaded | `AsyncPerform`/`AsyncInspect` | the above via [`block_on`], Tokio current-thread |
 //! | async, spawned on threads | `SendPerform`/`SendInspect` | all of the above, Tokio multithreaded |
 //!
 //! Each row accepts everything the rows above it accept, so write the
 //! weakest bound the core can live with.
 //!
-//! Raising does not make a sync backend non-blocking: a raised operation
+//! Raising does not make a sync handler non-blocking: a raised operation
 //! does its work inside its first poll. That is what a fake or a simulation
 //! wants, and fine for operations that never wait (reading the clock or an
 //! environment variable), but a blocking one, such as `seam-std` reading a
 //! file, blocks the async runtime's thread while it runs. Give an async core
-//! on a runtime a native async backend for those.
+//! on a runtime a native async handler for those.
 //!
 //! ```
 //! use seam_core::future::{SendPerform, block_on};

@@ -114,7 +114,7 @@ impl Effect for Get {
 
 ## One part, several effects
 
-A part can serve any number of effects, and a whole backend is one part.
+A part can serve any number of effects, and a whole handler is one part.
 Each effect is served by exactly one part:
 
 ```rust
@@ -240,7 +240,7 @@ The generated struct of `root![..]` derives `Clone`, `Copy`, `Debug` and
 
 seam's blanket impls make every `Inspect` a `Perform` and every sync
 operation usable from async code. They apply to types that opt in with
-[`Capability`](crate::Capability), which every backend type does. A type of
+[`Capability`](crate::Capability), which every handler type does. A type of
 your own that implements operations adds one line:
 
 ```rust

@@ -1,4 +1,4 @@
-//! The futures-rs backend: under futures-rs's executors, Tokio and seam's
+//! The futures-rs handler: under futures-rs's executors, Tokio and seam's
 //! simulated runtime.
 #![cfg(feature = "full")]
 

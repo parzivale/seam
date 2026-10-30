@@ -225,7 +225,7 @@ are reported as a single failure, at their line.
 ## Blocks of other parts
 
 `Sim` reads the blocks above. Any other simulated part of a root (a fake of
-a program's own effect, or another crate's simulated backend) is an
+a program's own effect, or another crate's simulated handler) is an
 ordinary handler that also reads and writes blocks of its own, by
 implementing `seam::test::World`:
 

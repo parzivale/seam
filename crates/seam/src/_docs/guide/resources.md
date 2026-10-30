@@ -83,7 +83,7 @@ assert_eq!(word_count(&sim, "/a.txt").unwrap(), 3);
 ```
 
 Every lending capability is also a providing one, so a bound on `Provide`
-accepts a backend that only lends.
+accepts a handler that only lends.
 
 ## Files
 
@@ -95,7 +95,7 @@ accepts a backend that only lends.
 | `ReadDir<'a, D>` | a directory listing, stepped with `NextEntry` | nothing: it is lent |
 
 The mode of an `Open` is a type, `ReadOnly`, `WriteOnly`, `Append` or
-`ReadWrite`, and a backend's file implements `Read` only for readable
+`ReadWrite`, and a handler's file implements `Read` only for readable
 modes, and `Write`, `SetLen` and the syncs only for writable ones. A core
 bounded on `Open<'a, ReadOnly, F>` cannot write, and the compiler checks it:
 

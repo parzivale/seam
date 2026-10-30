@@ -1,9 +1,9 @@
 //! Shared state: channels, and cells several tasks or threads can update.
 //!
 //! Shared state is an effect: what one task observes depends on what others
-//! did. So a core does not reach for `Arc<Mutex<_>>`; it asks the backend
+//! did. So a core does not reach for `Arc<Mutex<_>>`; it asks the handler
 //! for a channel or a cell, and every send, receive, load and update is an
-//! operation, which a test backend can make deterministic.
+//! operation, which a test handler can make deterministic.
 //!
 //! Unlike files and sockets, channel endpoints and cells are **owned
 //! values**, not scoped resources. They hold nothing that needs committing,
@@ -126,7 +126,7 @@ impl<S, R> Channel<S, R> {
 /// Send a message, waiting for room if the channel is full. Performed on a
 /// sender.
 ///
-/// A backend that cannot wait (the plain test `Sim`) fails with
+/// A handler that cannot wait (the plain test `Sim`) fails with
 /// [`SendError::Full`] instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SendMsg<T>(pub T);
@@ -134,7 +134,7 @@ pub struct SendMsg<T>(pub T);
 /// Receive a message, waiting for one if the channel is empty. Performed
 /// on the receiver.
 ///
-/// A backend that cannot wait (the plain test `Sim`) fails with
+/// A handler that cannot wait (the plain test `Sim`) fails with
 /// [`RecvError::Empty`] instead.
 pub struct RecvMsg<T> {
     message: PhantomData<fn() -> T>,

@@ -87,7 +87,7 @@
 //!
 //! `Tracing` is a part like any other: the program installs a subscriber
 //! as usual (`tracing-subscriber`, say), and the root sends `Log` there,
-//! next to whatever backends the rest of the core needs:
+//! next to whatever handlers the rest of the core needs:
 //!
 //! ```no_run
 //! use seam_core::effects as fx;

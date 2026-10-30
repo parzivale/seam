@@ -1,6 +1,6 @@
 [package]
 name = "seam-rs-futures"
-description = "futures-rs backend for seam: channels, shared cells and tasks on any executor, futures-io and Stream adapters, and concurrent async helpers."
+description = "futures-rs handler for seam: channels, shared cells and tasks on any executor, futures-io and Stream adapters, and concurrent async helpers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

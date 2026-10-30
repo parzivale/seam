@@ -1,9 +1,9 @@
-//! The std backend for seam.
+//! The std handler for seam.
 //!
 //! [`Std`] performs seam operations with real std calls. Construct it at
 //! the edge of the program (usually `main`) and pass it into the core, whose
 //! bounds decide what the core may do with it; or make it a part of a
-//! `seam_core::Root`, next to other backends and the program's own effects.
+//! `seam_core::Root`, next to other handlers and the program's own effects.
 //!
 //! ```no_run
 //! # #[cfg(all(feature = "fs", feature = "io-std", feature = "env"))] {
@@ -101,7 +101,7 @@
 //! number generator. It is fine for jitter, sampling and seeds, and is not
 //! cryptographically secure.
 
-/// The std backend's capability.
+/// The std handler's capability.
 ///
 /// It holds no state. Every operation it supports is a real effect. It is
 /// `Clone`, so a core can hand a copy to each thread or task it starts.

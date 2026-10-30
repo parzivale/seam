@@ -11,8 +11,8 @@
 //!
 //! # Quick start
 //!
-//! Pick the capability groups the core uses, plus a backend to run it on.
-//! Backends are never turned on for you:
+//! Pick the capability groups the core uses, plus the handlers to run it
+//! on. Handler crates are never turned on for you:
 //!
 //! ```toml
 //! [dependencies]
@@ -31,7 +31,7 @@
 //! use seam::ops::stdio::{OpenStdout, print};
 //!
 //! /// The core. It can read files and print, and nothing else. `F` and `O`
-//! /// are the backend's file and stdout types, inferred.
+//! /// are the handler's file and stdout types, inferred.
 //! fn shout<C, F, O>(c: &mut C, path: &str) -> io::Result<()>
 //! where
 //!     C: for<'a> Lend<View<'a, F>> + Provide<OpenStdout<O>>,
@@ -58,7 +58,7 @@
 //! **Operations** describe effects as values. Each is a type implementing
 //! [`Operation`], which names what it produces. Read-only ones are also
 //! [`Query`]s. Ready-made operations for the OS are in [`ops`]: the
-//! primitives a backend provides, and beside them the helpers built from
+//! primitives a handler provides, and beside them the helpers built from
 //! those (`read_file`, `write_all`, lines through `BufReader`, `print`, ...),
 //! in sync, `_async` and `_send` forms. You can define your own operations
 //! too (see the `custom_ops` example).
@@ -66,24 +66,24 @@
 //! **Capabilities** run operations. [`Inspect<Q>`] runs a query through
 //! `&self`; [`Perform<O>`] runs anything through `&mut self`. Every
 //! `Inspect` is also a `Perform` (for types that opt in with
-//! [`Capability`], as every backend type does), so a stronger capability is
+//! [`Capability`], as every handler type does), so a stronger capability is
 //! accepted where a weaker one is asked for. A core asks for capabilities
 //! as bounds and receives one value that provides them.
 //!
-//! **Backends** provide capabilities over the real world, and are chosen
-//! only at the edge of the program:
+//! **Handlers** perform effects, over the real world or a simulated one,
+//! and are chosen only at the edge of the program:
 //!
-//! | Backend | Feature | Capability | For |
+//! | Crate | Feature | Handler | For |
 //! |---|---|---|---|
 //! | `seam::stdlib` | `std` | `Std` | sync programs, blocking I/O |
 //! | `seam::tokio` | `tokio` | `Tokio` | async programs, multithreaded |
 //! | `seam::test` | `test` | `Sim`, `rt::AsyncSim`, `threads::ThreadSim` | tests: a deterministic simulated world, with a seeded runtime for async cores and a seeded scheduler for threaded ones |
 //!
-//! Backends hand out handles (files, sockets) as newtypes with no std or
+//! Handlers hand out handles (files, sockets) as newtypes with no std or
 //! Tokio I/O traits, so effects on those also go through the capability
 //! traits.
 //!
-//! A [`Root`] combines backends, and a program's own effects, into one
+//! A [`Root`] combines handlers, and a program's own effects, into one
 //! capability: each part lists the effects it serves, by their keys in
 //! [`effects`], and the root grants a core exactly those.
 //!
@@ -199,10 +199,10 @@
 //! prelude and [`Push`].
 //!
 //! Features come in two independent kinds. **Capability groups** choose
-//! which operations exist; **backends** choose where effects really happen.
-//! No capability group turns on a backend, so a library crate can depend on
-//! `seam` with only the groups its core needs, and only the final binary
-//! (or its tests) picks a backend.
+//! which operations exist; **handler crates** bring in the handlers that
+//! perform them. No capability group turns on a handler crate, so a library
+//! crate can depend on `seam` with only the groups its core needs, and only
+//! the final binary (or its tests) picks handlers.
 //!
 //! | Capability group | Gives you |
 //! |---|---|
@@ -214,13 +214,13 @@
 //! | `fs`, `process`, `env` | operation types (links std for `Path`, `Command`, `OsString`) |
 //! | `full` | every group above |
 //!
-//! | Backend | Gives you |
+//! | Handler crate | Gives you |
 //! |---|---|
-//! | `std` | the std backend, `seam::stdlib`: the environment, randomness, and sync files, network, processes |
-//! | `tokio` | the Tokio backend, `seam::tokio` |
-//! | `smol` | the smol backend, `seam::smol` |
-//! | `futures` | the futures-rs backend, `seam::futures`: channels, locks and tasks on any executor |
-//! | `test` | the pure test backend, `seam::test`: a simulated world (and the wrappers' world-file blocks) |
+//! | `std` | `Std`, the std handler, `seam::stdlib`: the environment, randomness, and sync files, network, processes |
+//! | `tokio` | `Tokio`, the Tokio handler, `seam::tokio` |
+//! | `smol` | `Smol`, the smol handler, `seam::smol` |
+//! | `futures` | `Futures` and `Executor`, the futures-rs handlers, `seam::futures`: channels, locks and tasks on any executor |
+//! | `test` | `Sim`, the pure test handler, `seam::test`: a simulated world (and the wrappers' world-file blocks) |
 //! | `rt-multi-thread`, `test-util` | Tokio runtime options, as in Tokio; only with `tokio` |
 //!
 //! | Wrapper | Gives you |
@@ -236,10 +236,11 @@
 //!
 //! A program on Tokio or smol takes the environment and randomness from
 //! `std`, in the same root: `seam::root![Std<fx::Var>, Smol<fx::Sleep>]`.
-//! Every wrapper works on every backend; each one's docs show it in a
-//! program.
+//! Each wrapper's handler sits beside any of these, under any executor;
+//! each one's docs show it in a program.
 //!
-//! Each backend implements exactly the capability groups that are enabled.
+//! Each handler implements the operations of exactly the capability groups
+//! that are enabled.
 //! A typical split:
 //!
 //! ```toml
@@ -247,7 +248,7 @@
 //! [dependencies]
 //! seam = { package = "seam-rs", version = "0.6", features = ["fs", "time"] }
 //!
-//! # The binary: also picks the real backend...
+//! # The binary: also picks the real handlers...
 //! [dependencies]
 //! seam = { package = "seam-rs", version = "0.6", features = ["fs", "time", "std"] }
 //!
@@ -274,27 +275,27 @@ pub use seam_core::*;
 /// [`Provide`] and [`Lend`] (and their async forms, and [`SendScope`]) for
 /// resources,
 /// [`Push`], and
-/// [`block_on`](crate::future::block_on). Operation types and backends are
+/// [`block_on`](crate::future::block_on). Operation types and handlers are
 /// imported separately, so that a module's imports also show what it can
 /// do.
 pub mod prelude {
     pub use seam_core::prelude::*;
 }
 
-/// The std backend.
+/// The std handler.
 #[cfg(feature = "std")]
 pub use seam_std as stdlib;
 
-/// The pure test backend: a simulated world whose only real effect is
+/// The pure test handler: a simulated world whose only real effect is
 /// allocation.
 #[cfg(feature = "test")]
 pub use seam_test as test;
 
-/// The Tokio backend.
+/// The Tokio handler.
 #[cfg(feature = "tokio")]
 pub use seam_tokio as tokio;
 
-/// The futures-rs backend: channels, cells and tasks on any executor,
+/// The futures-rs handler: channels, cells and tasks on any executor,
 /// futures-io and `Stream` adapters, and concurrent async helpers.
 #[cfg(feature = "futures")]
 pub use seam_futures as futures;
@@ -304,7 +305,7 @@ pub use seam_futures as futures;
 #[cfg(feature = "jiff")]
 pub use seam_jiff as jiff;
 
-/// The smol backend.
+/// The smol handler.
 #[cfg(feature = "smol")]
 pub use seam_smol as smol;
 

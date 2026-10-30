@@ -1,6 +1,6 @@
 [package]
 name = "seam-rs-std"
-description = "std backend for seam: real implementations of seam operations over std."
+description = "std handler for seam: real implementations of seam operations over std."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

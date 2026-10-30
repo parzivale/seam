@@ -1,0 +1,5 @@
+# rust-gpu's codegen backend links against this exact nightly
+# (`rustc_codegen_spirv` 0.11.0).
+[toolchain]
+channel = "nightly-2026-08-15"
+components = ["rust-src", "rustc-dev", "llvm-tools"]

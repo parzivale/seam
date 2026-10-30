@@ -75,6 +75,52 @@
 //! });
 //! assert_eq!(double(&mut gpu, &[], &[1, 2, 21]).unwrap(), [2, 4, 42]);
 //! ```
+//! # Shaders
+//!
+//! A program is SPIR-V words, from whatever compiles to it: WGSL through
+//! naga, GLSL through glslang, HLSL through DXC, or Rust through
+//! [rust-gpu](https://github.com/Rust-GPU/rust-gpu). Bindings are set 0,
+//! binding `i` for the program's `i`th [`BindingKind`]; a combined image
+//! sampler (GLSL's `sampler2D`, rust-gpu's `SampledImage`) is
+//! [`BindingKind::SampledImage`], and a texture and a sampler apart (WGSL,
+//! HLSL) are [`BindingKind::Texture`] and [`BindingKind::Sampler`].
+//!
+//! Shaders in Rust build for the CPU as well as for SPIR-V, so a
+//! [`SimGpu`] emulator can call the shader itself: the test runs the code
+//! the GPU runs. This repository's `crates/seam-ash/shaders` does so,
+//! and its tests run both halves:
+//!
+//! ```ignore
+//! // The shader crate, built by rust-gpu to SPIR-V, and for the CPU.
+//! #[spirv(compute(threads(64)))]
+//! pub fn double(
+//!     #[spirv(global_invocation_id)] id: UVec3,
+//!     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] numbers: &mut [u32],
+//! ) {
+//!     if let Some(n) = numbers.get_mut(id.x as usize) {
+//!         *n *= 2;
+//!     }
+//! }
+//!
+//! // On the GPU: its SPIR-V.
+//! let spirv = bytes_u32(include_bytes!("shaders.spv"));
+//! CreateProgram::compute("double", &spirv, "double", &[BindingKind::StorageBuffer]);
+//!
+//! // In the simulation: the same function, invocation by invocation.
+//! sim.emulate("double", |run| {
+//!     let mut numbers = bytes_u32(run.buffer(0));
+//!     for x in 0..run.groups()[0] * 64 {
+//!         shaders::double(UVec3::new(x, 0, 0), &mut numbers);
+//!     }
+//!     run.buffer(0).copy_from_slice(&u32_bytes(&numbers));
+//! });
+//! ```
+//!
+//! rust-gpu's image types have no CPU form, so a shader that samples
+//! keeps its maths in plain functions both sides call, and its emulator
+//! samples with [`Run::sample`]. `Ash` turns on the Vulkan memory model
+//! where the device has it, which rust-gpu's shaders declare.
+//!
 //! # In a program
 //!
 //! `Ash` is a part like any other: tuned with [`AshOptions`], it serves the

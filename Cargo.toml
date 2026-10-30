@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/seam", "crates/seam-ash", "crates/seam-core", "crates/seam-dirs", "crates/seam-futures", "crates/seam-jiff", "crates/seam-nix", "crates/seam-notify", "crates/seam-rand", "crates/seam-reqwest", "crates/seam-rustix", "crates/seam-smol", "crates/seam-sqlx", "crates/seam-std", "crates/seam-test", "crates/seam-tokio", "crates/seam-tracing", "crates/seam-unix", "crates/seam-uuid"]
+# Its own workspace, on rust-gpu's nightly.
+exclude = ["crates/seam-ash/shaders/build"]
+members = ["crates/seam", "crates/seam-ash", "crates/seam-ash/shaders", "crates/seam-core", "crates/seam-dirs", "crates/seam-futures", "crates/seam-jiff", "crates/seam-nix", "crates/seam-notify", "crates/seam-rand", "crates/seam-reqwest", "crates/seam-rustix", "crates/seam-smol", "crates/seam-sqlx", "crates/seam-std", "crates/seam-test", "crates/seam-tokio", "crates/seam-tracing", "crates/seam-unix", "crates/seam-uuid"]
 
 [workspace.package]
 version = "0.7.0"

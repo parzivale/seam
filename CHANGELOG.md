@@ -86,6 +86,12 @@ feature), makes the GPU effects:
   (`Bind::Texture`, `Bind::Sampler`: WGSL's and HLSL's). Every stage
   samples, the vertex stage too. `SimGpu`'s emulators sample the same way
   on the CPU (`Run::sample`, `sample_with`, `texel`).
+- Shaders in Rust, through rust-gpu: `Ash` turns on the Vulkan memory
+  model, which rust-gpu's shaders declare. `crates/seam-ash/shaders` is a
+  shader crate built to SPIR-V on rust-gpu's nightly (its own `build`
+  workspace) and for the CPU on stable, so `SimGpu`'s emulators call the
+  shaders themselves; the tests run a Rust compute shader and a Rust
+  vertex shader that samples, on Vulkan and in the simulation.
 - Operations: `Upload`, `UploadImage`, `CopyBuffer`, `Dispatch`, `Draw`
   (with clears, vertex buffers, instances, bindings and push constants),
   `Download`, `DownloadImage`, `Finish`, and the `DeviceInfo` query. Only

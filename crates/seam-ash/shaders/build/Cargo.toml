@@ -1,0 +1,16 @@
+# Compiles `seam-ash-shaders` to SPIR-V with rust-gpu, into
+# `../shaders.spv`. Its own workspace, on rust-gpu's pinned nightly
+# (`rust-toolchain.toml`); everything else builds on stable from the
+# committed `.spv`.
+#
+#     cargo run --release --manifest-path crates/seam-ash/shaders/build/Cargo.toml
+[package]
+name = "seam-ash-shaders-build"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+spirv-builder = "0.11.0"
+
+[workspace]

@@ -23,6 +23,8 @@ rustix = { workspace = true, features = ["std", "event", "fs"], optional = true 
 [dev-dependencies]
 seam-smol = { workspace = true }
 naga = { workspace = true, features = ["wgsl-in", "spv-out"] }
+# Shaders in Rust: their SPIR-V for `Ash`, their functions for `SimGpu`.
+seam-ash-shaders = { path = "shaders" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 
 [target.'cfg(unix)'.dev-dependencies]

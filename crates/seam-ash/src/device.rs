@@ -593,6 +593,17 @@ impl Dev {
         let mut f13 = vk::PhysicalDeviceVulkan13Features::default()
             .dynamic_rendering(true)
             .synchronization2(true);
+        // The Vulkan memory model, where the device has it: shaders from
+        // rust-gpu declare it.
+        let mut has12 = vk::PhysicalDeviceVulkan12Features::default();
+        // SAFETY: a plain query.
+        unsafe {
+            let mut f2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut has12);
+            instance.get_physical_device_features2(physical, &mut f2);
+        }
+        let mut f12 = vk::PhysicalDeviceVulkan12Features::default()
+            .vulkan_memory_model(has12.vulkan_memory_model == vk::TRUE)
+            .vulkan_memory_model_device_scope(has12.vulkan_memory_model_device_scope == vk::TRUE);
         // SAFETY: a plain query.
         let available =
             unsafe { instance.enumerate_device_extension_properties(physical) }.unwrap_or_default();
@@ -608,7 +619,8 @@ impl Dev {
         let device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queues)
             .enabled_extension_names(&enabled_ptrs)
-            .push_next(&mut f13);
+            .push_next(&mut f13)
+            .push_next(&mut f12);
         // SAFETY: `physical` came from this instance, and supports the
         // features requested (checked in `pick`).
         let device = match unsafe { instance.create_device(physical, &device_info, None) } {

@@ -44,6 +44,68 @@
 //! every value as a parameter, never formatted into the SQL: this crate
 //! hands the SQL to sqlx as trusted (`AssertSqlSafe`). sqlx's `query!` macros check SQL against a live database at compile
 //! time, which a seam core cannot route; use them in the edge if wanted.
+//!
+//! # Typed rows
+//!
+//! Rows read back as Rust types through std's `TryFrom`, with no traits of
+//! this crate's own: a value is any `T: TryFrom<&Value>` ([`Row::try_get`]
+//! by name, [`Row::try_get_at`] by position), and a row any
+//! `T: TryFrom<&Row>`, which the `fetch_*_as` helpers return. Tuples of up
+//! to 12 columns read by position; a core's own row type is an ordinary
+//! `impl`:
+//!
+//! ```
+//! # #[cfg(feature = "sqlite")] {
+//! use seam_core::io;
+//! use seam_sqlx::{Row, Sqlx, execute_async, fetch_all_as_async, fetch_one_as_async};
+//!
+//! struct Note {
+//!     id: i64,
+//!     body: String,
+//!     tag: Option<String>,
+//! }
+//!
+//! impl TryFrom<&Row> for Note {
+//!     type Error = io::Error;
+//!     fn try_from(row: &Row) -> io::Result<Self> {
+//!         Ok(Self { id: row.try_get("id")?, body: row.try_get("body")?, tag: row.try_get("tag")? })
+//!     }
+//! }
+//!
+//! seam_tokio::block_on(async {
+//!     let mut db = Sqlx::memory().await?;
+//!     execute_async(&mut db, "CREATE TABLE notes (id INTEGER, body TEXT, tag TEXT)", &[]).await?;
+//!     execute_async(&mut db, "INSERT INTO notes VALUES (1, 'hi', NULL)", &[]).await?;
+//!     let notes: Vec<Note> = fetch_all_as_async(&mut db, "SELECT * FROM notes", &[]).await?;
+//!     assert_eq!((notes[0].id, notes[0].body.as_str(), notes[0].tag.as_deref()), (1, "hi", None));
+//!     let (count,): (u32,) = fetch_one_as_async(&mut db, "SELECT COUNT(*) FROM notes", &[]).await?;
+//!     assert_eq!(count, 1);
+//!     io::Result::Ok(())
+//! })
+//! .unwrap();
+//! # }
+//! ```
+//!
+//! | Rust type | From |
+//! |---|---|
+//! | `bool` | a boolean, or the integers 0 and 1 |
+//! | `i8` .. `i64`, `u8` .. `u64` | an integer in the type's range |
+//! | `f32`, `f64` | a float, or an integer |
+//! | `String` | text |
+//! | `Vec<u8>` | bytes |
+//! | `Option<T>` of any of these | `NULL` as `None` |
+//! | `uuid::Uuid` (feature `uuid`) | text, or 16 bytes |
+//! | `serde_json::Value` (feature `json`) | text |
+//!
+//! Each converts into a [`Value`] too, for parameters: UUIDs as hyphenated
+//! text and JSON as text, since `Any` has neither type. A mismatch fails
+//! with `InvalidData`, naming the column.
+//!
+//! `Any` reads only the types every database shares: a column of another
+//! type fails the query, whatever it is read as. So a SQLite table declares
+//! booleans `INTEGER` (not `BOOLEAN`), and UUIDs and JSON `TEXT`; on
+//! Postgres, cast in the query (`SELECT id::text`, `$1::uuid`).
+//!
 //! # In a program
 //!
 //! ```no_run
@@ -93,6 +155,8 @@
 //! | `mysql` | no | `mysql://` URLs |
 //! | `tokio` | yes | runs on Tokio, inside a Tokio runtime |
 //! | `smol` | no | runs on smol, outside a Tokio runtime |
+//! | `uuid` | no | `uuid::Uuid` values |
+//! | `json` | no | `serde_json::Value` values |
 //!
 #![cfg_attr(
     not(feature = "sqlite"),
@@ -105,6 +169,8 @@ use std::vec::Vec;
 
 use seam_core::io;
 use seam_core::{Acquisition, Closing, Effect, Operation};
+
+mod typed;
 
 /// A value going into or coming out of a query, in the types every
 /// database `Any` reaches agrees on.
@@ -136,14 +202,32 @@ macro_rules! value_from {
 
 value_from! {
     bool => |v| Value::Bool(v);
+    i8 => |v| Value::Int(v.into());
+    i16 => |v| Value::Int(v.into());
     i32 => |v| Value::Int(v.into());
     i64 => |v| Value::Int(v);
+    u8 => |v| Value::Int(v.into());
+    u16 => |v| Value::Int(v.into());
     u32 => |v| Value::Int(v.into());
+    f32 => |v| Value::Float(v.into());
     f64 => |v| Value::Float(v);
     &str => |v| Value::Text(v.into());
     String => |v| Value::Text(v);
     &[u8] => |v| Value::Bytes(v.into());
     Vec<u8> => |v| Value::Bytes(v);
+}
+
+#[cfg(feature = "uuid")]
+value_from! {
+    // As hyphenated text: the `Any` driver has no UUID type.
+    uuid::Uuid => |v| Value::Text(v.hyphenated().to_string());
+}
+
+#[cfg(feature = "json")]
+value_from! {
+    // As text: the `Any` driver has no JSON type.
+    serde_json::Value => |v| Value::Text(v.to_string());
+    &serde_json::Value => |v| Value::Text(v.to_string());
 }
 
 impl<T: Into<Value>> From<Option<T>> for Value {
@@ -153,6 +237,19 @@ impl<T: Into<Value>> From<Option<T>> for Value {
 }
 
 impl Value {
+    /// Whether this is `NULL`.
+    pub fn is_null(&self) -> bool {
+        matches!(self, Self::Null)
+    }
+
+    /// The boolean, if this is one.
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
     /// The integer, if this is one.
     pub fn as_int(&self) -> Option<i64> {
         match self {
@@ -161,10 +258,26 @@ impl Value {
         }
     }
 
+    /// The float, if this is one.
+    pub fn as_float(&self) -> Option<f64> {
+        match self {
+            Self::Float(x) => Some(*x),
+            _ => None,
+        }
+    }
+
     /// The text, if this is text.
     pub fn as_text(&self) -> Option<&str> {
         match self {
             Self::Text(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The bytes, if these are bytes.
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Bytes(b) => Some(b),
             _ => None,
         }
     }
@@ -532,15 +645,16 @@ scope!(
 macro_rules! two_ways {
     ($(
         $(#[$m:meta])*
-        pub async fn $aname:ident, $sname:ident
+        pub async fn $aname:ident, $sname:ident $([$($g:ident),*])?
         ($($args:tt)*) -> $ret:ty
-        where [$($bound:tt)*]
+        where [$($bound:tt)*] $(and [$($extra:tt)*])?
         $body:block
     )*) => {$(
         $(#[$m])*
-        pub async fn $aname<C>($($args)*) -> $ret
+        pub async fn $aname<$($($g,)*)? C>($($args)*) -> $ret
         where
             C: for<'a> seam_core::future::AsyncPerform<$($bound)*> + ?Sized,
+            $($($extra)*)?
         {
             #[allow(unused_macros)]
             macro_rules! run {
@@ -550,9 +664,10 @@ macro_rules! two_ways {
         }
 
         #[doc = concat!("`", stringify!($aname), "`, with a `Send` future: for multithreaded runtimes.")]
-        pub async fn $sname<C>($($args)*) -> $ret
+        pub async fn $sname<$($($g,)*)? C>($($args)*) -> $ret
         where
             C: for<'a> seam_core::future::SendPerform<$($bound)*> + Send + ?Sized,
+            $($($extra)*)?
         {
             #[allow(unused_macros)]
             macro_rules! run {
@@ -599,5 +714,34 @@ two_ways! {
             .into_iter()
             .next()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the query returned no rows"))
+    }
+
+    /// Every row `sql` returns, each as a `T`: a tuple of columns by
+    /// position, or a type of the core's own with `TryFrom<&Row>`.
+    pub async fn fetch_all_as_async, fetch_all_as_send [T]
+    (c: &mut C, sql: &str, params: &[Value]) -> io::Result<Vec<T>>
+    where [Fetch<'a>] and [T: for<'r> TryFrom<&'r Row, Error = io::Error>,]
+    {
+        run!(c, Fetch { sql, params })?.iter().map(T::try_from).collect()
+    }
+
+    /// The first row `sql` returns as a `T`, or `None` if it returns none.
+    pub async fn fetch_optional_as_async, fetch_optional_as_send [T]
+    (c: &mut C, sql: &str, params: &[Value]) -> io::Result<Option<T>>
+    where [Fetch<'a>] and [T: for<'r> TryFrom<&'r Row, Error = io::Error>,]
+    {
+        run!(c, Fetch { sql, params })?.first().map(T::try_from).transpose()
+    }
+
+    /// The first row `sql` returns, as a `T`. Fails with `NotFound` if it
+    /// returns none.
+    pub async fn fetch_one_as_async, fetch_one_as_send [T]
+    (c: &mut C, sql: &str, params: &[Value]) -> io::Result<T>
+    where [Fetch<'a>] and [T: for<'r> TryFrom<&'r Row, Error = io::Error>,]
+    {
+        run!(c, Fetch { sql, params })?
+            .first()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the query returned no rows"))
+            .and_then(T::try_from)
     }
 }

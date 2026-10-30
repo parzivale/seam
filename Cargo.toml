@@ -37,6 +37,7 @@ ref-cast = "1.0.25"
 jiff-tzdb = { version = "0.1.9", default-features = false }
 rand = { version = "0.10", default-features = false }
 uuid = { version = "1", default-features = false }
+serde_json = { version = "1.0.154", default-features = false }
 tracing = { version = "0.1.40", default-features = false }
 notify = { version = "8", default-features = false }
 notify-types = "2.2"

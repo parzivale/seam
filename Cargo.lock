@@ -2026,7 +2026,9 @@ dependencies = [
  "seam-rs-core",
  "seam-rs-smol",
  "seam-rs-tokio",
+ "serde_json",
  "sqlx",
+ "uuid",
 ]
 
 [[package]]

@@ -138,6 +138,39 @@ The `seam` features `reqwest`, `sqlx` and `notify` bring in the real
 handlers (`Reqwest` with rustls, `Sqlx` with SQLite on Tokio, `Notify`),
 and `test` turns on the wrappers' world-file blocks.
 
+Each wrapper also exposes its library's API, bar the effectful parts, so
+a core needs no direct dependency on the library:
+
+- `seam-jiff` mirrors jiff's whole API (`civil`, `tz`, `fmt`, spans,
+  rounding, ...) as newtypes and enums, generated from jiff's rustdoc
+  (`scripts/facades/`), with `From` both ways. The functions that read
+  the clock or the tz database take a capability instead:
+  `Timestamp::now(c)`, `Zoned::now(c)`, `TimeZone::get(c, name)`,
+  `TimeZone::system(c)`, `in_tz(c, name)`, `Zoned::parse(c, s)`,
+  `BrokenDownTime::to_zoned(c)`, and `DateTimeParser::parse_zoned(c, ..)`.
+- `seam-rand` re-exports rand's traits, `distr`, `seq`, `rngs` and
+  `prelude` (features `std_rng`, `chacha`); `seam-uuid` re-exports
+  `Uuid`, `Builder`, `fmt`, `timestamp` and `uuid!` (v1, v3, v5, v6, v7,
+  v8); `seam-futures` re-exports futures-rs' combinators, streams, sinks,
+  `io` and `task` items and macros.
+- `seam-reqwest`: `Reqwest::builder()`, every `reqwest::ClientBuilder`
+  setting, and reqwest's `Proxy`, `redirect`, `retry`, `tls`, `dns` and
+  `Url`.
+- `seam-dirs`: user directories (`UserDir`: audio, desktop, documents,
+  downloads, pictures, public, templates, videos, fonts), read
+  from `user-dirs.dirs` on Linux.
+- `seam-notify`: notify's own `Event` and `EventKind`, a `Watch` filter
+  (`kinds`), and `Notify::with_config`; `Polling` reports the same
+  kinds, per path.
+- `seam-tracing`: structured fields (`info!(c, user = %name, n = 3,
+  "...")`), and spans as a scope (`span!`, `info_span!`, ...), sent to
+  tracing with explicit parents, discarded, or captured for tests.
+- `seam-sqlx`: typed reads through std's `TryFrom`: `Row::try_get` and
+  `try_get_at` into integers, floats, `bool`, `String`, `Vec<u8>` and
+  `Option`s of them (and `Uuid` and `serde_json::Value` with features
+  `uuid` and `json`); tuples and a core's own `TryFrom<&Row>` types
+  through `fetch_all_as`, `fetch_one_as` and `fetch_optional_as`.
+
 ### The GPU over Vulkan
 
 A new crate, `seam-ash` (`seam-rs-ash`, `seam::ash` with the `ash`

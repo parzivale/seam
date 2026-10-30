@@ -13,6 +13,8 @@ categories.workspace = true
 [dependencies]
 seam-core = { workspace = true, features = ["std"] }
 sqlx = { workspace = true, features = ["any", "macros"] }
+uuid = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true, features = ["std"] }
 
 [dev-dependencies]
 seam-tokio = { workspace = true, features = ["rt"] }
@@ -28,6 +30,9 @@ smol = ["sqlx/runtime-smol"]
 sqlite = ["sqlx/sqlite"]
 postgres = ["sqlx/postgres"]
 mysql = ["sqlx/mysql"]
+# Typed reads and parameters for UUIDs and JSON, which travel as text.
+uuid = ["dep:uuid"]
+json = ["dep:serde_json"]
 
 [package.metadata.docs.rs]
 all-features = true

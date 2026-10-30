@@ -15,6 +15,8 @@ seam-core = { workspace = true, features = ["std"] }
 tokio = { workspace = true }
 
 [dev-dependencies]
+# For the docs' root example.
+seam-std = { workspace = true, features = ["env"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "fs", "net", "time", "io-util"] }
 
 # Feature names follow Tokio's. Each one turns on the Tokio feature of the

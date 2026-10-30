@@ -143,37 +143,31 @@ networking and clocks and nothing else.
 
 ## Handlers
 
-A root routes each effect to the handler listed for it. A program usually
-takes what waits from one async handler (or none, if it is sync), the
-environment and randomness from `Std`, and each wrapper's effects from
-that wrapper's handler, all in the same root.
+A handler for an operation is any type that performs it: none is special.
+Each crate pairs a family of effects with handlers for them, real and
+simulated, and a program's own handlers are written the same way. A root
+picks one per effect, at the edge.
 
-| Handler | Forms | Covers |
+| Effects | Handlers | Forms |
 |---|---|---|
-| `Std` (`seam::stdlib`) | sync, and async through the lifts (blocking) | the environment, arguments, randomness, clocks, files, the network, stdio, processes, threads, channels |
-| `Tokio` (`seam::tokio`) | async, `Send` | time, files, the network, stdio, processes, signals, tasks, channels |
-| `Smol` (`seam::smol`) | async, `Send` | time, files, the network, stdio, processes, Ctrl-C (Unix), tasks, channels |
-| `Futures`, `Executor` (`seam::futures`) | async, any executor | channels and locks that need no runtime, tasks on any futures-rs executor, futures-io adapters, `within` |
-| `Sim` (`seam::test`) | sync and async | the whole world, simulated: for tests |
+| the OS (`seam::ops`): files, network, processes, stdio, environment, time, randomness, tasks, channels | `Std` (`seam::stdlib`) | sync, and async through the lifts (blocking) |
+| | `Tokio` (`seam::tokio`), `Smol` (`seam::smol`): time, files, network, stdio, processes, signals, tasks, channels; no environment or randomness | async, `Send` |
+| | `Futures`, `Executor` (`seam::futures`): channels and locks that need no runtime, tasks on any futures-rs executor | async, any executor |
+| | `Sim`, `AsyncSim`, `ThreadSim` (`seam::test`): all of it, simulated | sync and async, deterministic |
+| time zones (`seam::jiff`) | `TzDb` over any filesystem; `Bundled` | sync; async through the lifts |
+| logs and spans (`seam::tracing`) | `Tracing`; `Discard`; `Captured` | sync; async through the lifts |
+| file watching (`seam::notify`) | `Notify` (the OS); `Polling` over any filesystem | sync; async without blocking, any executor |
+| HTTP (`seam::reqwest`) | `Reqwest`; `Scripted` | async, any executor (it brings its own Tokio runtime where there is none); `Scripted` sync too |
+| SQL (`seam::sqlx`) | `Sqlx`; `Sqlx::memory` | async: on Tokio, or on smol with `smol` on |
+| the GPU (`seam::ash`) | `Ash` (Vulkan); `SimGpu` | sync and async from one implementation; any executor |
+| Unix calls (`seam::unix`) | `Rustix` (`seam::rustix`), `Nix` (`seam::nix`); `SimUnix` | sync; async through the lifts |
+| none of their own: rand's API, UUIDs, platform directories (`seam::rand`, `seam::uuid`, `seam::dirs`) | whichever handles `FillRandom`, `WallClock`, `Var` | all three |
 
-Each wrapper crate's handler sits beside any of these, under any executor:
-
-| Crate | Real handler | Forms | Needs in the root |
-|---|---|---|---|
-| `seam::jiff` | `TzDb` (`Bundled`) | sync; async through the lifts | `WallClock` (any handler); `TzDb` reads through `Std`'s filesystem |
-| `seam::rand` | none: an RNG over the capability | sync (`FillRandom` never waits, so async cores use it too) | `FillRandom` from `Std` |
-| `seam::uuid` | none: helpers | sync, async, `Send` | `FillRandom` from `Std`, and `WallClock` for v7 |
-| `seam::dirs` | none: helpers | all three | `Var` from `Std` |
-| `seam::tracing` | `Tracing` | sync; async through the lifts | nothing else |
-| `seam::notify` | `Notify` | sync; async without blocking, any executor | nothing else |
-| `seam::reqwest` | `Reqwest` | async, any executor (it brings its own Tokio runtime where there is none) | nothing else |
-| `seam::sqlx` | `Sqlx` | async: on Tokio, or on smol with `smol` on | nothing else |
-| `seam::rustix`, `seam::nix` | `Rustix`, `Nix` | sync; async through the lifts | nothing else |
-| `seam::ash` | `Ash` | sync and async from one implementation; any executor | nothing else |
-
-Each has its handler for tests too (`Scripted`, `Captured`, `Polling`
-over a `Sim`, `Sqlx::memory`, `SimUnix`, `SimGpu`), and each crate's docs
-show it in a program and in a test.
+Each handler serves what it is for, and a root combines them: a Tokio or
+smol program takes the environment and randomness from `Std`; `TzDb` and
+`Polling` work over whichever filesystem they are given, a `Sim`'s in
+tests. Every crate's docs show its handlers in a root, in a program and in
+a test.
 
 ## Roots
 

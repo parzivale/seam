@@ -19,7 +19,7 @@ tokio = { workspace = true, optional = true, features = ["rt-multi-thread"] }
 seam-test = { workspace = true, optional = true, features = ["std"] }
 
 [dev-dependencies]
-seam-test = { workspace = true, features = ["std"] }
+seam-test = { workspace = true, features = ["std", "env"] }
 seam-tokio = { workspace = true, features = ["rt"] }
 seam-smol = { workspace = true }
 futures = { workspace = true, features = ["executor"] }

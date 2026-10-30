@@ -31,6 +31,36 @@
 //! # }
 //! ```
 //!
+//! # In a root
+//!
+//! A test builds the same root as the program, with the same keys, from
+//! simulated handlers: so the core is given exactly what it is given in
+//! production. Every clone of a `Sim` is a handle to one world, so a part
+//! of the root and the test's own handle see the same state.
+//!
+//! ```
+//! # #[cfg(all(feature = "time", feature = "random"))] {
+//! use core::time::Duration;
+//! use seam_core::effects as fx;
+//! use seam_core::ops::random::{FillRandom, random_u64};
+//! use seam_core::ops::time::{Now, Sleep};
+//! use seam_core::prelude::*;
+//! use seam_test::Sim;
+//!
+//! fn backoff<C: for<'a> Perform<FillRandom<'a>> + Perform<Sleep>>(c: &mut C) {
+//!     let ms = 100 + random_u64(c) % 100;
+//!     c.perform(Sleep(Duration::from_millis(ms)));
+//! }
+//!
+//! // The program: `seam::root![Std<fx::FillRandom>, Std<fx::Sleep>]`.
+//! // The test: the same keys, simulated, and a handle to look at after.
+//! let sim = Sim::with_seed(7);
+//! let mut root = seam_core::root![Sim<fx::FillRandom, fx::Sleep>::clone(&sim)];
+//! backoff(&mut root);
+//! assert!(sim.inspect(Now).since_epoch() >= Duration::from_millis(100));
+//! # }
+//! ```
+//!
 //! # Setting up and checking the world
 //!
 //! `Sim` has plain methods, outside the capability system, for the test to

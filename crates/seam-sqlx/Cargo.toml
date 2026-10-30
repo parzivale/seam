@@ -17,6 +17,8 @@ uuid = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true, features = ["std"] }
 
 [dev-dependencies]
+# For the docs' root example.
+seam-test = { workspace = true, features = ["std", "time"] }
 seam-tokio = { workspace = true, features = ["rt"] }
 seam-smol = { workspace = true }
 

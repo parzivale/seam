@@ -47,6 +47,44 @@
 //! let refused = unix.perform(Mount::bind("/data", "/mnt"));
 //! assert_eq!(refused.unwrap_err().kind(), seam_core::io::ErrorKind::PermissionDenied);
 //! ```
+//! # In a root
+//!
+//! In a root, each handler serves the keys of [`effects`] it is listed for,
+//! beside the filesystem's handler. A test routes `CreateDir` and `Open`
+//! to `SimUnix` too, which makes them in its `Sim` and gives what they
+//! create to the user, as Unix does:
+//!
+//! ```
+//! use seam_core::effects as fx;
+//! use seam_core::io;
+//! use seam_core::ops::fs::{CreateDir, Metadata, create_dir_all};
+//! use seam_core::prelude::*;
+//! use seam_test::Sim;
+//! use seam_unix::{Chmod, SimUnix, effects as ux};
+//!
+//! /// The core: makes a private directory.
+//! fn private_dir<C>(c: &mut C, dir: &str) -> io::Result<()>
+//! where
+//!     C: for<'a> Perform<CreateDir<'a>> + for<'a> Inspect<Metadata<'a>> + for<'a> Perform<Chmod<'a>>,
+//! {
+//!     create_dir_all(c, dir)?;
+//!     c.perform(Chmod::new(dir, 0o700))
+//! }
+//!
+//! // The program: `seam::root![Std<fx::CreateDir, fx::Metadata>, Rustix<ux::Chmod>]`.
+//! let mut sim = Sim::new();
+//! sim.add_dir("/home");
+//! let mut unix = SimUnix::new(sim.clone());
+//! unix.set_user(1000, 1000);
+//! let mut root = seam_core::root![
+//!     Sim<fx::Metadata>::clone(&sim),
+//!     SimUnix<fx::CreateDir, ux::Chmod>::clone(&unix),
+//! ];
+//! private_dir(&mut root, "/home/ada/.secrets").unwrap();
+//! assert_eq!(unix.owner("/home/ada/.secrets"), Some((1000, 1000)));
+//! assert_eq!(unix.mode("/home/ada/.secrets"), Some(0o700));
+//! ```
+//!
 //! # Handlers
 //!
 //! | Handler | Crate | Use it for |

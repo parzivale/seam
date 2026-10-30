@@ -139,8 +139,41 @@
 //! # Ok::<(), seam_core::io::Error>(())
 //! ```
 //!
+//! # In a root
+//!
 //! In a root, `Sqlx` routes [`effects::Execute`], [`effects::Fetch`],
-//! [`effects::Begin`] and [`effects::Acquire`].
+//! [`effects::Begin`] and [`effects::Acquire`], beside the handlers for
+//! the rest. A test lists `Sqlx::memory()` under the same keys:
+//!
+//! ```
+//! # #[cfg(feature = "sqlite")] {
+//! use seam_core::effects as fx;
+//! use seam_core::io;
+//! use seam_core::ops::time::WallClock;
+//! use seam_core::prelude::*;
+//! use seam_sqlx::{Execute, Sqlx, effects as sql, execute_send};
+//!
+//! /// The core: records an event, stamped with the wall clock.
+//! async fn record<C>(c: &mut C, what: &str) -> io::Result<u64>
+//! where
+//!     C: for<'a> SendPerform<Execute<'a>> + SendInspect<WallClock> + Send + Sync,
+//! {
+//!     let now = c.inspect_send(WallClock).await;
+//!     let secs = now.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+//!     execute_send(c, "INSERT INTO events VALUES (?, ?)", &[(secs as i64).into(), what.into()]).await
+//! }
+//!
+//! seam_tokio::block_on(async {
+//!     let db = Sqlx::memory().await.unwrap();
+//!     let mut root = seam_core::root![
+//!         Sqlx<sql::Execute, sql::Fetch>::clone(&db),
+//!         seam_test::Sim<fx::WallClock>::new(),
+//!     ];
+//!     execute_send(&mut root, "CREATE TABLE events (at INTEGER, what TEXT)", &[]).await.unwrap();
+//!     assert_eq!(record(&mut root, "started").await.unwrap(), 1);
+//! });
+//! # }
+//! ```
 //!
 //! Through the `seam` crate, this crate is `seam::sqlx` (feature `sqlx`,
 //! which brings in SQLite on Tokio; `smol` adds smol). For Postgres or

@@ -62,6 +62,40 @@
 //! `Tokio` (or a root with it as a part) inside, as inside any
 //! runtime you already have.
 //!
+//! # In a root
+//!
+//! Tokio has no environment or randomness, so a program on Tokio takes
+//! those from `Std` in the same root, and Tokio serves what waits:
+//!
+//! ```no_run
+//! # #[cfg(all(feature = "rt", feature = "time"))] {
+//! use std::time::Duration;
+//!
+//! use seam_core::effects as fx;
+//! use seam_core::ops::env::Var;
+//! use seam_core::ops::time::Sleep;
+//! use seam_core::prelude::*;
+//! use seam_std::Std;
+//! use seam_tokio::Tokio;
+//!
+//! /// The core: waits as long as `DELAY_MS` says, then greets.
+//! async fn greet<C>(c: &mut C) -> String
+//! where
+//!     C: for<'a> SendInspect<Var<'a>> + SendPerform<Sleep> + Send + Sync,
+//! {
+//!     let ms = c.inspect_send(Var::new("DELAY_MS")).await;
+//!     let ms = ms.and_then(|v| v.to_str()?.parse().ok()).unwrap_or(10);
+//!     c.perform_send(Sleep(Duration::from_millis(ms))).await;
+//!     "hello".to_owned()
+//! }
+//!
+//! seam_tokio::block_on(async {
+//!     let mut root = seam_core::root![Std<fx::Var>, Tokio<fx::Sleep>];
+//!     println!("{}", greet(&mut root).await);
+//! });
+//! # }
+//! ```
+//!
 //! # With the other crates
 //!
 //! A program on Tokio routes what Tokio does not handle to other handlers

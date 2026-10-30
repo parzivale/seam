@@ -21,6 +21,8 @@ futures = { workspace = true, features = ["std"], optional = true }
 async-signal = { workspace = true, optional = true }
 
 [dev-dependencies]
+# For the docs' root example.
+seam-std = { workspace = true, features = ["random"] }
 seam-core = { workspace = true, features = ["full"] }
 
 # Each turns on the matching seam-core operation types. smol itself has no

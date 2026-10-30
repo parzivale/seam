@@ -51,6 +51,17 @@ and fixes for what writing them turned up.
 - The `seam` feature `uuid` turns on the simulation's wall clock for
   `test`, which the uuid helpers need.
 
+### Documentation
+
+- The `seam` crate's front page and the README treat every handler alike:
+  one table of each module's effects and its handlers, real and
+  simulated, with the OS's (`Std`, `Tokio`, `Smol`, `Futures`, `Sim`)
+  among the others, where `Std`, `Tokio` and `Sim` had been presented as
+  the handlers and the wrappers' as add-ons.
+- Every handler crate's docs have an example of its handlers in a root
+  (`seam-std`, `seam-tokio`, `seam-smol`, `seam-test`, `seam-reqwest`,
+  `seam-sqlx` and `seam-unix` had none), each a doctest.
+
 ### Examples
 
 - One for every wrapper and handler crate in `crates/seam/examples`, each

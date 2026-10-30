@@ -32,6 +32,37 @@
 //! # }
 //! ```
 //!
+//! # In a root
+//!
+//! smol has no environment or randomness, so a program on smol takes those
+//! from `Std` in the same root, and smol serves what waits:
+//!
+//! ```no_run
+//! # #[cfg(feature = "time")] {
+//! use std::time::Duration;
+//!
+//! use seam_core::effects as fx;
+//! use seam_core::ops::random::{FillRandom, random_u64_send};
+//! use seam_core::ops::time::Sleep;
+//! use seam_core::prelude::*;
+//! use seam_smol::Smol;
+//! use seam_std::Std;
+//!
+//! /// The core: waits a random 100 to 199 ms, as a retry backs off.
+//! async fn back_off<C>(c: &mut C) -> u64
+//! where
+//!     C: for<'a> SendPerform<FillRandom<'a>> + SendPerform<Sleep> + Send,
+//! {
+//!     let ms = 100 + random_u64_send(c).await % 100;
+//!     c.perform_send(Sleep(Duration::from_millis(ms))).await;
+//!     ms
+//! }
+//!
+//! let mut root = seam_core::root![Std<fx::FillRandom>, Smol<fx::Sleep>];
+//! println!("waited {} ms", seam_smol::block_on(back_off(&mut root)));
+//! # }
+//! ```
+//!
 //! # With the other crates
 //!
 //! A program on smol routes what smol does not handle to other handlers

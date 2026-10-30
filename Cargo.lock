@@ -2050,6 +2050,7 @@ dependencies = [
  "async-signal",
  "futures",
  "seam-rs-core",
+ "seam-rs-std",
  "smol",
 ]
 
@@ -2059,6 +2060,7 @@ version = "0.7.0"
 dependencies = [
  "seam-rs-core",
  "seam-rs-smol",
+ "seam-rs-test",
  "seam-rs-tokio",
  "serde_json",
  "sqlx",
@@ -2084,6 +2086,7 @@ name = "seam-rs-tokio"
 version = "0.7.0"
 dependencies = [
  "seam-rs-core",
+ "seam-rs-std",
  "tokio",
 ]
 

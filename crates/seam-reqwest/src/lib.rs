@@ -69,8 +69,43 @@
 //! ```
 //!
 //! A configured client (timeouts, proxies, headers) goes in with
-//! [`Reqwest::with_client`]. In a root, `Reqwest` routes
-//! [`effects::Fetch`].
+//! [`Reqwest::with_client`].
+//!
+//! # In a root
+//!
+//! In a root, `Reqwest` routes [`effects::Fetch`], beside the handlers for
+//! the rest; a test lists `Scripted` under the same key, and a `Sim` for
+//! the rest:
+//!
+//! ```
+//! use seam_core::effects as fx;
+//! use seam_core::io;
+//! use seam_core::ops::env::Var;
+//! use seam_core::prelude::*;
+//! use seam_reqwest::{Fetch, Scripted, effects as web, get_text_send};
+//!
+//! /// The core: fetches the release notes for the version in `APP_VERSION`.
+//! async fn notes<C>(c: &mut C) -> io::Result<String>
+//! where
+//!     C: for<'a> SendInspect<Var<'a>> + SendPerform<Fetch> + Send + Sync,
+//! {
+//!     let version = c.inspect_send(Var::new("APP_VERSION")).await.ok_or(io::ErrorKind::NotFound)?;
+//!     let url = format!("https://example.com/notes/{}", version.to_string_lossy());
+//!     get_text_send(c, &url).await
+//! }
+//!
+//! // The program: `seam::root![Std<fx::Var>, Reqwest<web::Fetch>::new()]`.
+//! // The test: the same keys, scripted and simulated.
+//! let mut http = Scripted::new();
+//! http.respond("GET", "https://example.com/notes/1.2", 200, "Faster.");
+//! let mut sim = seam_test::Sim::new();
+//! sim.set_var("APP_VERSION", "1.2");
+//! let mut root = seam_core::root![
+//!     seam_test::Sim<fx::Var>::clone(&sim),
+//!     Scripted<web::Fetch>::clone(&http),
+//! ];
+//! assert_eq!(seam_core::future::block_on(notes(&mut root)).unwrap(), "Faster.");
+//! ```
 //!
 //! Through the `seam` crate, this crate is `seam::reqwest` (feature
 //! `reqwest`, which brings in [`Reqwest`] with rustls; with `test`, the

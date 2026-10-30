@@ -70,22 +70,19 @@
 //! accepted where a weaker one is asked for. A core asks for capabilities
 //! as bounds and receives one value that provides them.
 //!
-//! **Handlers** perform effects, over the real world or a simulated one,
-//! and are chosen only at the edge of the program:
+//! **Handlers** perform operations: a handler for an operation is any type
+//! that implements `Perform` or `Inspect` for it. None is special. The
+//! crates below each pair a family of effects with handlers for them, real
+//! and simulated, and a program's own handlers (a fake, a cache, a client
+//! of its own service) are written the same way. Handles a handler lends
+//! (files, sockets, transactions) are handlers too, for the operations on
+//! them, and expose nothing else, so every effect goes through the
+//! capability traits.
 //!
-//! | Crate | Feature | Handler | For |
-//! |---|---|---|---|
-//! | `seam::stdlib` | `std` | `Std` | sync programs, blocking I/O |
-//! | `seam::tokio` | `tokio` | `Tokio` | async programs, multithreaded |
-//! | `seam::test` | `test` | `Sim`, `rt::AsyncSim`, `threads::ThreadSim` | tests: a deterministic simulated world, with a seeded runtime for async cores and a seeded scheduler for threaded ones |
-//!
-//! Handlers hand out handles (files, sockets) as newtypes with no std or
-//! Tokio I/O traits, so effects on those also go through the capability
-//! traits.
-//!
-//! A [`Root`] combines handlers, and a program's own effects, into one
-//! capability: each part lists the effects it serves, by their keys in
-//! [`effects`], and the root grants a core exactly those.
+//! A [`Root`] is how a program chooses, at its edge: one capability built
+//! from handlers, each listed with the effects it serves (by their keys in
+//! [`effects`]), granting a core exactly those. A root mixes real handlers,
+//! simulated ones and the program's own, sync and async:
 //!
 //! ```
 //! # #[cfg(all(feature = "std", feature = "test", feature = "env", feature = "time"))] {
@@ -98,7 +95,7 @@
 //! use seam::test::Sim;
 //!
 //! let root = seam::root![
-//!     Std<fx::Var>,
+//!     Std<fx::Var>,        // the real environment
 //!     Sim<fx::Now>::new(), // a simulated clock
 //! ];
 //! let _home = root.inspect(Var::new("HOME"));
@@ -106,13 +103,36 @@
 //! # }
 //! ```
 //!
+//! # Effects and their handlers
+//!
+//! | Module (feature) | Effects | Handlers |
+//! |---|---|---|
+//! | [`ops`] | the OS: files, network, processes, stdio, environment, time, randomness, tasks, channels, shared cells, signals | `Std` (`std`); `Tokio` (`tokio`) and `Smol` (`smol`), async; `Futures` and `Executor` (`futures`) for channels, cells and tasks on any executor; `Sim`, `rt::AsyncSim` and `threads::ThreadSim` (`test`), a simulated world with a seeded runtime and a seeded thread scheduler |
+//! | `seam::jiff` (`jiff`) | time zones | `TzDb`, over any filesystem; `Bundled` (`jiff-bundled`) |
+//! | `seam::tracing` (`tracing`) | `Log`, `Span` | `Tracing`; `Discard`; `Captured` |
+//! | `seam::notify` (`notify`) | `Watch`, `NextEvent` | `Notify` (the OS); `Polling` over any filesystem |
+//! | `seam::reqwest` (`reqwest`) | `Fetch` | `Reqwest`; `Scripted` |
+//! | `seam::sqlx` (`sqlx`) | `Execute`, `Fetch`, `Begin`, `Acquire` | `Sqlx`, and `Sqlx::memory` (in-memory SQLite) |
+//! | `seam::ash` (`ash`) | the GPU: buffers, images, samplers, programs, draws, dispatches | `Ash` (Vulkan); `SimGpu` |
+//! | `seam::unix` (`unix`, `rustix`, `nix`) | mounts, permissions, links, IDs, signals | `Rustix`, `Nix`; `SimUnix` |
+//! | `seam::rand`, `seam::uuid`, `seam::dirs` (`rand`, `uuid`, `dirs`) | none of their own: rand's API, UUIDs and platform directories over `FillRandom`, `WallClock` and `Var` | whichever handles those |
+//!
+//! Each handler serves what it is for: Tokio and smol have no environment
+//! or randomness, so an async program takes those from `Std` in the same
+//! root, `seam::root![Std<fx::Var>, Smol<fx::Sleep>]`; `TzDb` and
+//! `Polling` work over whichever filesystem they are given, a `Sim`'s in
+//! tests. Each module's docs show its handlers in a program and in a test.
+
+//!
 //! # Async
 //!
 //! Async capabilities are in [`future`]. Every sync capability is also an
 //! async one (again, for types that opt in with [`Capability`]), so an
-//! async core runs on `Std`, `Sim` or a hand-written fake through
-//! [`block_on`](future::block_on), and on Tokio through
-//! `seam::tokio::block_on`. Write `SendPerform`, `SendInspect`,
+//! async core runs on any handler, sync or async, under any executor:
+//! seam's own [`block_on`](future::block_on), Tokio's, smol's,
+//! futures-rs', or the simulated runtime's. A sync handler raised to
+//! async still blocks while it works; async handlers (`Tokio`, `Smol`,
+//! `Reqwest`, ...) wait without blocking. Write `SendPerform`, `SendInspect`,
 //! `SendProvide` and `SendLend` bounds for a core that must run on a
 //! multithreaded runtime; its scopes are `acquire_send` and `lend_send`,
 //! from [`SendScope`].
@@ -175,23 +195,16 @@
 //!
 //! # Examples
 //!
-//! Each example is a real program whose tests run its core in the
-//! simulation. Run one with `cargo run -p seam-rs --example <name> --features
-//! full,std,tokio,rt,test`, and test them all with `cargo test -p seam-rs
-//! --examples --features full,std,tokio,rt,test`.
-//!
-//! - `guess`: a number guessing game. Randomness and stdio, with seeded,
-//!   scripted tests, including a test of a playing strategy.
-//! - `backup`: snapshots a directory and prunes old snapshots. Filesystem,
-//!   clock and arguments, with the capabilities bundled into one trait.
-//! - `echo_server`: a TCP echo server on Tokio that spawns a task per
-//!   connection. Its async `Send` connection handler is tested on the
-//!   in-memory network with no runtime.
-//! - `custom_ops`: defining your own operations, and building a capability
-//!   out of other capabilities.
-//! - `word_count`: a worker pool on OS threads, tested on simulated threads
-//!   under many schedules, with a world file for its setup and
-//!   expectations.
+//! The repository's `crates/seam/examples` has a program for each module
+//! above, each a core with a `main` on real handlers and tests on
+//! simulated ones: `guess`, `backup`, `custom_ops` and `word_count` (the
+//! OS, and your own effects), `echo_server` (Tokio), `checksums` (smol),
+//! `word_pipe` (futures), `world_clock` (jiff), `dice` (rand), `ids`
+//! (uuid), `settings` (dirs), `import_log` (tracing), `changes` (notify),
+//! `titles` (reqwest), `todo` (sqlx), `shared_dir` (unix) and
+//! `gpu_double` (ash, with a shader written in Rust). Each one's header
+//! says the features it needs; `cargo test -p seam-rs --examples
+//! --all-features` runs them all.
 //!
 //! # Features
 //!
@@ -199,10 +212,11 @@
 //! prelude and [`Push`].
 //!
 //! Features come in two independent kinds. **Capability groups** choose
-//! which operations exist; **handler crates** bring in the handlers that
-//! perform them. No capability group turns on a handler crate, so a library
-//! crate can depend on `seam` with only the groups its core needs, and only
-//! the final binary (or its tests) picks handlers.
+//! which of [`ops`]' operations exist. **Crates** bring in a module of the
+//! table above: its effects and its handlers. No capability group turns on
+//! a crate, so a library crate can depend on `seam` with only the groups
+//! its core needs, and only the final binary (or its tests) picks
+//! handlers.
 //!
 //! | Capability group | Gives you |
 //! |---|---|
@@ -214,33 +228,21 @@
 //! | `fs`, `process`, `env` | operation types (links std for `Path`, `Command`, `OsString`) |
 //! | `full` | every group above |
 //!
-//! | Handler crate | Gives you |
+//! | Crate | Gives you |
 //! |---|---|
-//! | `std` | `Std`, the std handler, `seam::stdlib`: the environment, randomness, and sync files, network, processes |
-//! | `tokio` | `Tokio`, the Tokio handler, `seam::tokio` |
-//! | `smol` | `Smol`, the smol handler, `seam::smol` |
-//! | `futures` | `Futures` and `Executor`, the futures-rs handlers, `seam::futures`: channels, locks and tasks on any executor |
-//! | `test` | `Sim`, the pure test handler, `seam::test`: a simulated world (and the wrappers' world-file blocks) |
-//! | `rt-multi-thread`, `test-util` | Tokio runtime options, as in Tokio; only with `tokio` |
+//! | `std` | `seam::stdlib`: `Std` |
+//! | `tokio` | `seam::tokio`: `Tokio` |
+//! | `smol` | `seam::smol`: `Smol` |
+//! | `futures` | `seam::futures`: `Futures`, `Executor`, and futures-rs' API |
+//! | `test` | `seam::test`: `Sim`, `AsyncSim`, `ThreadSim`; with the other crates on, their world-file blocks |
+//! | `jiff`, `jiff-bundled` | `seam::jiff`; `jiff-bundled` adds `Bundled`, the compiled-in tz database |
+//! | `rand`, `uuid`, `dirs` | `seam::rand`, `seam::uuid`, `seam::dirs` |
+//! | `tracing`, `notify`, `reqwest`, `sqlx`, `ash` | that module, with its real handler (`reqwest` with rustls; `sqlx` with SQLite on Tokio, and on smol with `smol`) |
+//! | `unix`, `rustix`, `nix` | `seam::unix`; `rustix` and `nix` add `Rustix` and `Nix` |
+//! | `rt-multi-thread`, `test-util` | Tokio's runtime options, as in Tokio; only with `tokio` |
 //!
-//! | Wrapper | Gives you |
-//! |---|---|
-//! | `jiff`, `jiff-bundled` | time zones over jiff, `seam::jiff`; `jiff-bundled` adds the compiled-in tz database |
-//! | `rand`, `uuid`, `dirs` | rand on seam's randomness, UUIDs, platform directories |
-//! | `tracing` | logging as an effect, `seam::tracing` |
-//! | `notify` | file watching, `seam::notify` |
-//! | `reqwest` | HTTP, `seam::reqwest`, with reqwest and rustls |
-//! | `sqlx` | SQL, `seam::sqlx`: SQLite on Tokio; with `smol`, on smol too |
-//! | `ash` | the GPU over Vulkan, `seam::ash` |
-//! | `unix`, `rustix`, `nix` | Unix effects, `seam::unix`, performed with rustix or nix |
-//!
-//! A program on Tokio or smol takes the environment and randomness from
-//! `std`, in the same root: `seam::root![Std<fx::Var>, Smol<fx::Sleep>]`.
-//! Each wrapper's handler sits beside any of these, under any executor;
-//! each one's docs show it in a program.
-//!
-//! Each handler implements the operations of exactly the capability groups
-//! that are enabled.
+//! The OS handlers implement the operations of exactly the capability
+//! groups that are enabled.
 //! A typical split:
 //!
 //! ```toml
@@ -282,20 +284,20 @@ pub mod prelude {
     pub use seam_core::prelude::*;
 }
 
-/// The std handler.
+/// The OS's effects, performed with std: `Std`.
 #[cfg(feature = "std")]
 pub use seam_std as stdlib;
 
-/// The pure test handler: a simulated world whose only real effect is
-/// allocation.
+/// The OS's effects, simulated: `Sim`, and its seeded runtime and thread
+/// scheduler. Its only real effect is allocation.
 #[cfg(feature = "test")]
 pub use seam_test as test;
 
-/// The Tokio handler.
+/// The OS's effects, performed with Tokio: `Tokio`.
 #[cfg(feature = "tokio")]
 pub use seam_tokio as tokio;
 
-/// The futures-rs handler: channels, cells and tasks on any executor,
+/// Channels, cells and tasks on any executor, performed with futures-rs;
 /// futures-io and `Stream` adapters, and concurrent async helpers.
 #[cfg(feature = "futures")]
 pub use seam_futures as futures;
@@ -305,7 +307,7 @@ pub use seam_futures as futures;
 #[cfg(feature = "jiff")]
 pub use seam_jiff as jiff;
 
-/// The smol handler.
+/// The OS's effects, performed with smol: `Smol`.
 #[cfg(feature = "smol")]
 pub use seam_smol as smol;
 

@@ -39,6 +39,37 @@
 //!
 //! Test the same core against `seam_test::Sim` instead of `Std`.
 //!
+//! # In a root
+//!
+//! In a root, `Std` serves the effects it is listed for and the core gets
+//! exactly those: here, the arguments, file views and standard output, and
+//! not the network or processes. Other handlers sit beside it in the same
+//! root: an async one for what waits, a wrapper's, a program's own.
+//!
+//! ```no_run
+//! # #[cfg(all(feature = "fs", feature = "io-std", feature = "env"))] {
+//! # use seam_core::io;
+//! # use seam_core::prelude::*;
+//! # use seam_core::ops::env::Args;
+//! # use seam_core::ops::fs::{ReadAt, View, read_to_string};
+//! # use seam_core::ops::io::Write;
+//! # use seam_core::ops::stdio::{OpenStdout, print};
+//! # fn count_lines<C, F, O>(c: &mut C) -> io::Result<()>
+//! # where
+//! #     C: Inspect<Args> + for<'a> Lend<View<'a, F>> + Provide<OpenStdout<O>>,
+//! #     F: for<'a> Inspect<ReadAt<'a>>,
+//! #     O: for<'a> Perform<Write<'a>>,
+//! # { Ok(()) }
+//! use seam_core::effects as fx;
+//! use seam_std::Std;
+//!
+//! fn main() -> io::Result<()> {
+//!     let mut root = seam_core::root![Std<fx::Args, fx::View, fx::OpenStdout>];
+//!     count_lines(&mut root)
+//! }
+//! # }
+//! ```
+//!
 //! # Handles
 //!
 //! Files, sockets and the standard streams are newtypes (`fs::File<M>`,

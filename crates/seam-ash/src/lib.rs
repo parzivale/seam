@@ -273,6 +273,9 @@ macro_rules! flags {
         impl $name {
             $($(#[$fm])* pub const $flag: Self = Self(1 << $bit);)*
 
+            /// Every flag.
+            pub const ALL: Self = Self(0 $(| 1 << $bit)*);
+
             /// Whether every flag in `other` is set.
             pub const fn contains(self, other: Self) -> bool {
                 self.0 & other.0 == other.0
@@ -299,6 +302,13 @@ flags! {
         UNIFORM = 1;
         /// A storage buffer, bound with [`Bind::Storage`].
         STORAGE = 2;
+        /// The counts of an indirect draw or dispatch
+        /// ([`Draw::indirect`], [`DispatchIndirect`]).
+        INDIRECT = 4;
+        /// Read and written through its address in a shader
+        /// ([`BufferAddress`]), on a device with
+        /// [`GpuFeatures::ADDRESSES`].
+        ADDRESS = 5;
     }
 
     /// What an image is for, beyond moving data in and out (always allowed).
@@ -310,6 +320,51 @@ flags! {
         TARGET = 1;
         /// Read and written by a program, bound with [`Bind::StorageImage`].
         STORAGE = 2;
+    }
+
+    /// The optional features a device has. What needs one the device
+    /// lacks fails with [`GpuError::Unsupported`]; [`SimGpu`] has them
+    /// all.
+    GpuFeatures {
+        /// Wireframe and point polygon modes ([`PolygonMode`]).
+        WIREFRAME = 0;
+        /// Targets blended differently from one another.
+        INDEPENDENT_BLEND = 1;
+        /// BC-compressed formats.
+        BC = 2;
+        /// Arrays of cube maps.
+        CUBE_ARRAY = 3;
+        /// More than one draw from one indirect buffer
+        /// ([`Draw::indirect_many`]).
+        MULTI_DRAW_INDIRECT = 4;
+        /// Timestamps ([`QueryKind::Timestamp`]).
+        TIMESTAMPS = 5;
+        /// Buffer addresses ([`BufferUsage::ADDRESS`]).
+        ADDRESSES = 6;
+        /// Occlusion queries count samples, not only whether any passed.
+        PRECISE_OCCLUSION = 7;
+    }
+
+    /// What a device's subgroups (waves, warps) can do across their
+    /// invocations in compute shaders: WGSL's and SPIR-V's subgroup
+    /// operations.
+    SubgroupOps {
+        /// Elect, barriers.
+        BASIC = 0;
+        /// All, any, equal.
+        VOTE = 1;
+        /// Sums, products, minimums, maximums, and their scans.
+        ARITHMETIC = 2;
+        /// Ballots and broadcasts.
+        BALLOT = 3;
+        /// Shuffles by index.
+        SHUFFLE = 4;
+        /// Shuffles up and down.
+        SHUFFLE_RELATIVE = 5;
+        /// Arithmetic over clusters.
+        CLUSTERED = 6;
+        /// Quad operations.
+        QUAD = 7;
     }
 }
 
@@ -831,6 +886,11 @@ pub struct CreateProgram<'a> {
     /// How many bytes of push constants it takes (a multiple of 4, at most
     /// 128).
     pub push_constants: u32,
+    /// Each binding's array length, by binding (empty: every binding is
+    /// one resource). A binding `n` long is given `n` [`Bind`]s in a row.
+    pub counts: &'a [u32],
+    /// Specialization constants, for every stage.
+    pub constants: &'a [Constant],
 }
 
 impl<'a> CreateProgram<'a> {
@@ -846,6 +906,8 @@ impl<'a> CreateProgram<'a> {
             kind: ProgramKind::Compute { spirv, entry },
             bindings,
             push_constants: 0,
+            counts: &[],
+            constants: &[],
         }
     }
 
@@ -856,6 +918,8 @@ impl<'a> CreateProgram<'a> {
             kind,
             bindings,
             push_constants: 0,
+            counts: &[],
+            constants: &[],
         }
     }
 
@@ -864,6 +928,63 @@ impl<'a> CreateProgram<'a> {
     pub const fn push_constants(mut self, bytes: u32) -> Self {
         self.push_constants = bytes;
         self
+    }
+
+    /// With arrays of bindings: `counts[i]` resources at binding `i`
+    /// (WGSL's `binding_array<texture_2d<f32>, 8>`, GLSL's
+    /// `sampler2D textures[8]`), one entry per binding.
+    #[must_use]
+    pub const fn counts(mut self, counts: &'a [u32]) -> Self {
+        self.counts = counts;
+        self
+    }
+
+    /// With specialization constants (WGSL's `override`, GLSL's
+    /// `layout(constant_id = ..)`), set for every stage.
+    #[must_use]
+    pub const fn constants(mut self, constants: &'a [Constant]) -> Self {
+        self.constants = constants;
+        self
+    }
+}
+
+/// A specialization constant: its ID in the shader, and its 32 bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Constant {
+    /// The constant's ID (WGSL's `@id(..)`, GLSL's `constant_id`).
+    pub id: u32,
+    /// Its value's bits.
+    pub bits: u32,
+}
+
+impl Constant {
+    /// An unsigned integer.
+    pub const fn u32(id: u32, value: u32) -> Self {
+        Self { id, bits: value }
+    }
+
+    /// A signed integer.
+    pub const fn i32(id: u32, value: i32) -> Self {
+        Self {
+            id,
+            bits: value as u32,
+        }
+    }
+
+    /// A float.
+    pub const fn f32(id: u32, value: f32) -> Self {
+        Self {
+            id,
+            bits: value.to_bits(),
+        }
+    }
+
+    /// A boolean.
+    pub const fn bool(id: u32, value: bool) -> Self {
+        Self {
+            id,
+            bits: value as u32,
+        }
     }
 }
 
@@ -1164,6 +1285,80 @@ impl<'a> Dispatch<'a> {
     }
 }
 
+/// Run a compute program over as many workgroups as a buffer says: three
+/// `u32`s at `offset` (a multiple of 4) of a buffer made with
+/// [`BufferUsage::INDIRECT`], written there by an upload or a program.
+#[derive(Debug, Clone, Copy)]
+pub struct DispatchIndirect<'a> {
+    /// The program.
+    pub program: Program,
+    /// Its bindings, in order.
+    pub bindings: &'a [Bind],
+    /// Its push constants.
+    pub push: &'a [u8],
+    /// The buffer holding the counts.
+    pub buffer: Buffer,
+    /// Where in it.
+    pub offset: u64,
+}
+
+impl<'a> DispatchIndirect<'a> {
+    /// Runs `program` with `bindings` over the workgroups at `offset` of
+    /// `buffer`.
+    pub const fn new(program: Program, bindings: &'a [Bind], buffer: Buffer, offset: u64) -> Self {
+        Self {
+            program,
+            bindings,
+            push: &[],
+            buffer,
+            offset,
+        }
+    }
+
+    /// With push constants.
+    #[must_use]
+    pub const fn push(mut self, push: &'a [u8]) -> Self {
+        self.push = push;
+        self
+    }
+}
+
+/// Where an indirect draw's counts are: `count` commands, `stride` bytes
+/// apart, from `offset` (a multiple of 4) of a buffer made with
+/// [`BufferUsage::INDIRECT`]. Each is four `u32`s (vertex count, instance
+/// count, first vertex, first instance), or for an indexed draw five
+/// (index count, instance count, first index, an `i32` base vertex,
+/// first instance): Vulkan's `VkDrawIndirectCommand` and
+/// `VkDrawIndexedIndirectCommand`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Indirect {
+    /// The buffer.
+    pub buffer: Buffer,
+    /// Where the first command is.
+    pub offset: u64,
+    /// How many commands.
+    pub count: u32,
+    /// The bytes from one to the next: at least a command's size, a
+    /// multiple of 4; or 0, for a command's size.
+    pub stride: u32,
+}
+
+impl Indirect {
+    /// A command's bytes, indexed or not.
+    pub const fn command_size(indexed: bool) -> u32 {
+        if indexed { 20 } else { 16 }
+    }
+
+    /// The bytes from one command to the next.
+    pub const fn step(&self, indexed: bool) -> u32 {
+        if self.stride == 0 {
+            Self::command_size(indexed)
+        } else {
+            self.stride
+        }
+    }
+}
+
 /// Draw with a draw program: `vertex_count` vertices (or indices, with an
 /// index buffer), `instance_count` times, into its targets.
 #[derive(Debug, Clone, Copy)]
@@ -1178,6 +1373,9 @@ pub struct Draw<'a> {
     pub vertex_buffers: [Option<VertexBinding>; MAX_VERTEX_BUFFERS],
     /// Its index buffer, for an indexed draw.
     pub index: Option<IndexBuffer>,
+    /// Counts from a buffer, in place of `vertex_count`, `instance_count`,
+    /// `first`, `base_vertex` and `first_instance`.
+    pub indirect: Option<Indirect>,
     /// How many vertices, or indices.
     pub vertex_count: u32,
     /// How many instances.
@@ -1221,6 +1419,7 @@ impl<'a> Draw<'a> {
             depth: None,
             vertex_buffers: [None; MAX_VERTEX_BUFFERS],
             index: None,
+            indirect: None,
             vertex_count,
             instance_count: 1,
             first: 0,
@@ -1277,6 +1476,33 @@ impl<'a> Draw<'a> {
             buffer,
             offset: 0,
             format,
+        });
+        self
+    }
+
+    /// Draws what the command at `offset` of `buffer` says: see
+    /// [`Indirect`].
+    #[must_use]
+    pub const fn indirect(self, buffer: Buffer, offset: u64) -> Self {
+        self.indirect_many(buffer, offset, 1, 0)
+    }
+
+    /// Draws `count` commands from `offset` of `buffer`, `stride` bytes
+    /// apart (0: one after another), on a device with
+    /// [`GpuFeatures::MULTI_DRAW_INDIRECT`] for more than one.
+    #[must_use]
+    pub const fn indirect_many(
+        mut self,
+        buffer: Buffer,
+        offset: u64,
+        count: u32,
+        stride: u32,
+    ) -> Self {
+        self.indirect = Some(Indirect {
+            buffer,
+            offset,
+            count,
+            stride,
         });
         self
     }
@@ -1502,6 +1728,70 @@ pub struct GpuInfo {
     pub kind: GpuKind,
     /// The Vulkan version it supports, as `(major, minor, patch)`.
     pub api_version: (u32, u32, u32),
+    /// Its optional features.
+    pub features: GpuFeatures,
+    /// How far it goes.
+    pub limits: Limits,
+}
+
+/// How far a device goes: sizes it handles. What goes further fails, in
+/// Vulkan (the validation layer says so) rather than in this crate's
+/// checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Limits {
+    /// The largest workgroup, each way.
+    pub workgroup_size: [u32; 3],
+    /// The most invocations in a workgroup.
+    pub workgroup_invocations: u32,
+    /// The most workgroups in a dispatch, each way.
+    pub workgroups: [u32; 3],
+    /// Workgroup memory (WGSL's `var<workgroup>`), in bytes.
+    pub workgroup_memory: u32,
+    /// Push constants, in bytes.
+    pub push_constants: u32,
+    /// The widest and tallest flat image.
+    pub image_2d: u32,
+    /// The widest, tallest and deepest volume.
+    pub image_3d: u32,
+    /// The largest cube face.
+    pub image_cube: u32,
+    /// The most layers in an image.
+    pub layers: u32,
+    /// The most bytes a storage binding reaches.
+    pub storage_buffer_range: u32,
+    /// The most bytes a uniform binding reaches.
+    pub uniform_buffer_range: u32,
+    /// The most resources one stage of a program binds, every element of
+    /// an array counted.
+    pub bindings_per_stage: u32,
+    /// The most samples per pixel of a colour target.
+    pub samples: u32,
+    /// How many invocations a subgroup has.
+    pub subgroup_size: u32,
+    /// What subgroups do in compute shaders.
+    pub subgroup_ops: SubgroupOps,
+}
+
+impl Limits {
+    /// What every Vulkan 1.3 device reaches: a program within these runs
+    /// anywhere. What [`SimGpu`] reports.
+    pub const MINIMUM: Self = Self {
+        workgroup_size: [128, 128, 64],
+        workgroup_invocations: 128,
+        workgroups: [65535; 3],
+        workgroup_memory: 16384,
+        push_constants: 128,
+        image_2d: 4096,
+        image_3d: 256,
+        image_cube: 4096,
+        layers: 256,
+        storage_buffer_range: 1 << 27,
+        uniform_buffer_range: 16384,
+        bindings_per_stage: 128,
+        samples: 4,
+        subgroup_size: 1,
+        subgroup_ops: SubgroupOps::BASIC,
+    };
 }
 
 /// What kind of GPU.
@@ -1571,6 +1861,7 @@ outcomes! {
     GenerateMips => Result<(), GpuError>;
     FillBuffer => Result<(), GpuError>;
     Dispatch<'_> => Result<(), GpuError>;
+    DispatchIndirect<'_> => Result<(), GpuError>;
     Draw<'_> => Result<(), GpuError>;
     Download<'_> => Result<(), GpuError>;
     DownloadImage<'_> => Result<(), GpuError>;
@@ -1637,6 +1928,7 @@ pub mod effects {
         GenerateMips,
         FillBuffer,
         Dispatch,
+        DispatchIndirect,
         Draw,
         Download,
         DownloadImage,
@@ -1672,6 +1964,7 @@ keyed! {
     GenerateMips => GenerateMips;
     FillBuffer => FillBuffer;
     Dispatch<'_> => Dispatch;
+    DispatchIndirect<'_> => DispatchIndirect;
     Draw<'_> => Draw;
     Download<'_> => Download;
     DownloadImage<'_> => DownloadImage;
@@ -1749,8 +2042,12 @@ pub(crate) enum ResInfo {
     Program {
         label: String,
         compute: bool,
+        /// Each binding's kind, an array's once per element.
         bindings: Vec<BindingKind>,
+        /// Each of those: its binding and its element.
+        slots: Vec<(u32, u32)>,
         push_constants: u32,
+        constants: Vec<Constant>,
         /// For a draw program.
         draw: Option<DrawInfo>,
     },

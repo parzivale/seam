@@ -10,11 +10,12 @@ use seam_core::{Closing, Inspect, Opening, Perform};
 
 use crate::validate::{self, Lookup};
 use crate::{
-    AddressMode, Bind, BlitImage, Buffer, CopyBuffer, CopyImage, CreateBuffer, CreateImage,
-    CreateProgram, CreateSampler, DepthLoad, DeviceInfo, Dispatch, Download, DownloadImage, Draw,
-    DrawInfo, FillBuffer, Filter, Finish, Format, GenerateMips, GpuError, GpuInfo, GpuKind, Image,
-    ImageRegion, Import, IndexFormat, IsDone, Load, MAX_TARGETS, MAX_VERTEX_BUFFERS, Program,
-    ProgramKind, Rect, ResInfo, Sampler, Submit, Upload, UploadImage, Viewport,
+    AddressMode, Bind, BlitImage, Buffer, Constant, CopyBuffer, CopyImage, CreateBuffer,
+    CreateImage, CreateProgram, CreateSampler, DepthLoad, DeviceInfo, Dispatch, DispatchIndirect,
+    Download, DownloadImage, Draw, DrawInfo, FillBuffer, Filter, Finish, Format, GenerateMips,
+    GpuError, GpuFeatures, GpuInfo, GpuKind, Image, ImageRegion, Import, IndexFormat, Indirect,
+    IsDone, Limits, Load, MAX_TARGETS, MAX_VERTEX_BUFFERS, Program, ProgramKind, Rect, ResInfo,
+    Sampler, Submit, Upload, UploadImage, Viewport,
 };
 
 /// What [`SimGpu`] was asked to do, in order: for tests to assert on.
@@ -93,6 +94,7 @@ pub enum Recorded {
 /// with.
 pub struct Run<'a> {
     label: &'a str,
+    constants: Vec<Constant>,
     groups: [u32; 3],
     push: &'a [u8],
     /// For each binding, the slot holding its resource's bytes (`None`
@@ -234,6 +236,11 @@ impl Run<'_> {
     /// The program's label.
     pub fn label(&self) -> &str {
         self.label
+    }
+
+    /// Specialization constant `id`'s bits, if the program set it.
+    pub fn constant(&self, id: u32) -> Option<u32> {
+        self.constants.iter().find(|c| c.id == id).map(|c| c.bits)
     }
 
     /// The workgroups a dispatch asked for (`[0, 0, 0]` for a draw).
@@ -782,6 +789,7 @@ impl State {
         }
         let mut run = Run {
             label: &label,
+            constants: run_setup.constants,
             groups: run_setup.groups,
             push: run_setup.push,
             bound,
@@ -811,6 +819,7 @@ fn image_of(state: &State, id: u64) -> CreateImage {
 }
 
 struct RunSetup<'a> {
+    constants: Vec<Constant>,
     bindings: &'a [Bind],
     push: &'a [u8],
     groups: [u32; 3],
@@ -861,11 +870,14 @@ impl Perform<Opening<CreateProgram<'_>>> for SimGpu {
             ProgramKind::Draw(p) => (false, Some(DrawInfo::of(p))),
         };
         let mut state = self.lock();
+        let (bindings, slots) = validate::slots(&op);
         let info = ResInfo::Program {
             label: op.label.into(),
             compute,
-            bindings: op.bindings.to_vec(),
+            bindings,
+            slots,
             push_constants: op.push_constants,
+            constants: op.constants.to_vec(),
             draw,
         };
         let id = state.add(info, 0);
@@ -1147,23 +1159,64 @@ impl Perform<Dispatch<'_>> for SimGpu {
     fn perform(&mut self, op: Dispatch<'_>) -> Result<(), GpuError> {
         let mut state = self.lock();
         validate::dispatch(&*state, &op)?;
-        let label = validate::program(&*state, op.program.raw())?
-            .label
-            .to_owned();
-        state.log.push(Recorded::Dispatch {
+        state.dispatch(op.program, op.bindings, op.push, op.groups);
+        Ok(())
+    }
+}
+
+impl Perform<DispatchIndirect<'_>> for SimGpu {
+    fn perform(&mut self, op: DispatchIndirect<'_>) -> Result<(), GpuError> {
+        let mut state = self.lock();
+        validate::dispatch_indirect(&*state, &op)?;
+        let at = op.offset as usize;
+        let groups = words(&state.data(op.buffer.raw())[at..at + 12]);
+        state.dispatch(
+            op.program,
+            op.bindings,
+            op.push,
+            [groups[0], groups[1], groups[2]],
+        );
+        Ok(())
+    }
+}
+
+/// Little-endian `u32`s.
+fn words(bytes: &[u8]) -> Vec<u32> {
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
+        .collect()
+}
+
+impl State {
+    /// A program's label and constants.
+    fn program_of(&self, program: Program) -> (String, Vec<Constant>) {
+        match &self.res[&program.raw()].info {
+            ResInfo::Program {
+                label, constants, ..
+            } => (label.clone(), constants.clone()),
+            _ => unreachable!("validated as a program"),
+        }
+    }
+
+    fn dispatch(&mut self, program: Program, bindings: &[Bind], push: &[u8], groups: [u32; 3]) {
+        let (label, constants) = self.program_of(program);
+        self.log.push(Recorded::Dispatch {
             label: label.clone(),
-            groups: op.groups,
+            groups,
         });
-        state.run(
+        self.run(
             label,
             RunSetup {
-                bindings: op.bindings,
-                push: op.push,
-                groups: op.groups,
+                constants,
+                bindings,
+                push,
+                groups,
                 draw: None,
             },
         );
-        Ok(())
     }
 }
 
@@ -1278,9 +1331,7 @@ impl Perform<Draw<'_>> for SimGpu {
     fn perform(&mut self, op: Draw<'_>) -> Result<(), GpuError> {
         let mut state = self.lock();
         validate::draw(&*state, &op)?;
-        let label = validate::program(&*state, op.program.raw())?
-            .label
-            .to_owned();
+        let (label, constants) = state.program_of(op.program);
         for t in op.targets.iter().flatten() {
             if let Load::Clear(rgba) = t.load {
                 let img = image_of(&state, t.image.raw());
@@ -1309,21 +1360,49 @@ impl Perform<Draw<'_>> for SimGpu {
             .chain(op.depth.map(|d| d.image))
             .next()
             .expect("validated: a draw writes something");
-        state.log.push(Recorded::Draw {
-            label: label.clone(),
-            target: first,
-            vertex_count: op.vertex_count,
-            instance_count: op.instance_count,
-        });
-        state.run(
-            label,
-            RunSetup {
-                bindings: op.bindings,
-                push: op.push,
-                groups: [0; 3],
-                draw: Some(&op),
-            },
-        );
+        // An indirect draw is each of its commands in turn.
+        let draws: Vec<Draw<'_>> = match op.indirect {
+            None => std::vec![op],
+            Some(ind) => {
+                let indexed = op.index.is_some();
+                let size = Indirect::command_size(indexed) as usize;
+                let step = ind.step(indexed) as usize;
+                let data = state.data(ind.buffer.raw());
+                (0..ind.count as usize)
+                    .map(|i| {
+                        let at = ind.offset as usize + i * step;
+                        let w = words(&data[at..at + size]);
+                        let mut d = op;
+                        d.indirect = None;
+                        (d.vertex_count, d.instance_count, d.first) = (w[0], w[1], w[2]);
+                        if indexed {
+                            (d.base_vertex, d.first_instance) = (w[3] as i32, w[4]);
+                        } else {
+                            d.first_instance = w[3];
+                        }
+                        d
+                    })
+                    .collect()
+            }
+        };
+        for d in &draws {
+            state.log.push(Recorded::Draw {
+                label: label.clone(),
+                target: first,
+                vertex_count: d.vertex_count,
+                instance_count: d.instance_count,
+            });
+            state.run(
+                label.clone(),
+                RunSetup {
+                    constants: constants.clone(),
+                    bindings: op.bindings,
+                    push: op.push,
+                    groups: [0; 3],
+                    draw: Some(d),
+                },
+            );
+        }
         // Multisampled targets are kept one sample per pixel: resolving
         // copies them.
         for t in op.targets.iter().flatten() {
@@ -1415,6 +1494,8 @@ impl Inspect<DeviceInfo> for SimGpu {
             name: "seam simulated GPU".into(),
             kind: GpuKind::Other,
             api_version: (1, 3, 0),
+            features: GpuFeatures::ALL,
+            limits: Limits::MINIMUM,
         }
     }
 }

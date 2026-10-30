@@ -40,11 +40,12 @@ use crate::validate::{self, Lookup};
 use crate::{
     AddressMode, AttrFormat, Bind, BindingKind, BlendFactor, BlendOp, BlitImage, BorderColor,
     Buffer, BufferUsage, ColorMask, ColorTarget, Compare, CopyBuffer, CopyImage, CreateBuffer,
-    CreateImage, CreateProgram, CreateSampler, Cull, DepthLoad, DeviceInfo, Dispatch, Download,
-    DownloadImage, Draw, DrawInfo, FillBuffer, Filter, Finish, Format, FrontFace, GenerateMips,
-    GpuError, GpuInfo, GpuKind, Image, ImageKind, ImageRegion, ImageUsage, Import, IndexFormat,
-    IsDone, Load, PolygonMode, Program, ProgramKind, ResInfo, Sampler, StencilFace, StencilOp,
-    Step, Submit, Topology, Upload, UploadImage,
+    CreateImage, CreateProgram, CreateSampler, Cull, DepthLoad, DeviceInfo, Dispatch,
+    DispatchIndirect, Download, DownloadImage, Draw, DrawInfo, FillBuffer, Filter, Finish, Format,
+    FrontFace, GenerateMips, GpuError, GpuFeatures, GpuInfo, GpuKind, Image, ImageKind,
+    ImageRegion, ImageUsage, Import, IndexFormat, IsDone, Limits, Load, PolygonMode, Program,
+    ProgramKind, ResInfo, Sampler, StencilFace, StencilOp, Step, SubgroupOps, Submit, Topology,
+    Upload, UploadImage,
 };
 
 /// How [`Ash::with`] sets Vulkan up.
@@ -383,6 +384,94 @@ struct Features {
     bc: bool,
     /// Arrays of cubes.
     cube_array: bool,
+    /// More than one indirect draw at once.
+    multi_draw_indirect: bool,
+    /// Timestamps on the queue.
+    timestamps: bool,
+    /// Buffer device addresses.
+    addresses: bool,
+    /// Occlusion queries that count.
+    precise_occlusion: bool,
+}
+
+impl Features {
+    fn public(self) -> GpuFeatures {
+        let mut f = GpuFeatures::default();
+        for (on, flag) in [
+            (self.fill_mode_non_solid, GpuFeatures::WIREFRAME),
+            (self.independent_blend, GpuFeatures::INDEPENDENT_BLEND),
+            (self.bc, GpuFeatures::BC),
+            (self.cube_array, GpuFeatures::CUBE_ARRAY),
+            (self.multi_draw_indirect, GpuFeatures::MULTI_DRAW_INDIRECT),
+            (self.timestamps, GpuFeatures::TIMESTAMPS),
+            (self.addresses, GpuFeatures::ADDRESSES),
+            (self.precise_occlusion, GpuFeatures::PRECISE_OCCLUSION),
+        ] {
+            if on {
+                f = f | flag;
+            }
+        }
+        f
+    }
+}
+
+/// A device's limits, from its properties.
+fn limits(l: &vk::PhysicalDeviceLimits, sub: &vk::PhysicalDeviceSubgroupProperties<'_>) -> Limits {
+    let samples = l.framebuffer_color_sample_counts.as_raw();
+    let mut ops = SubgroupOps::default();
+    if sub.supported_stages.contains(vk::ShaderStageFlags::COMPUTE) {
+        let has = sub.supported_operations;
+        for (bit, flag) in [
+            (vk::SubgroupFeatureFlags::BASIC, SubgroupOps::BASIC),
+            (vk::SubgroupFeatureFlags::VOTE, SubgroupOps::VOTE),
+            (
+                vk::SubgroupFeatureFlags::ARITHMETIC,
+                SubgroupOps::ARITHMETIC,
+            ),
+            (vk::SubgroupFeatureFlags::BALLOT, SubgroupOps::BALLOT),
+            (vk::SubgroupFeatureFlags::SHUFFLE, SubgroupOps::SHUFFLE),
+            (
+                vk::SubgroupFeatureFlags::SHUFFLE_RELATIVE,
+                SubgroupOps::SHUFFLE_RELATIVE,
+            ),
+            (vk::SubgroupFeatureFlags::CLUSTERED, SubgroupOps::CLUSTERED),
+            (vk::SubgroupFeatureFlags::QUAD, SubgroupOps::QUAD),
+        ] {
+            if has.contains(bit) {
+                ops = ops | flag;
+            }
+        }
+    }
+    Limits {
+        workgroup_size: l.max_compute_work_group_size,
+        workgroup_invocations: l.max_compute_work_group_invocations,
+        workgroups: l.max_compute_work_group_count,
+        workgroup_memory: l.max_compute_shared_memory_size,
+        push_constants: l.max_push_constants_size,
+        image_2d: l.max_image_dimension2_d,
+        image_3d: l.max_image_dimension3_d,
+        image_cube: l.max_image_dimension_cube,
+        layers: l.max_image_array_layers,
+        storage_buffer_range: l.max_storage_buffer_range,
+        uniform_buffer_range: l.max_uniform_buffer_range,
+        bindings_per_stage: l.max_per_stage_resources,
+        // The highest bit set: the most samples.
+        samples: if samples == 0 {
+            1
+        } else {
+            1 << (31 - samples.leading_zeros())
+        },
+        subgroup_size: sub.subgroup_size,
+        subgroup_ops: ops,
+    }
+}
+
+/// How many workgroups a dispatch runs.
+#[derive(Clone, Copy)]
+enum Groups {
+    Direct([u32; 3]),
+    /// As many as buffer `.0` says at offset `.1`.
+    Indirect(u64, u64),
 }
 
 /// How many descriptor sets one pool holds.
@@ -833,20 +922,35 @@ impl Dev {
             instance.get_physical_device_features2(physical, &mut f2);
             f2.features
         };
+        // SAFETY: plain queries.
+        let (timestamp_bits, sub) = unsafe {
+            let families = instance.get_physical_device_queue_family_properties(physical);
+            let mut sub = vk::PhysicalDeviceSubgroupProperties::default();
+            let mut p2 = vk::PhysicalDeviceProperties2::default().push_next(&mut sub);
+            instance.get_physical_device_properties2(physical, &mut p2);
+            (families[family as usize].timestamp_valid_bits, sub)
+        };
         let features = Features {
             fill_mode_non_solid: has10.fill_mode_non_solid == vk::TRUE,
             independent_blend: has10.independent_blend == vk::TRUE,
             bc: has10.texture_compression_bc == vk::TRUE,
             cube_array: has10.image_cube_array == vk::TRUE,
+            multi_draw_indirect: has10.multi_draw_indirect == vk::TRUE,
+            timestamps: timestamp_bits > 0 && props.limits.timestamp_period > 0.0,
+            addresses: has12.buffer_device_address == vk::TRUE,
+            precise_occlusion: has10.occlusion_query_precise == vk::TRUE,
         };
         let f10 = vk::PhysicalDeviceFeatures::default()
             .fill_mode_non_solid(features.fill_mode_non_solid)
             .independent_blend(features.independent_blend)
             .texture_compression_bc(features.bc)
-            .image_cube_array(features.cube_array);
+            .image_cube_array(features.cube_array)
+            .multi_draw_indirect(features.multi_draw_indirect)
+            .occlusion_query_precise(features.precise_occlusion);
         let mut f12 = vk::PhysicalDeviceVulkan12Features::default()
             .vulkan_memory_model(has12.vulkan_memory_model == vk::TRUE)
-            .vulkan_memory_model_device_scope(has12.vulkan_memory_model_device_scope == vk::TRUE);
+            .vulkan_memory_model_device_scope(has12.vulkan_memory_model_device_scope == vk::TRUE)
+            .buffer_device_address(features.addresses);
         // SAFETY: a plain query.
         let available =
             unsafe { instance.enumerate_device_extension_properties(physical) }.unwrap_or_default();
@@ -924,6 +1028,8 @@ impl Dev {
                 vk::api_version_minor(props.api_version),
                 vk::api_version_patch(props.api_version),
             ),
+            features: features.public(),
+            limits: limits(&props.limits, &sub),
         };
         let dev = Dev {
             _entry: entry,
@@ -1330,9 +1436,14 @@ impl Dev {
     /// A descriptor set with `bindings` written, from the batch's pools.
     fn descriptor_set(
         &mut self,
+        program: u64,
         set_layout: vk::DescriptorSetLayout,
         bindings: &[Bind],
     ) -> Result<vk::DescriptorSet, GpuError> {
+        let ResInfo::Program { slots, .. } = &self.res[&program].info else {
+            unreachable!("validated as a program")
+        };
+        let slots = slots.clone();
         let layouts = [set_layout];
         let mut set = None;
         for attempt in 0..2 {
@@ -1349,7 +1460,8 @@ impl Dev {
                     ]
                     .map(|ty| vk::DescriptorPoolSize {
                         ty,
-                        descriptor_count: SETS_PER_POOL * 4,
+                        // A set of large arrays gets a pool of its own.
+                        descriptor_count: (SETS_PER_POOL * 4).max(bindings.len() as u32),
                     });
                     let info = vk::DescriptorPoolCreateInfo::default()
                         .max_sets(SETS_PER_POOL)
@@ -1439,11 +1551,12 @@ impl Dev {
         let (mut bi, mut ii) = (0, 0);
         let writes: Vec<vk::WriteDescriptorSet<'_>> = bindings
             .iter()
-            .enumerate()
-            .map(|(i, b)| {
+            .zip(&slots)
+            .map(|(b, &(binding, element))| {
                 let w = vk::WriteDescriptorSet::default()
                     .dst_set(set)
-                    .dst_binding(i as u32)
+                    .dst_binding(binding)
+                    .dst_array_element(element)
                     .descriptor_type(descriptor_type(b.kind()));
                 match b {
                     Bind::Uniform(_) | Bind::Storage(_) => {
@@ -1613,6 +1726,7 @@ impl Dev {
             (BufferUsage::INDEX, vk::BufferUsageFlags::INDEX_BUFFER),
             (BufferUsage::UNIFORM, vk::BufferUsageFlags::UNIFORM_BUFFER),
             (BufferUsage::STORAGE, vk::BufferUsageFlags::STORAGE_BUFFER),
+            (BufferUsage::INDIRECT, vk::BufferUsageFlags::INDIRECT_BUFFER),
         ] {
             if op.usage.contains(ours) {
                 usage |= theirs;
@@ -1949,10 +2063,11 @@ impl Dev {
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(i as u32)
                     .descriptor_type(descriptor_type(*k))
-                    .descriptor_count(1)
+                    .descriptor_count(op.counts.get(i).copied().unwrap_or(1))
                     .stage_flags(vk::ShaderStageFlags::ALL)
             })
             .collect();
+        let (kinds, slots) = validate::slots(op);
         let ranges = [vk::PushConstantRange {
             stage_flags: vk::ShaderStageFlags::ALL,
             offset: 0,
@@ -1995,8 +2110,10 @@ impl Dev {
             ResInfo::Program {
                 label: op.label.into(),
                 compute,
-                bindings: op.bindings.to_vec(),
+                bindings: kinds,
+                slots,
                 push_constants: op.push_constants,
+                constants: op.constants.to_vec(),
                 draw: match &op.kind {
                     ProgramKind::Draw(p) => Some(DrawInfo::of(p)),
                     ProgramKind::Compute { .. } => None,
@@ -2022,6 +2139,22 @@ impl Dev {
                 op.label
             ))
         };
+        let entries: Vec<vk::SpecializationMapEntry> = (0u32..)
+            .zip(op.constants)
+            .map(|(i, c)| vk::SpecializationMapEntry {
+                constant_id: c.id,
+                offset: 4 * i,
+                size: 4,
+            })
+            .collect();
+        let data: Vec<u8> = op
+            .constants
+            .iter()
+            .flat_map(|c| c.bits.to_ne_bytes())
+            .collect();
+        let spec = vk::SpecializationInfo::default()
+            .map_entries(&entries)
+            .data(&data);
         match op.kind {
             ProgramKind::Compute { spirv, entry } => {
                 let module = Self::shader(device, spirv, op.label)?;
@@ -2029,7 +2162,8 @@ impl Dev {
                 let stage = vk::PipelineShaderStageCreateInfo::default()
                     .stage(vk::ShaderStageFlags::COMPUTE)
                     .module(module)
-                    .name(&name);
+                    .name(&name)
+                    .specialization_info(&spec);
                 let info = vk::ComputePipelineCreateInfo::default()
                     .stage(stage)
                     .layout(layout);
@@ -2087,11 +2221,13 @@ impl Dev {
                     vk::PipelineShaderStageCreateInfo::default()
                         .stage(vk::ShaderStageFlags::VERTEX)
                         .module(vs)
-                        .name(&vname),
+                        .name(&vname)
+                        .specialization_info(&spec),
                     vk::PipelineShaderStageCreateInfo::default()
                         .stage(vk::ShaderStageFlags::FRAGMENT)
                         .module(fs)
-                        .name(&fname),
+                        .name(&fname)
+                        .specialization_info(&spec),
                 ];
                 let mut vbinds = Vec::new();
                 let mut vattrs = Vec::new();
@@ -2349,14 +2485,48 @@ impl Dev {
 
     fn dispatch(&mut self, op: Dispatch<'_>) -> Result<(), GpuError> {
         validate::dispatch(&*self, &op)?;
+        self.compute(op.program, op.bindings, op.push, Groups::Direct(op.groups))
+    }
+
+    fn dispatch_indirect(&mut self, op: DispatchIndirect<'_>) -> Result<(), GpuError> {
+        validate::dispatch_indirect(&*self, &op)?;
+        self.compute(
+            op.program,
+            op.bindings,
+            op.push,
+            Groups::Indirect(op.buffer.raw(), op.offset),
+        )
+    }
+
+    /// What reading indirect counts from buffer `id` is, to order.
+    fn indirect_use(id: u64) -> Use {
+        Use {
+            id,
+            stage: vk::PipelineStageFlags2::DRAW_INDIRECT,
+            access: vk::AccessFlags2::INDIRECT_COMMAND_READ,
+            write: false,
+            layout: None,
+        }
+    }
+
+    fn compute(
+        &mut self,
+        program: Program,
+        bindings: &[Bind],
+        push: &[u8],
+        groups: Groups,
+    ) -> Result<(), GpuError> {
         self.retire();
-        let uses = self.binding_uses(op.bindings, true);
+        let mut uses = self.binding_uses(bindings, true);
+        if let Groups::Indirect(id, _) = groups {
+            uses.push(Self::indirect_use(id));
+        }
         let cmd = self.uses(&uses)?;
-        let (pipeline, layout, set_layout) = self.use_program(op.program.raw())?;
-        let set = if op.bindings.is_empty() {
+        let (pipeline, layout, set_layout) = self.use_program(program.raw())?;
+        let set = if bindings.is_empty() {
             None
         } else {
-            Some(self.descriptor_set(set_layout, op.bindings)?)
+            Some(self.descriptor_set(program.raw(), set_layout, bindings)?)
         };
         // SAFETY: a compute pipeline with its layout, a set matching it,
         // and push constants of the declared size.
@@ -2373,12 +2543,19 @@ impl Dev {
                     &[],
                 );
             }
-            if !op.push.is_empty() {
+            if !push.is_empty() {
                 self.device
-                    .cmd_push_constants(cmd, layout, vk::ShaderStageFlags::ALL, 0, op.push);
+                    .cmd_push_constants(cmd, layout, vk::ShaderStageFlags::ALL, 0, push);
             }
-            let [x, y, z] = op.groups;
-            self.device.cmd_dispatch(cmd, x, y, z);
+            match groups {
+                Groups::Direct([x, y, z]) => self.device.cmd_dispatch(cmd, x, y, z),
+                Groups::Indirect(id, offset) => {
+                    let Kind::Buffer { buffer, .. } = self.res[&id].kind else {
+                        unreachable!()
+                    };
+                    self.device.cmd_dispatch_indirect(cmd, buffer, offset);
+                }
+            }
         }
         Ok(())
     }
@@ -2436,12 +2613,27 @@ impl Dev {
                 layout: None,
             });
         }
+        let indirect = match op.indirect {
+            Some(ind) => {
+                if ind.count > 1 && !self.features.multi_draw_indirect {
+                    return Err(GpuError::Unsupported(
+                        "this device draws one indirect command at a time".into(),
+                    ));
+                }
+                uses.push(Self::indirect_use(ind.buffer.raw()));
+                let Kind::Buffer { buffer, .. } = self.res[&ind.buffer.raw()].kind else {
+                    unreachable!()
+                };
+                Some((buffer, ind, ind.step(op.index.is_some())))
+            }
+            None => None,
+        };
         let cmd = self.uses(&uses)?;
         let (pipeline, layout, set_layout) = self.use_program(op.program.raw())?;
         let set = if op.bindings.is_empty() {
             None
         } else {
-            Some(self.descriptor_set(set_layout, op.bindings)?)
+            Some(self.descriptor_set(op.program.raw(), set_layout, op.bindings)?)
         };
         // The render area: the targets' size, at the level drawn into.
         let first = op
@@ -2617,7 +2809,18 @@ impl Dev {
                 self.device
                     .cmd_bind_vertex_buffers(cmd, slot, &[buffer], &[offset]);
             }
-            if op.vertex_count > 0 && op.instance_count > 0 {
+            if let Some((buffer, ind, step)) = indirect {
+                match index {
+                    Some((ib, offset, ty)) => {
+                        self.device.cmd_bind_index_buffer(cmd, ib, offset, ty);
+                        self.device
+                            .cmd_draw_indexed_indirect(cmd, buffer, ind.offset, ind.count, step);
+                    }
+                    None => self
+                        .device
+                        .cmd_draw_indirect(cmd, buffer, ind.offset, ind.count, step),
+                }
+            } else if op.vertex_count > 0 && op.instance_count > 0 {
                 match index {
                     Some((buffer, offset, ty)) => {
                         self.device.cmd_bind_index_buffer(cmd, buffer, offset, ty);
@@ -3335,6 +3538,7 @@ now! {
     [] GenerateMips => Result<(), GpuError>, |dev, op| dev.generate_mips(op);
     [] FillBuffer => Result<(), GpuError>, |dev, op| dev.fill(op);
     ['a] Dispatch<'a> => Result<(), GpuError>, |dev, op| dev.dispatch(op);
+    ['a] DispatchIndirect<'a> => Result<(), GpuError>, |dev, op| dev.dispatch_indirect(op);
     ['a] Draw<'a> => Result<(), GpuError>, |dev, op| dev.draw(op);
 }
 
@@ -3354,6 +3558,8 @@ struct ProgramSpec {
     draw: Option<DrawSpec>,
     bindings: Vec<BindingKind>,
     push_constants: u32,
+    counts: Vec<u32>,
+    constants: Vec<crate::Constant>,
 }
 
 struct DrawSpec {
@@ -3406,6 +3612,8 @@ impl ProgramSpec {
             draw,
             bindings: op.bindings.to_vec(),
             push_constants: op.push_constants,
+            counts: op.counts.to_vec(),
+            constants: op.constants.to_vec(),
         }
     }
 
@@ -3432,6 +3640,8 @@ impl ProgramSpec {
             kind,
             bindings: &self.bindings,
             push_constants: self.push_constants,
+            counts: &self.counts,
+            constants: &self.constants,
         }
     }
 }

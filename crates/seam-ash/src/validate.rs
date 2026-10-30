@@ -46,6 +46,7 @@ pub(crate) struct ProgramInfo<'a> {
     pub label: &'a str,
     pub compute: bool,
     pub bindings: &'a [BindingKind],
+    pub slots: &'a [(u32, u32)],
     pub push_constants: u32,
     pub draw: Option<&'a DrawInfo>,
 }
@@ -56,12 +57,15 @@ pub(crate) fn program(l: &impl Lookup, id: u64) -> Result<ProgramInfo<'_>, GpuEr
             label,
             compute,
             bindings,
+            slots,
             push_constants,
             draw,
+            ..
         }) => Ok(ProgramInfo {
             label,
             compute: *compute,
             bindings,
+            slots,
             push_constants: *push_constants,
             draw: draw.as_ref(),
         }),
@@ -155,12 +159,46 @@ pub(crate) fn create_image(op: &CreateImage) -> Result<(), GpuError> {
     Ok(())
 }
 
+/// A program's bindings one element at a time: each kind, and its binding
+/// and element.
+pub(crate) fn slots(op: &CreateProgram<'_>) -> (Vec<BindingKind>, Vec<(u32, u32)>) {
+    let mut kinds = Vec::new();
+    let mut slots = Vec::new();
+    for (i, kind) in op.bindings.iter().enumerate() {
+        for e in 0..op.counts.get(i).copied().unwrap_or(1) {
+            kinds.push(*kind);
+            slots.push((i as u32, e));
+        }
+    }
+    (kinds, slots)
+}
+
 pub(crate) fn create_program(op: &CreateProgram<'_>) -> Result<(), GpuError> {
     let label = op.label;
     if !op.push_constants.is_multiple_of(4) || op.push_constants > 128 {
         return Err(invalid(format!(
             "program `{label}`: push constants must be a multiple of 4 bytes, at most 128"
         )));
+    }
+    if !op.counts.is_empty() && op.counts.len() != op.bindings.len() {
+        return Err(invalid(format!(
+            "program `{label}` has {} bindings and {} counts",
+            op.bindings.len(),
+            op.counts.len()
+        )));
+    }
+    if let Some(i) = op.counts.iter().position(|&n| n == 0) {
+        return Err(invalid(format!(
+            "program `{label}`: binding {i} is an array of none"
+        )));
+    }
+    for (i, c) in op.constants.iter().enumerate() {
+        if op.constants[..i].iter().any(|d| d.id == c.id) {
+            return Err(invalid(format!(
+                "program `{label}`: constant {} is set twice",
+                c.id
+            )));
+        }
     }
     let ProgramKind::Draw(p) = op.kind else {
         return Ok(());
@@ -460,11 +498,20 @@ fn bindings(
             bound.len()
         )));
     }
+    let name = |i: usize| {
+        let (b, e) = p.slots[i];
+        if p.slots.iter().filter(|s| s.0 == b).count() > 1 {
+            format!("binding {b}[{e}]")
+        } else {
+            format!("binding {b}")
+        }
+    };
     for (i, (b, want)) in bound.iter().zip(p.bindings).enumerate() {
         if b.kind() != *want {
             return Err(invalid(format!(
-                "program `{}`: binding {i} is a {want:?}, given a {:?}",
+                "program `{}`: {} is a {want:?}, given a {:?}",
                 p.label,
+                name(i),
                 b.kind()
             )));
         }
@@ -481,8 +528,9 @@ fn bindings(
         };
         if !ok {
             return Err(invalid(format!(
-                "program `{}`: binding {i}'s resource was not created for that use",
-                p.label
+                "program `{}`: {}'s resource was not created for that use",
+                p.label,
+                name(i)
             )));
         }
     }
@@ -495,6 +543,37 @@ fn bindings(
         )));
     }
     Ok(())
+}
+
+/// Indirect counts: `len` bytes at `offset` of `id`.
+fn indirect(l: &impl Lookup, what: &str, id: u64, offset: u64, len: u64) -> Result<(), GpuError> {
+    let (size, usage) = buffer(l, id)?;
+    if !usage.contains(BufferUsage::INDIRECT) {
+        return Err(invalid(format!(
+            "{what}: the counts' buffer was not created for indirect counts"
+        )));
+    }
+    if !offset.is_multiple_of(4) {
+        return Err(invalid(format!(
+            "{what}: the counts are at a multiple of 4 bytes"
+        )));
+    }
+    range(what, offset, len, size)
+}
+
+pub(crate) fn dispatch_indirect(
+    l: &impl Lookup,
+    op: &crate::DispatchIndirect<'_>,
+) -> Result<(), GpuError> {
+    let p = program(l, op.program.raw())?;
+    if !p.compute {
+        return Err(invalid(format!(
+            "program `{}` is not a compute program",
+            p.label
+        )));
+    }
+    indirect(l, "dispatch", op.buffer.raw(), op.offset, 12)?;
+    bindings(l, &p, op.bindings, op.push)
 }
 
 pub(crate) fn dispatch(l: &impl Lookup, op: &Dispatch<'_>) -> Result<(), GpuError> {
@@ -670,8 +749,26 @@ pub(crate) fn draw(l: &impl Lookup, op: &Draw<'_>) -> Result<(), GpuError> {
             return Err(invalid("draw: an image it draws into is bound to it too"));
         }
     }
-    let vertices = u64::from(op.vertex_count);
-    let instances = u64::from(op.instance_count);
+    // An indirect draw's counts are unknown here: what they read is
+    // unchecked.
+    let (vertices, instances) = match op.indirect {
+        Some(_) => (0, 0),
+        None => (u64::from(op.vertex_count), u64::from(op.instance_count)),
+    };
+    if let Some(ind) = op.indirect {
+        let size = crate::Indirect::command_size(op.index.is_some());
+        let step = ind.step(op.index.is_some());
+        if step < size || !step.is_multiple_of(4) {
+            return Err(invalid(format!(
+                "draw: indirect commands are {size} bytes, {step} apart: a multiple of 4, at least that"
+            )));
+        }
+        let len = match ind.count {
+            0 => 0,
+            n => u64::from(n - 1) * u64::from(step) + u64::from(size),
+        };
+        indirect(l, "draw", ind.buffer.raw(), ind.offset, len)?;
+    }
     for (slot, (want, got)) in info
         .vertex_buffers
         .iter()
@@ -725,7 +822,7 @@ pub(crate) fn draw(l: &impl Lookup, op: &Draw<'_>) -> Result<(), GpuError> {
             ));
         }
         let needed = index.offset + index.format.size() * (u64::from(op.first) + vertices);
-        if needed > size {
+        if op.indirect.is_none() && needed > size {
             return Err(invalid(format!(
                 "draw: {} indices need {needed} bytes, the buffer has {size}",
                 op.vertex_count

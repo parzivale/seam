@@ -15,7 +15,7 @@ them turned up.
   (`Attachment`s), each attachment's `load`, and `vertex_buffers`
   (`Draw::new`, `.clear(..)` and `.vertices(..)` are as before);
   `CreateImage` has more fields (use `CreateImage::new` and its
-  builders).
+  builders); so do `CreateProgram` (use its constructors) and `GpuInfo`.
 - `seam-ash`: `Bind::Sampled` takes the sampler that reads the image,
   `Bind::Sampled(image, sampler)`; the device's built-in sampler (linear,
   clamped to the edge) is gone. Make one with
@@ -68,6 +68,22 @@ them turned up.
   fills a buffer with a repeated `u32`. `SimGpu` performs each the same
   way on the CPU, and its emulators read any level, layer or slice
   (`Run::texel_in`).
+- Compute and draw programs take specialization constants
+  (`CreateProgram::constants`, `Constant::u32`/`i32`/`f32`/`bool`, set
+  for every stage; `Run::constant` in `SimGpu`'s emulators) and arrays of
+  bindings (`CreateProgram::counts`: a binding `n` long is given `n`
+  `Bind`s in a row).
+- Indirect work: `DispatchIndirect` runs as many workgroups as a buffer
+  says, and `Draw::indirect` (`indirect_many`, with
+  `GpuFeatures::MULTI_DRAW_INDIRECT`) draws what a buffer's commands say,
+  indexed or not, from a buffer made with `BufferUsage::INDIRECT`.
+  `SimGpu` reads the same commands and runs its emulator once for each.
+- `DeviceInfo` reports a device's optional features (`GpuFeatures`) and
+  its `Limits`: workgroup sizes and counts, workgroup memory, push
+  constants, image sizes and layers, binding ranges, samples, and its
+  subgroups' size and operations (`SubgroupOps`). `Limits::MINIMUM` is
+  what every Vulkan 1.3 device reaches, and what `SimGpu` reports, with
+  every feature.
 - Shaders in Rust, through rust-gpu: `Ash` turns on the Vulkan memory
   model where the device has it, which rust-gpu's shaders declare.
   `crates/seam-ash/shaders` is a shader crate built to SPIR-V on

@@ -251,8 +251,8 @@ pub(crate) fn download(l: &impl Lookup, id: u64, offset: u64, len: u64) -> Resul
     range("download", offset, len, size)
 }
 
-/// The byte size of a whole image's level 0, every layer.
-pub(crate) fn image_bytes(l: &impl Lookup, id: u64) -> Result<u64, GpuError> {
+/// An image that can be moved in or out.
+fn movable(l: &impl Lookup, id: u64) -> Result<CreateImage, GpuError> {
     let op = image(l, id)?;
     if op.samples > 1 {
         return Err(invalid(
@@ -265,22 +265,170 @@ pub(crate) fn image_bytes(l: &impl Lookup, id: u64) -> Result<u64, GpuError> {
             op.format
         )));
     }
-    Ok(op.level_bytes(0))
+    Ok(op)
 }
 
-pub(crate) fn whole_image(
-    l: &impl Lookup,
-    id: u64,
-    len: usize,
-    what: &str,
-) -> Result<(), GpuError> {
-    let want = image_bytes(l, id)?;
-    if len as u64 != want {
+/// A region within `op`: its level, layers and box inside it, and on whole
+/// blocks of a compressed format (or reaching the level's edge).
+fn region_in(op: &CreateImage, r: &crate::ImageRegion, what: &str) -> Result<(), GpuError> {
+    if r.mip >= op.mips {
         return Err(invalid(format!(
-            "{what}: the image is {want} bytes, the data {len}"
+            "{what}: the image has {} mip levels, not {}",
+            op.mips,
+            r.mip + 1
         )));
     }
+    let (layers, extent) = r.resolve(op);
+    if layers == 0 || u64::from(r.layer) + u64::from(layers) > u64::from(op.layers) {
+        return Err(invalid(format!(
+            "{what}: layers {}..{} are outside the image's {}",
+            r.layer,
+            u64::from(r.layer) + u64::from(layers),
+            op.layers
+        )));
+    }
+    let (w, h, d) = op.extent(r.mip);
+    let size = [w, h, d];
+    let (bw, bh, _) = op.format.block();
+    let block = [bw, bh, 1];
+    for axis in 0..3 {
+        let (from, n) = (r.offset[axis], extent[axis]);
+        if n == 0 || u64::from(from) + u64::from(n) > u64::from(size[axis]) {
+            return Err(invalid(format!(
+                "{what}: the box {:?} + {:?} is outside level {}'s {w}x{h}x{d}",
+                r.offset, extent, r.mip
+            )));
+        }
+        if !from.is_multiple_of(block[axis])
+            || (!n.is_multiple_of(block[axis]) && from + n != size[axis])
+        {
+            return Err(invalid(format!(
+                "{what}: a {:?} region is on whole {bw}x{bh} blocks",
+                op.format
+            )));
+        }
+    }
     Ok(())
+}
+
+/// An upload or download of `len` bytes to or from `region` of image `id`.
+pub(crate) fn image_region(
+    l: &impl Lookup,
+    id: u64,
+    region: &crate::ImageRegion,
+    len: usize,
+    what: &str,
+) -> Result<CreateImage, GpuError> {
+    let op = movable(l, id)?;
+    region_in(&op, region, what)?;
+    let want = region.bytes(&op);
+    if len as u64 != want {
+        return Err(invalid(format!(
+            "{what}: the region is {want} bytes, the data {len}"
+        )));
+    }
+    Ok(op)
+}
+
+pub(crate) fn copy_image(l: &impl Lookup, op: &crate::CopyImage) -> Result<(), GpuError> {
+    if op.src == op.dst {
+        return Err(invalid(
+            "copy: from an image to itself (for its mip levels, GenerateMips)",
+        ));
+    }
+    let (src, dst) = (movable(l, op.src.raw())?, movable(l, op.dst.raw())?);
+    let same = src.format == dst.format
+        || (!src.format.is_compressed()
+            && !dst.format.is_compressed()
+            && !src.format.is_depth()
+            && !dst.format.is_depth()
+            && src.format.bytes_per_pixel() == dst.format.bytes_per_pixel());
+    if !same {
+        return Err(invalid(format!(
+            "copy: from {:?} to {:?}: copies keep the format (or its size per pixel)",
+            src.format, dst.format
+        )));
+    }
+    let region = |at: &crate::ImageAt| crate::ImageRegion {
+        mip: at.mip,
+        layer: at.layer,
+        layers: op.layers,
+        offset: at.offset,
+        extent: op.extent,
+    };
+    region_in(&src, &region(&op.src_at), "copy from")?;
+    region_in(&dst, &region(&op.dst_at), "copy to")
+}
+
+pub(crate) fn blit(l: &impl Lookup, op: &crate::BlitImage) -> Result<(), GpuError> {
+    if op.src == op.dst {
+        return Err(invalid(
+            "blit: from an image to itself (for its mip levels, GenerateMips)",
+        ));
+    }
+    let (src, dst) = (movable(l, op.src.raw())?, movable(l, op.dst.raw())?);
+    for (img, what) in [(&src, "from"), (&dst, "to")] {
+        if img.format.is_compressed() {
+            return Err(invalid(format!(
+                "blit {what}: {:?} images cannot be blitted",
+                img.format
+            )));
+        }
+    }
+    if src.format.is_integer() != dst.format.is_integer()
+        || src.format.is_depth() != dst.format.is_depth()
+        || (src.format.is_depth() && src.format != dst.format)
+    {
+        return Err(invalid(format!(
+            "blit: from {:?} to {:?}: integers, depth and colour do not mix",
+            src.format, dst.format
+        )));
+    }
+    if (src.format.is_integer() || src.format.is_depth()) && op.filter != crate::Filter::Nearest {
+        return Err(invalid(format!(
+            "blit: {:?} is blitted with Filter::Nearest",
+            src.format
+        )));
+    }
+    for (img, mip, layer, rect, what) in [
+        (&src, op.src_mip, op.src_layer, op.src_rect, "from"),
+        (&dst, op.dst_mip, op.dst_layer, op.dst_rect, "to"),
+    ] {
+        let [x0, y0, x1, y1] = rect;
+        let r = crate::ImageRegion::level(mip).layers(layer, 1).rect(
+            x0,
+            y0,
+            x1.saturating_sub(x0),
+            y1.saturating_sub(y0),
+        );
+        region_in(img, &r, &format!("blit {what}"))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn generate_mips(
+    l: &impl Lookup,
+    op: &crate::GenerateMips,
+) -> Result<CreateImage, GpuError> {
+    let img = movable(l, op.image.raw())?;
+    if img.mips < 2 {
+        return Err(invalid("generate mips: the image has one mip level"));
+    }
+    if img.format.is_compressed() || img.format.is_integer() || img.format.is_depth() {
+        return Err(invalid(format!(
+            "generate mips: {:?} does not filter",
+            img.format
+        )));
+    }
+    Ok(img)
+}
+
+pub(crate) fn fill(l: &impl Lookup, op: &crate::FillBuffer) -> Result<(), GpuError> {
+    let (size, _) = buffer(l, op.buffer.raw())?;
+    if !op.offset.is_multiple_of(4) || !op.size.is_multiple_of(4) {
+        return Err(invalid("fill: the offset and size are multiples of 4"));
+    }
+    range("fill", op.offset, op.size, size)
 }
 
 pub(crate) fn copy(l: &impl Lookup, op: &CopyBuffer) -> Result<(), GpuError> {

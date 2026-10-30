@@ -10,11 +10,11 @@ use seam_core::{Closing, Inspect, Opening, Perform};
 
 use crate::validate::{self, Lookup};
 use crate::{
-    AddressMode, Bind, Buffer, CopyBuffer, CreateBuffer, CreateImage, CreateProgram, CreateSampler,
-    DepthLoad, DeviceInfo, Dispatch, Download, DownloadImage, Draw, DrawInfo, Filter, Finish,
-    Format, GpuError, GpuInfo, GpuKind, Image, Import, IndexFormat, IsDone, Load, MAX_TARGETS,
-    MAX_VERTEX_BUFFERS, Program, ProgramKind, Rect, ResInfo, Sampler, Submit, Upload, UploadImage,
-    Viewport,
+    AddressMode, Bind, BlitImage, Buffer, CopyBuffer, CopyImage, CreateBuffer, CreateImage,
+    CreateProgram, CreateSampler, DepthLoad, DeviceInfo, Dispatch, Download, DownloadImage, Draw,
+    DrawInfo, FillBuffer, Filter, Finish, Format, GenerateMips, GpuError, GpuInfo, GpuKind, Image,
+    ImageRegion, Import, IndexFormat, IsDone, Load, MAX_TARGETS, MAX_VERTEX_BUFFERS, Program,
+    ProgramKind, Rect, ResInfo, Sampler, Submit, Upload, UploadImage, Viewport,
 };
 
 /// What [`SimGpu`] was asked to do, in order: for tests to assert on.
@@ -45,6 +45,14 @@ pub enum Recorded {
     UploadImage(Image),
     /// Bytes were copied between buffers.
     Copy(CopyBuffer),
+    /// Pixels were copied between images.
+    CopyImage(CopyImage),
+    /// Pixels were blitted between images.
+    Blit(BlitImage),
+    /// An image's mip levels were filled.
+    GenerateMips(Image),
+    /// A buffer's range was filled.
+    Fill(FillBuffer),
     /// A compute program ran.
     Dispatch {
         /// Its label.
@@ -141,6 +149,80 @@ pub(crate) fn area_of(op: &CreateImage, mip: u32, layer: u32) -> (usize, usize, 
         w,
         h,
     )
+}
+
+/// Each run of bytes of `region` within its image's bytes, in the order
+/// uploads and downloads lay them out: by layer, slice, then row of
+/// blocks.
+pub(crate) fn region_rows(op: &CreateImage, region: &ImageRegion) -> Vec<(usize, usize)> {
+    let (layers, [w, h, d]) = region.resolve(op);
+    let (lw, _, ld) = op.extent(region.mip);
+    let (bw, bh, bytes) = op.format.block();
+    let row_bytes = (lw.div_ceil(bw) * bytes) as usize;
+    let run = (w.div_ceil(bw) * bytes) as usize;
+    let [x, y, z] = region.offset;
+    let mut rows = Vec::new();
+    for layer in region.layer..region.layer + layers {
+        for slice in z..z + d {
+            // A volume's slices, and an array's layers, are both laid one
+            // after another.
+            let (start, ..) = area_of(op, region.mip, layer * ld + slice);
+            for row in (y / bh)..(y + h).div_ceil(bh) {
+                let at = start + row as usize * row_bytes + (x / bw * bytes) as usize;
+                rows.push((at, run));
+            }
+        }
+    }
+    rows
+}
+
+/// Level `mip`, slice (or layer) `slice` of an image, decoded.
+fn decode_slice(op: &CreateImage, data: &[u8], mip: u32, slice: u32) -> (Vec<[f32; 4]>, u32, u32) {
+    let (at, len, w, h) = area_of(op, mip, slice);
+    let n = op.format.bytes_per_pixel() as usize;
+    let pixels = data[at..at + len]
+        .chunks(n)
+        .map(|px| decode_pixel(op.format, px))
+        .collect();
+    (pixels, w, h)
+}
+
+/// One pixel of `format`, from RGBA: depth in red, for a depth format.
+fn encode_pixel(format: Format, rgba: [f32; 4]) -> Vec<u8> {
+    if format.is_depth() {
+        depth_pixel(format, rgba[0], 0)
+    } else {
+        clear_pixel(format, rgba)
+    }
+}
+
+/// Bilinear (or nearest) reads of a decoded `w` by `h` slice, at
+/// continuous coordinates in pixels, clamped to its edges.
+fn read(pixels: &[[f32; 4]], w: u32, h: u32, x: f32, y: f32, filter: Filter) -> [f32; 4] {
+    let at = |x: i64, y: i64| {
+        let (x, y) = (x.clamp(0, i64::from(w) - 1), y.clamp(0, i64::from(h) - 1));
+        pixels[(y * i64::from(w) + x) as usize]
+    };
+    match filter {
+        Filter::Nearest => at(x.floor() as i64, y.floor() as i64),
+        Filter::Linear => {
+            let (x, y) = (x - 0.5, y - 0.5);
+            let (x0, y0) = (x.floor(), y.floor());
+            let (fx, fy) = (x - x0, y - y0);
+            let (x0, y0) = (x0 as i64, y0 as i64);
+            let [a, b, c, d] = [
+                at(x0, y0),
+                at(x0 + 1, y0),
+                at(x0, y0 + 1),
+                at(x0 + 1, y0 + 1),
+            ];
+            core::array::from_fn(|k| {
+                let top = a[k] + (b[k] - a[k]) * fx;
+                let bottom = c[k] + (d[k] - c[k]) * fx;
+                top + (bottom - top) * fy
+            })
+        }
+    }
 }
 
 /// An image's bytes: every level, every layer.
@@ -909,8 +991,14 @@ impl Perform<Upload<'_>> for SimGpu {
 impl Perform<UploadImage<'_>> for SimGpu {
     fn perform(&mut self, op: UploadImage<'_>) -> Result<(), GpuError> {
         let mut state = self.lock();
-        validate::whole_image(&*state, op.image.raw(), op.data.len(), "upload")?;
-        state.data(op.image.raw())[..op.data.len()].copy_from_slice(op.data);
+        let img =
+            validate::image_region(&*state, op.image.raw(), &op.region, op.data.len(), "upload")?;
+        let data = state.data(op.image.raw());
+        let mut from = 0;
+        for (at, len) in region_rows(&img, &op.region) {
+            data[at..at + len].copy_from_slice(&op.data[from..from + len]);
+            from += len;
+        }
         state.log.push(Recorded::UploadImage(op.image));
         Ok(())
     }
@@ -925,6 +1013,132 @@ impl Perform<CopyBuffer> for SimGpu {
         let to = op.dst_offset as usize;
         state.data(op.dst.raw())[to..to + len].copy_from_slice(&bytes);
         state.log.push(Recorded::Copy(op));
+        Ok(())
+    }
+}
+
+impl Perform<CopyImage> for SimGpu {
+    fn perform(&mut self, op: CopyImage) -> Result<(), GpuError> {
+        let mut state = self.lock();
+        validate::copy_image(&*state, &op)?;
+        let (src, dst) = (
+            image_of(&state, op.src.raw()),
+            image_of(&state, op.dst.raw()),
+        );
+        let region = |at: &crate::ImageAt| ImageRegion {
+            mip: at.mip,
+            layer: at.layer,
+            layers: op.layers,
+            offset: at.offset,
+            extent: op.extent,
+        };
+        let from = region_rows(&src, &region(&op.src_at));
+        let to = region_rows(&dst, &region(&op.dst_at));
+        let bytes = {
+            let data = state.data(op.src.raw());
+            from.iter()
+                .map(|&(at, len)| data[at..at + len].to_vec())
+                .collect::<Vec<_>>()
+        };
+        let data = state.data(op.dst.raw());
+        for ((at, len), row) in to.into_iter().zip(bytes) {
+            data[at..at + len].copy_from_slice(&row);
+        }
+        state.log.push(Recorded::CopyImage(op));
+        Ok(())
+    }
+}
+
+impl Perform<BlitImage> for SimGpu {
+    fn perform(&mut self, op: BlitImage) -> Result<(), GpuError> {
+        let mut state = self.lock();
+        validate::blit(&*state, &op)?;
+        let (src, dst) = (
+            image_of(&state, op.src.raw()),
+            image_of(&state, op.dst.raw()),
+        );
+        let (pixels, w, h) = decode_slice(&src, state.data(op.src.raw()), op.src_mip, op.src_layer);
+        let [sx0, sy0, sx1, sy1] = op.src_rect.map(|v| v as f32);
+        let [dx0, dy0, dx1, dy1] = op.dst_rect;
+        let (scale_x, scale_y) = (
+            (sx1 - sx0) / (dx1 - dx0) as f32,
+            (sy1 - sy0) / (dy1 - dy0) as f32,
+        );
+        let (at, _, dw, _) = area_of(&dst, op.dst_mip, op.dst_layer);
+        let n = dst.format.bytes_per_pixel() as usize;
+        let data = state.data(op.dst.raw());
+        for y in dy0..dy1 {
+            for x in dx0..dx1 {
+                let u = sx0 + ((x - dx0) as f32 + 0.5) * scale_x;
+                let v = sy0 + ((y - dy0) as f32 + 0.5) * scale_y;
+                let px = encode_pixel(dst.format, read(&pixels, w, h, u, v, op.filter));
+                let i = at + (y * dw + x) as usize * n;
+                data[i..i + n].copy_from_slice(&px);
+            }
+        }
+        state.log.push(Recorded::Blit(op));
+        Ok(())
+    }
+}
+
+impl Perform<GenerateMips> for SimGpu {
+    fn perform(&mut self, op: GenerateMips) -> Result<(), GpuError> {
+        let mut state = self.lock();
+        let img = validate::generate_mips(&*state, &op)?;
+        let n = img.format.bytes_per_pixel() as usize;
+        for level in 1..img.mips {
+            let (_, _, sd) = img.extent(level - 1);
+            let (dw, dh, dd) = img.extent(level);
+            for layer in 0..img.layers {
+                let source: Vec<_> = (0..sd)
+                    .map(|z| {
+                        decode_slice(&img, state.data(op.image.raw()), level - 1, layer * sd + z)
+                    })
+                    .collect();
+                let (sw, sh) = (source[0].1, source[0].2);
+                for z in 0..dd {
+                    // Halving: each destination slice blends the two (or
+                    // one) source slices under it.
+                    let zs: Vec<u32> = if sd > dd {
+                        std::vec![2 * z, (2 * z + 1).min(sd - 1)]
+                    } else {
+                        std::vec![z]
+                    };
+                    let (at, ..) = area_of(&img, level, layer * dd + z);
+                    let data = state.data(op.image.raw());
+                    for y in 0..dh {
+                        for x in 0..dw {
+                            let u = (x as f32 + 0.5) * sw as f32 / dw as f32;
+                            let v = (y as f32 + 0.5) * sh as f32 / dh as f32;
+                            let mut sum = [0.0; 4];
+                            for &zi in &zs {
+                                let (pixels, w, h) = &source[zi as usize];
+                                let px = read(pixels, *w, *h, u, v, Filter::Linear);
+                                for k in 0..4 {
+                                    sum[k] += px[k] / zs.len() as f32;
+                                }
+                            }
+                            let i = at + (y * dw + x) as usize * n;
+                            data[i..i + n].copy_from_slice(&encode_pixel(img.format, sum));
+                        }
+                    }
+                }
+            }
+        }
+        state.log.push(Recorded::GenerateMips(op.image));
+        Ok(())
+    }
+}
+
+impl Perform<FillBuffer> for SimGpu {
+    fn perform(&mut self, op: FillBuffer) -> Result<(), GpuError> {
+        let mut state = self.lock();
+        validate::fill(&*state, &op)?;
+        let (at, len) = (op.offset as usize, op.size as usize);
+        for chunk in state.data(op.buffer.raw())[at..at + len].chunks_mut(4) {
+            chunk.copy_from_slice(&op.value.to_le_bytes());
+        }
+        state.log.push(Recorded::Fill(op));
         Ok(())
     }
 }
@@ -1144,9 +1358,19 @@ impl Perform<Download<'_>> for SimGpu {
 impl Perform<DownloadImage<'_>> for SimGpu {
     fn perform(&mut self, op: DownloadImage<'_>) -> Result<(), GpuError> {
         let mut state = self.lock();
-        validate::whole_image(&*state, op.image.raw(), op.out.len(), "download")?;
-        let len = op.out.len();
-        op.out.copy_from_slice(&state.data(op.image.raw())[..len]);
+        let img = validate::image_region(
+            &*state,
+            op.image.raw(),
+            &op.region,
+            op.out.len(),
+            "download",
+        )?;
+        let data = state.data(op.image.raw());
+        let mut to = 0;
+        for (at, len) in region_rows(&img, &op.region) {
+            op.out[to..to + len].copy_from_slice(&data[at..at + len]);
+            to += len;
+        }
         state.log.push(Recorded::DownloadImage(op.image));
         Ok(())
     }

@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-Samplers for the GPU, shaders written in Rust, an example for every crate,
-and fixes for what writing them turned up.
+Samplers, rendering state and images of every shape for the GPU, shaders
+written in Rust, an example for every crate, and fixes for what writing
+them turned up.
 
 ### Breaking
 
@@ -58,6 +59,15 @@ and fixes for what writing them turned up.
   Optional device features (wireframe, independent blending, BC, cube
   arrays) are turned on where the device has them, and fail with
   `Unsupported` where it does not.
+- Moving images: `UploadImage` and `DownloadImage` take an
+  `ImageRegion` (`.region(..)`): a mip level, a range of layers (or cube
+  faces) and a box within them, on whole blocks of a compressed format.
+  `CopyImage` copies a box across layers between images; `BlitImage`
+  scales a rectangle with a filter; `GenerateMips` fills an image's mip
+  chain from its first level (volumes halve in depth too); `FillBuffer`
+  fills a buffer with a repeated `u32`. `SimGpu` performs each the same
+  way on the CPU, and its emulators read any level, layer or slice
+  (`Run::texel_in`).
 - Shaders in Rust, through rust-gpu: `Ash` turns on the Vulkan memory
   model where the device has it, which rust-gpu's shaders declare.
   `crates/seam-ash/shaders` is a shader crate built to SPIR-V on

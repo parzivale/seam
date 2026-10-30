@@ -6,8 +6,10 @@
 //!   [`CreateSampler`] and [`CreateProgram`] lend a [`Buffer`], an
 //!   [`Image`], a [`Sampler`] or a [`Program`] (plain IDs, the same for
 //!   every handler) and destroy it when the scope closes.
-//! - **Moving data**: [`Upload`], [`UploadImage`] and [`CopyBuffer`] put
-//!   bytes in, [`Download`] and [`DownloadImage`] take them out.
+//! - **Moving data**: [`Upload`], [`UploadImage`] and [`FillBuffer`] put
+//!   bytes in, [`Download`] and [`DownloadImage`] take them out (images by
+//!   [`ImageRegion`]), [`CopyBuffer`], [`CopyImage`] and [`BlitImage`]
+//!   move them on the GPU, and [`GenerateMips`] fills a mip chain.
 //! - **Running programs**: [`Dispatch`] runs a compute program, [`Draw`]
 //!   draws into an image, each with the resources it reads and writes
 //!   bound in order.
@@ -894,21 +896,224 @@ impl<'a> Upload<'a> {
     }
 }
 
-/// Write the whole of `image`: `data` is its pixels, rows top to bottom,
-/// tightly packed.
+/// A part of an image: a box of one mip level, across a run of layers.
+/// [`ALL`](Self::ALL) is every layer of level 0, the whole of it; the
+/// builders narrow it. Its bytes, as uploads and downloads move them, are
+/// each layer in turn, each slice in turn, each row top to bottom, tightly
+/// packed (whole blocks, for a compressed format).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ImageRegion {
+    /// The mip level.
+    pub mip: u32,
+    /// The first layer.
+    pub layer: u32,
+    /// How many layers; [`ImageRegion::REST`] for the rest of them.
+    pub layers: u32,
+    /// The box's left, top and front, in pixels of the level.
+    pub offset: [u32; 3],
+    /// Its width, height and depth; [`ImageRegion::REST`] for the rest of
+    /// the level.
+    pub extent: [u32; 3],
+}
+
+impl ImageRegion {
+    /// To the edge: the rest of the layers, or of the level.
+    pub const REST: u32 = u32::MAX;
+
+    /// The whole of level 0, every layer.
+    pub const ALL: Self = Self {
+        mip: 0,
+        layer: 0,
+        layers: Self::REST,
+        offset: [0; 3],
+        extent: [Self::REST; 3],
+    };
+
+    /// The whole of level `mip`, every layer.
+    pub const fn level(mip: u32) -> Self {
+        let mut r = Self::ALL;
+        r.mip = mip;
+        r
+    }
+
+    /// Only `count` layers from `first`.
+    #[must_use]
+    pub const fn layers(mut self, first: u32, count: u32) -> Self {
+        self.layer = first;
+        self.layers = count;
+        self
+    }
+
+    /// Only the `width` by `height` rectangle at `x`, `y` (every slice).
+    #[must_use]
+    pub const fn rect(mut self, x: u32, y: u32, width: u32, height: u32) -> Self {
+        self.offset = [x, y, 0];
+        self.extent = [width, height, Self::REST];
+        self
+    }
+
+    /// Only the box at `offset`, `extent` big: for volumes.
+    #[must_use]
+    pub const fn boxed(mut self, offset: [u32; 3], extent: [u32; 3]) -> Self {
+        self.offset = offset;
+        self.extent = extent;
+        self
+    }
+
+    /// The region within `image`, [`REST`](Self::REST) resolved: its
+    /// layers (or, for a volume, 1), and its extent.
+    pub const fn resolve(&self, image: &CreateImage) -> (u32, [u32; 3]) {
+        let (w, h, d) = image.extent(self.mip);
+        const fn rest(n: u32, size: u32, from: u32) -> u32 {
+            if n == ImageRegion::REST {
+                size.saturating_sub(from)
+            } else {
+                n
+            }
+        }
+        let layers = rest(self.layers, image.layers, self.layer);
+        let extent = [
+            rest(self.extent[0], w, self.offset[0]),
+            rest(self.extent[1], h, self.offset[1]),
+            rest(self.extent[2], d, self.offset[2]),
+        ];
+        (layers, extent)
+    }
+
+    /// The bytes of the region within `image`, tightly packed.
+    pub const fn bytes(&self, image: &CreateImage) -> u64 {
+        let (layers, [w, h, d]) = self.resolve(image);
+        image.format.size(w, h) * d as u64 * layers as u64
+    }
+}
+
+/// Write `data` into a part of `image` (all of level 0 by default): its
+/// bytes laid out as [`ImageRegion`] says.
 #[derive(Debug, Clone, Copy)]
 pub struct UploadImage<'a> {
     /// Where.
     pub image: Image,
-    /// What: `width * height * bytes_per_pixel` bytes.
+    /// Which part.
+    pub region: ImageRegion,
+    /// What: the region's bytes.
     pub data: &'a [u8],
 }
 
 impl<'a> UploadImage<'a> {
-    /// Writes `data` into `image`.
+    /// Writes `data` into all of `image`'s level 0.
     pub const fn new(image: Image, data: &'a [u8]) -> Self {
-        Self { image, data }
+        Self {
+            image,
+            region: ImageRegion::ALL,
+            data,
+        }
     }
+
+    /// Into `region` instead.
+    #[must_use]
+    pub const fn region(mut self, region: ImageRegion) -> Self {
+        self.region = region;
+        self
+    }
+}
+
+/// Where in an image a copy starts: a mip level, a first layer, and a
+/// pixel.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ImageAt {
+    /// The mip level.
+    pub mip: u32,
+    /// The first layer.
+    pub layer: u32,
+    /// The pixel: left, top, front.
+    pub offset: [u32; 3],
+}
+
+impl ImageAt {
+    /// Pixel `offset` of level `mip`, from layer `layer`.
+    pub const fn new(mip: u32, layer: u32, offset: [u32; 3]) -> Self {
+        Self { mip, layer, offset }
+    }
+}
+
+/// Copy a box of pixels, across `layers` layers, from one image to
+/// another of the same format (or another of as many bytes per pixel).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CopyImage {
+    /// From.
+    pub src: Image,
+    /// Where in `src`.
+    pub src_at: ImageAt,
+    /// To: a different image.
+    pub dst: Image,
+    /// Where in `dst`.
+    pub dst_at: ImageAt,
+    /// The box's width, height and depth.
+    pub extent: [u32; 3],
+    /// How many layers.
+    pub layers: u32,
+}
+
+impl CopyImage {
+    /// Copies all of `src`'s level 0 into `dst`'s level 0, every layer:
+    /// the two the same size.
+    pub const fn whole(src: Image, dst: Image, width: u32, height: u32) -> Self {
+        Self {
+            src,
+            src_at: ImageAt::new(0, 0, [0; 3]),
+            dst,
+            dst_at: ImageAt::new(0, 0, [0; 3]),
+            extent: [width, height, 1],
+            layers: 1,
+        }
+    }
+}
+
+/// Copy a rectangle of one image into a rectangle of another, scaling it
+/// with `filter`: one layer of one level each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlitImage {
+    /// From.
+    pub src: Image,
+    /// Its level.
+    pub src_mip: u32,
+    /// Its layer.
+    pub src_layer: u32,
+    /// The rectangle read: left, top, right, bottom (exclusive).
+    pub src_rect: [u32; 4],
+    /// To: a different image.
+    pub dst: Image,
+    /// Its level.
+    pub dst_mip: u32,
+    /// Its layer.
+    pub dst_layer: u32,
+    /// The rectangle written.
+    pub dst_rect: [u32; 4],
+    /// How pixels between source pixels are read.
+    pub filter: Filter,
+}
+
+/// Fill every mip level of `image` but the first from the one before it,
+/// halving each way with linear filtering: a mip chain from level 0. Every
+/// layer is filled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GenerateMips {
+    /// The image: more than one mip level, in a format that filters.
+    pub image: Image,
+}
+
+/// Fill `size` bytes of `buffer` from `offset` (both multiples of 4) with
+/// `value`, repeated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FillBuffer {
+    /// The buffer.
+    pub buffer: Buffer,
+    /// Where, in bytes.
+    pub offset: u64,
+    /// How much, in bytes.
+    pub size: u64,
+    /// The four bytes written, as a little-endian `u32`.
+    pub value: u32,
 }
 
 /// Copy `size` bytes from one buffer to another (or within one, if the
@@ -1156,20 +1361,33 @@ impl<'a> Download<'a> {
     }
 }
 
-/// Read the whole of `image`, waiting for the work before it: rows top to
-/// bottom, tightly packed.
+/// Read a part of `image` (all of level 0 by default), waiting for the
+/// work before it: its bytes laid out as [`ImageRegion`] says.
 #[derive(Debug)]
 pub struct DownloadImage<'a> {
     /// From.
     pub image: Image,
-    /// Into: `width * height * bytes_per_pixel` bytes.
+    /// Which part.
+    pub region: ImageRegion,
+    /// Into: the region's bytes.
     pub out: &'a mut [u8],
 }
 
 impl<'a> DownloadImage<'a> {
-    /// Reads `image` into `out`.
+    /// Reads all of `image`'s level 0 into `out`.
     pub fn new(image: Image, out: &'a mut [u8]) -> Self {
-        Self { image, out }
+        Self {
+            image,
+            region: ImageRegion::ALL,
+            out,
+        }
+    }
+
+    /// Reads `region` instead.
+    #[must_use]
+    pub fn region(mut self, region: ImageRegion) -> Self {
+        self.region = region;
+        self
     }
 }
 
@@ -1348,6 +1566,10 @@ outcomes! {
     Upload<'_> => Result<(), GpuError>;
     UploadImage<'_> => Result<(), GpuError>;
     CopyBuffer => Result<(), GpuError>;
+    CopyImage => Result<(), GpuError>;
+    BlitImage => Result<(), GpuError>;
+    GenerateMips => Result<(), GpuError>;
+    FillBuffer => Result<(), GpuError>;
     Dispatch<'_> => Result<(), GpuError>;
     Draw<'_> => Result<(), GpuError>;
     Download<'_> => Result<(), GpuError>;
@@ -1410,6 +1632,10 @@ pub mod effects {
         Upload,
         UploadImage,
         CopyBuffer,
+        CopyImage,
+        BlitImage,
+        GenerateMips,
+        FillBuffer,
         Dispatch,
         Draw,
         Download,
@@ -1441,6 +1667,10 @@ keyed! {
     Upload<'_> => Upload;
     UploadImage<'_> => UploadImage;
     CopyBuffer => CopyBuffer;
+    CopyImage => CopyImage;
+    BlitImage => BlitImage;
+    GenerateMips => GenerateMips;
+    FillBuffer => FillBuffer;
     Dispatch<'_> => Dispatch;
     Draw<'_> => Draw;
     Download<'_> => Download;

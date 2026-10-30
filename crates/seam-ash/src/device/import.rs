@@ -502,7 +502,7 @@ mod dmabuf {
                         .dst_queue_family_index(owner)
                 }
             };
-            let (img, mut region) = self.image_region(image.raw());
+            let (img, mut region) = self.image_region(image.raw(), &ImageRegion::ALL);
             region.buffer_offset = u64::from(plane.offset);
             region.buffer_row_length = plane.stride / format.bytes_per_pixel();
             // SAFETY: `cmd` is recording; the buffer and image are alive,

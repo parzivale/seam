@@ -38,12 +38,13 @@ use seam_core::{Closing, Inspect, Opening, Perform};
 
 use crate::validate::{self, Lookup};
 use crate::{
-    AddressMode, AttrFormat, Bind, BindingKind, BlendFactor, BlendOp, BorderColor, Buffer,
-    BufferUsage, ColorMask, ColorTarget, Compare, CopyBuffer, CreateBuffer, CreateImage,
-    CreateProgram, CreateSampler, Cull, DepthLoad, DeviceInfo, Dispatch, Download, DownloadImage,
-    Draw, DrawInfo, Filter, Finish, Format, FrontFace, GpuError, GpuInfo, GpuKind, Image,
-    ImageKind, ImageUsage, Import, IndexFormat, IsDone, Load, PolygonMode, Program, ProgramKind,
-    ResInfo, Sampler, StencilFace, StencilOp, Step, Submit, Topology, Upload, UploadImage,
+    AddressMode, AttrFormat, Bind, BindingKind, BlendFactor, BlendOp, BlitImage, BorderColor,
+    Buffer, BufferUsage, ColorMask, ColorTarget, Compare, CopyBuffer, CopyImage, CreateBuffer,
+    CreateImage, CreateProgram, CreateSampler, Cull, DepthLoad, DeviceInfo, Dispatch, Download,
+    DownloadImage, Draw, DrawInfo, FillBuffer, Filter, Finish, Format, FrontFace, GenerateMips,
+    GpuError, GpuInfo, GpuKind, Image, ImageKind, ImageRegion, ImageUsage, Import, IndexFormat,
+    IsDone, Load, PolygonMode, Program, ProgramKind, ResInfo, Sampler, StencilFace, StencilOp,
+    Step, Submit, Topology, Upload, UploadImage,
 };
 
 /// How [`Ash::with`] sets Vulkan up.
@@ -527,6 +528,29 @@ fn aspects(f: Format) -> vk::ImageAspectFlags {
         vk::ImageAspectFlags::DEPTH
     } else {
         vk::ImageAspectFlags::COLOR
+    }
+}
+
+/// Layers `layer..layer + layers` of level `mip` of `op`: of depth alone,
+/// for a depth format.
+fn layers_of(op: &CreateImage, mip: u32, layer: u32, layers: u32) -> vk::ImageSubresourceLayers {
+    vk::ImageSubresourceLayers {
+        aspect_mask: if op.format.is_depth() {
+            vk::ImageAspectFlags::DEPTH
+        } else {
+            vk::ImageAspectFlags::COLOR
+        },
+        mip_level: mip,
+        base_array_layer: layer,
+        layer_count: layers,
+    }
+}
+
+fn offset3([x, y, z]: [u32; 3]) -> vk::Offset3D {
+    vk::Offset3D {
+        x: x as i32,
+        y: y as i32,
+        z: z as i32,
     }
 }
 
@@ -2234,40 +2258,31 @@ impl Dev {
         Ok(())
     }
 
-    /// Image `id` and the copy of its level 0, every layer, to or from a
-    /// tightly packed buffer: depth alone, for a depth format.
-    fn image_region(&self, id: u64) -> (vk::Image, vk::BufferImageCopy) {
+    /// Image `id` and the copy of `region` of it to or from a tightly
+    /// packed buffer: depth alone, for a depth format.
+    fn image_region(&self, id: u64, region: &ImageRegion) -> (vk::Image, vk::BufferImageCopy) {
         let res = &self.res[&id];
         let (Kind::Image { image, .. }, ResInfo::Image(op)) = (&res.kind, &res.info) else {
             unreachable!()
         };
-        let aspect = if op.format.is_depth() {
-            vk::ImageAspectFlags::DEPTH
-        } else {
-            vk::ImageAspectFlags::COLOR
-        };
-        let region = vk::BufferImageCopy {
+        let (layers, [width, height, depth]) = region.resolve(op);
+        let copy = vk::BufferImageCopy {
             buffer_offset: 0,
             buffer_row_length: 0,
             buffer_image_height: 0,
-            image_subresource: vk::ImageSubresourceLayers {
-                aspect_mask: aspect,
-                mip_level: 0,
-                base_array_layer: 0,
-                layer_count: op.layers,
-            },
-            image_offset: vk::Offset3D::default(),
+            image_subresource: layers_of(op, region.mip, region.layer, layers),
+            image_offset: offset3(region.offset),
             image_extent: vk::Extent3D {
-                width: op.width,
-                height: op.height,
-                depth: op.depth,
+                width,
+                height,
+                depth,
             },
         };
-        (*image, region)
+        (*image, copy)
     }
 
     fn upload_image(&mut self, op: UploadImage<'_>) -> Result<(), GpuError> {
-        validate::whole_image(&*self, op.image.raw(), op.data.len(), "upload")?;
+        validate::image_region(&*self, op.image.raw(), &op.region, op.data.len(), "upload")?;
         self.retire();
         let staging = self.staging(op.data.len() as u64, Some(op.data))?;
         let cmd = self.uses(&[Use {
@@ -2277,9 +2292,9 @@ impl Dev {
             write: true,
             layout: Some(vk::ImageLayout::TRANSFER_DST_OPTIMAL),
         }])?;
-        let (image, region) = self.image_region(op.image.raw());
+        let (image, region) = self.image_region(op.image.raw(), &op.region);
         // SAFETY: the image is in TRANSFER_DST_OPTIMAL and the staging
-        // buffer holds the whole image.
+        // buffer holds the region.
         unsafe {
             self.device.cmd_copy_buffer_to_image(
                 cmd,
@@ -2638,6 +2653,261 @@ impl Dev {
         )
     }
 
+    fn copy_image(&mut self, op: CopyImage) -> Result<(), GpuError> {
+        validate::copy_image(&*self, &op)?;
+        self.retire();
+        let cmd = self.uses(&[
+            Use {
+                id: op.src.raw(),
+                stage: vk::PipelineStageFlags2::COPY,
+                access: vk::AccessFlags2::TRANSFER_READ,
+                write: false,
+                layout: Some(vk::ImageLayout::TRANSFER_SRC_OPTIMAL),
+            },
+            Use {
+                id: op.dst.raw(),
+                stage: vk::PipelineStageFlags2::COPY,
+                access: vk::AccessFlags2::TRANSFER_WRITE,
+                write: true,
+                layout: Some(vk::ImageLayout::TRANSFER_DST_OPTIMAL),
+            },
+        ])?;
+        let (src, src_op) = self.image_of(op.src.raw());
+        let (dst, dst_op) = self.image_of(op.dst.raw());
+        let [width, height, depth] = op.extent;
+        let region = vk::ImageCopy {
+            src_subresource: layers_of(&src_op, op.src_at.mip, op.src_at.layer, op.layers),
+            src_offset: offset3(op.src_at.offset),
+            dst_subresource: layers_of(&dst_op, op.dst_at.mip, op.dst_at.layer, op.layers),
+            dst_offset: offset3(op.dst_at.offset),
+            extent: vk::Extent3D {
+                width,
+                height,
+                depth,
+            },
+        };
+        // SAFETY: validated regions of two live images, in the layouts
+        // named.
+        unsafe {
+            self.device.cmd_copy_image(
+                cmd,
+                src,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                dst,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+            );
+        }
+        Ok(())
+    }
+
+    /// An image and its description.
+    fn image_of(&self, id: u64) -> (vk::Image, CreateImage) {
+        let res = &self.res[&id];
+        let (Kind::Image { image, .. }, ResInfo::Image(op)) = (&res.kind, &res.info) else {
+            unreachable!("validated as an image")
+        };
+        (*image, *op)
+    }
+
+    /// Whether `format` can be blitted from and to, filtered by `filter`.
+    fn blits(&self, format: Format, filter: Filter) -> bool {
+        // SAFETY: a plain query.
+        let props = unsafe {
+            self.instance
+                .get_physical_device_format_properties(self.physical, vk_format(format))
+        };
+        let mut want = vk::FormatFeatureFlags::BLIT_SRC | vk::FormatFeatureFlags::BLIT_DST;
+        if filter == Filter::Linear {
+            want |= vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR;
+        }
+        props.optimal_tiling_features.contains(want)
+    }
+
+    fn blit(&mut self, op: BlitImage) -> Result<(), GpuError> {
+        validate::blit(&*self, &op)?;
+        let (src, src_op) = self.image_of(op.src.raw());
+        let (dst, dst_op) = self.image_of(op.dst.raw());
+        for f in [src_op.format, dst_op.format] {
+            if !self.blits(f, op.filter) {
+                return Err(GpuError::Unsupported(format!(
+                    "this device cannot blit {f:?} with {:?}",
+                    op.filter
+                )));
+            }
+        }
+        self.retire();
+        let cmd = self.uses(&[
+            Use {
+                id: op.src.raw(),
+                stage: vk::PipelineStageFlags2::BLIT,
+                access: vk::AccessFlags2::TRANSFER_READ,
+                write: false,
+                layout: Some(vk::ImageLayout::TRANSFER_SRC_OPTIMAL),
+            },
+            Use {
+                id: op.dst.raw(),
+                stage: vk::PipelineStageFlags2::BLIT,
+                access: vk::AccessFlags2::TRANSFER_WRITE,
+                write: true,
+                layout: Some(vk::ImageLayout::TRANSFER_DST_OPTIMAL),
+            },
+        ])?;
+        let corners = |[x0, y0, x1, y1]: [u32; 4]| {
+            [
+                vk::Offset3D {
+                    x: x0 as i32,
+                    y: y0 as i32,
+                    z: 0,
+                },
+                vk::Offset3D {
+                    x: x1 as i32,
+                    y: y1 as i32,
+                    z: 1,
+                },
+            ]
+        };
+        let region = vk::ImageBlit {
+            src_subresource: layers_of(&src_op, op.src_mip, op.src_layer, 1),
+            src_offsets: corners(op.src_rect),
+            dst_subresource: layers_of(&dst_op, op.dst_mip, op.dst_layer, 1),
+            dst_offsets: corners(op.dst_rect),
+        };
+        // SAFETY: validated rectangles of two live images, in the layouts
+        // named, whose formats blit with this filter.
+        unsafe {
+            self.device.cmd_blit_image(
+                cmd,
+                src,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                dst,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+                match op.filter {
+                    Filter::Nearest => vk::Filter::NEAREST,
+                    Filter::Linear => vk::Filter::LINEAR,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn generate_mips(&mut self, op: GenerateMips) -> Result<(), GpuError> {
+        let img = validate::generate_mips(&*self, &op)?;
+        if !self.blits(img.format, Filter::Linear) {
+            return Err(GpuError::Unsupported(format!(
+                "this device cannot filter {:?} to make mip levels",
+                img.format
+            )));
+        }
+        self.retire();
+        // Every level into TRANSFER_DST, through the usual tracking; then
+        // level by level, each made a source once written.
+        let cmd = self.uses(&[Use {
+            id: op.image.raw(),
+            stage: vk::PipelineStageFlags2::BLIT,
+            access: vk::AccessFlags2::TRANSFER_WRITE,
+            write: true,
+            layout: Some(vk::ImageLayout::TRANSFER_DST_OPTIMAL),
+        }])?;
+        let (image, _) = self.image_of(op.image.raw());
+        let to_src = |level: u32| {
+            vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::BLIT)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::BLIT)
+                .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
+                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(image)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: level,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: vk::REMAINING_ARRAY_LAYERS,
+                })
+        };
+        // SAFETY: each level is in the layout named when it is used: level
+        // 0 and each written level are made sources before being read.
+        unsafe {
+            for level in 1..img.mips {
+                let barrier = [to_src(level - 1)];
+                self.device.cmd_pipeline_barrier2(
+                    cmd,
+                    &vk::DependencyInfo::default().image_memory_barriers(&barrier),
+                );
+                let (sw, sh, sd) = img.extent(level - 1);
+                let (dw, dh, dd) = img.extent(level);
+                let corner = |w: u32, h: u32, d: u32| vk::Offset3D {
+                    x: w as i32,
+                    y: h as i32,
+                    z: d as i32,
+                };
+                let blit = vk::ImageBlit {
+                    src_subresource: layers_of(&img, level - 1, 0, img.layers),
+                    src_offsets: [vk::Offset3D::default(), corner(sw, sh, sd)],
+                    dst_subresource: layers_of(&img, level, 0, img.layers),
+                    dst_offsets: [vk::Offset3D::default(), corner(dw, dh, dd)],
+                };
+                self.device.cmd_blit_image(
+                    cmd,
+                    image,
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[blit],
+                    vk::Filter::LINEAR,
+                );
+            }
+            let barrier = [to_src(img.mips - 1)];
+            self.device.cmd_pipeline_barrier2(
+                cmd,
+                &vk::DependencyInfo::default().image_memory_barriers(&barrier),
+            );
+        }
+        // Every level is a blit's source now, written by blits.
+        let res = self.res.get_mut(&op.image.raw()).expect("validated");
+        if let Kind::Image { layout, .. } = &mut res.kind {
+            *layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+        }
+        res.track.write = Some((
+            vk::PipelineStageFlags2::BLIT,
+            vk::AccessFlags2::TRANSFER_WRITE,
+        ));
+        res.track.reads = vk::PipelineStageFlags2::NONE;
+        res.track.visible = vk::PipelineStageFlags2::NONE;
+        Ok(())
+    }
+
+    fn fill(&mut self, op: FillBuffer) -> Result<(), GpuError> {
+        validate::fill(&*self, &op)?;
+        if op.size == 0 {
+            return Ok(());
+        }
+        self.retire();
+        let cmd = self.uses(&[Use {
+            id: op.buffer.raw(),
+            // The validation layer counts fills as copies, the spec as clears:
+            // both.
+            stage: vk::PipelineStageFlags2::ALL_TRANSFER,
+            access: vk::AccessFlags2::TRANSFER_WRITE,
+            write: true,
+            layout: None,
+        }])?;
+        let Kind::Buffer { buffer, .. } = self.res[&op.buffer.raw()].kind else {
+            unreachable!()
+        };
+        // SAFETY: a validated, 4-aligned range of a live buffer.
+        unsafe {
+            self.device
+                .cmd_fill_buffer(cmd, buffer, op.offset, op.size, op.value)
+        };
+        Ok(())
+    }
+
     /// Records a copy into a staging buffer and submits: the first half of
     /// a download.
     fn start_download(
@@ -2645,7 +2915,7 @@ impl Dev {
         src: u64,
         offset: u64,
         len: u64,
-        image: bool,
+        image: Option<ImageRegion>,
     ) -> Result<Pending, GpuError> {
         self.retire();
         let staging = self.staging(len, None)?;
@@ -2654,13 +2924,13 @@ impl Dev {
             stage: vk::PipelineStageFlags2::COPY,
             access: vk::AccessFlags2::TRANSFER_READ,
             write: false,
-            layout: image.then_some(vk::ImageLayout::TRANSFER_SRC_OPTIMAL),
+            layout: image.map(|_| vk::ImageLayout::TRANSFER_SRC_OPTIMAL),
         }])?;
         // SAFETY: validated ranges on live resources; the barrier makes the
         // copy visible to the host once the fence signals.
         unsafe {
-            if image {
-                let (img, region) = self.image_region(src);
+            if let Some(r) = image {
+                let (img, region) = self.image_region(src, &r);
                 self.device.cmd_copy_image_to_buffer(
                     cmd,
                     img,
@@ -3060,6 +3330,10 @@ now! {
     ['a] Upload<'a> => Result<(), GpuError>, |dev, op| dev.upload(op);
     ['a] UploadImage<'a> => Result<(), GpuError>, |dev, op| dev.upload_image(op);
     [] CopyBuffer => Result<(), GpuError>, |dev, op| dev.copy(op);
+    [] CopyImage => Result<(), GpuError>, |dev, op| dev.copy_image(op);
+    [] BlitImage => Result<(), GpuError>, |dev, op| dev.blit(op);
+    [] GenerateMips => Result<(), GpuError>, |dev, op| dev.generate_mips(op);
+    [] FillBuffer => Result<(), GpuError>, |dev, op| dev.fill(op);
     ['a] Dispatch<'a> => Result<(), GpuError>, |dev, op| dev.dispatch(op);
     ['a] Draw<'a> => Result<(), GpuError>, |dev, op| dev.draw(op);
 }
@@ -3282,7 +3556,7 @@ impl Perform<Download<'_>> for Ash {
             if len == 0 {
                 return Ok(());
             }
-            dev.start_download(op.buffer.raw(), op.offset, len, false)?
+            dev.start_download(op.buffer.raw(), op.offset, len, None)?
         };
         let fence = pending.fence;
         let progress = InProgress {
@@ -3298,8 +3572,8 @@ impl Perform<DownloadImage<'_>> for Ash {
     fn perform(&mut self, op: DownloadImage<'_>) -> Result<(), GpuError> {
         let pending = {
             let mut dev = self.dev();
-            validate::whole_image(&*dev, op.image.raw(), op.out.len(), "download")?;
-            dev.start_download(op.image.raw(), 0, op.out.len() as u64, true)?
+            validate::image_region(&*dev, op.image.raw(), &op.region, op.out.len(), "download")?;
+            dev.start_download(op.image.raw(), 0, op.out.len() as u64, Some(op.region))?
         };
         let fence = pending.fence;
         let progress = InProgress {
@@ -3340,7 +3614,7 @@ macro_rules! waiting_async {
                     if len == 0 {
                         return Ok(());
                     }
-                    dev.start_download(op.buffer.raw(), op.offset, len, false)?
+                    dev.start_download(op.buffer.raw(), op.offset, len, None)?
                 };
                 let (seq, fence) = (pending.seq, pending.fence);
                 let progress = InProgress { ash: self, pending: Some(pending) };
@@ -3353,8 +3627,8 @@ macro_rules! waiting_async {
             async fn $method(&mut self, op: DownloadImage<'a>) -> Result<(), GpuError> {
                 let pending = {
                     let mut dev = self.dev();
-                    validate::whole_image(&*dev, op.image.raw(), op.out.len(), "download")?;
-                    dev.start_download(op.image.raw(), 0, op.out.len() as u64, true)?
+                    validate::image_region(&*dev, op.image.raw(), &op.region, op.out.len(), "download")?;
+                    dev.start_download(op.image.raw(), 0, op.out.len() as u64, Some(op.region))?
                 };
                 let (seq, fence) = (pending.seq, pending.fence);
                 let progress = InProgress { ash: self, pending: Some(pending) };

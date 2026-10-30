@@ -1,29 +1,3 @@
-//! futures-io, both ways.
-//!
-//! - [`Compat`] makes a futures-io reader or writer a seam handle: it
-//!   performs `Read`, `Write`, `Flush`, `Seek` and (with `net`) `Shutdown`,
-//!   so seam's `io` helpers and any core bound on those operations work on
-//!   it. A test can hand a core a `futures::io::Cursor` this way.
-//! - [`AsyncReader`] and [`AsyncWriter`] make a seam handle a futures-io
-//!   `AsyncRead` or `AsyncWrite`, for codecs, compression and other crates
-//!   written against futures-io. Each borrows the handle for as long as it
-//!   lives, inside the handle's scope.
-//!
-//! ```
-//! use futures::io::{AsyncReadExt, Cursor};
-//! use seam_core::ops::io::read_to_end_async;
-//! use seam_futures::io::{AsyncReader, Compat};
-//!
-//! futures::executor::block_on(async {
-//!     // futures-io into seam...
-//!     let mut handle = Compat(Cursor::new(b"round trip".to_vec()));
-//!     // ...and back out.
-//!     let mut text = String::new();
-//!     AsyncReader::new(&mut handle).read_to_string(&mut text).await.unwrap();
-//!     assert_eq!(text, "round trip");
-//! });
-//! ```
-
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};

@@ -12,7 +12,9 @@ categories.workspace = true
 
 [dependencies]
 seam-core = { workspace = true, features = ["std"] }
-futures = { workspace = true, features = ["std"] }
+# `async-await` for `select!` and `join!`; not `executor`, whose `ThreadPool`
+# spawns threads.
+futures = { workspace = true, features = ["std", "async-await"] }
 
 [dev-dependencies]
 seam-smol = { workspace = true, features = ["time"] }

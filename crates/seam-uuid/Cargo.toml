@@ -14,7 +14,9 @@ categories.workspace = true
 seam-core = { workspace = true, features = ["random", "time", "std"] }
 # No `v4` or `v7` features: those read the system's randomness and clock,
 # which this crate takes through seam instead.
-uuid = { workspace = true }
+# Every version that takes its inputs (a timestamp, a name, bytes); no
+# `std`, `rng` or `v4`, which read the system's clock and randomness.
+uuid = { workspace = true, features = ["v1", "v3", "v5", "v6", "v7", "v8"] }
 
 [dev-dependencies]
 seam-tokio = { workspace = true, features = ["rt"] }

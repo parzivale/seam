@@ -1,9 +1,9 @@
 //! rand's API on seam's randomness.
 
-use rand::RngExt;
-use rand::rngs::StdRng;
 use seam_core::Perform;
 use seam_core::ops::random::FillRandom;
+use seam_rand::RngExt;
+use seam_rand::rngs::StdRng;
 use seam_test::Sim;
 
 /// Counts the `FillRandom`s it performs.

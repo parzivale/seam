@@ -28,3 +28,19 @@ fn v7_follows_the_wall_clock() {
     let (secs, nanos) = first.get_timestamp().unwrap().to_unix();
     assert_eq!((secs, nanos / 1_000_000), (1_700_000_000, 123));
 }
+
+#[test]
+fn uuids_pure_api_is_here() {
+    use seam_uuid::{Uuid, Version, timestamp::Timestamp, uuid};
+    // Parsing and formatting.
+    let id: Uuid = "67e55044-10b1-426f-9247-bb680e5fe0c8".parse().unwrap();
+    assert_eq!(id, uuid!("67e55044-10b1-426f-9247-bb680e5fe0c8"));
+    assert_eq!(id.simple().to_string(), "67e5504410b1426f9247bb680e5fe0c8");
+    // Name-based versions, which need nothing from outside.
+    let v5 = Uuid::new_v5(&Uuid::NAMESPACE_DNS, b"example.com");
+    assert_eq!(v5.get_version(), Some(Version::Sha1));
+    // Time-based ones from a timestamp the caller has (from seam's clock).
+    let ts = Timestamp::from_unix(seam_uuid::timestamp::context::NoContext, 1_700_000_000, 0);
+    assert_eq!(Uuid::new_v7(ts).get_version(), Some(Version::SortRand));
+    assert_eq!(Uuid::new_v8([7; 16]).get_version(), Some(Version::Custom));
+}

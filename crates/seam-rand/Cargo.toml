@@ -14,12 +14,13 @@ categories.workspace = true
 seam-core = { workspace = true, features = ["random"] }
 # No default features: rand's own `rng()` and `random()` read the
 # system's randomness, an effect this crate performs through seam instead.
-rand = { workspace = true }
+# The pure generators and `alloc` (for `seq`); no `thread_rng` or `sys_rng`,
+# which read the system.
+rand = { workspace = true, features = ["alloc", "std_rng", "chacha"] }
 
 [dev-dependencies]
 seam-core = { workspace = true, features = ["random"] }
 seam-std = { workspace = true, features = ["random"] }
-rand = { workspace = true, features = ["std_rng"] }
 seam-test = { workspace = true, features = ["random"] }
 
 [features]

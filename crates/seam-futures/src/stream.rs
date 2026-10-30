@@ -9,6 +9,9 @@
 //! - `lines` (`io`): a handle's lines, without their line endings.
 //! - `entries` (`fs`): a directory's entries, from a `ReadDir` scope.
 
+// futures' `stream`: its combinators and constructors.
+pub use futures::stream::*;
+
 #[cfg(feature = "sync")]
 pub use self::sync::{messages, messages_send};
 

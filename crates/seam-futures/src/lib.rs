@@ -22,6 +22,14 @@
 //!   has: [`time::within`], [`net::copy_bidirectional_async`] and
 //!   [`process::pipe_through_async`], each with a `_send` form.
 //!
+//! futures' own API is here too, so a core needs no direct dependency on
+//! futures: its traits and combinators (`StreamExt`, `FutureExt`,
+//! `AsyncReadExt`, ...), `select!`, `join!` and friends, and its `future`,
+//! `stream`, `sink`, `io`, `task`, `channel` and `lock` modules (`io`,
+//! `stream` and `task` together with this crate's own). It is built
+//! without futures' `executor`, whose `ThreadPool` spawns threads: tasks
+//! go through [`Executor`] and `Spawn`.
+//!
 //! futures-rs has no clock, network or filesystem, so neither does this
 //! backend: take those from `Tokio`, `Smol`, `Std` or the simulation in
 //! the same root.
@@ -272,7 +280,7 @@ macro_rules! two_ways {
 }
 
 #[cfg(feature = "io")]
-pub mod io;
+mod io_adapters;
 #[cfg(feature = "net")]
 pub mod net;
 #[cfg(feature = "process")]
@@ -281,9 +289,48 @@ pub mod stream;
 #[cfg(feature = "sync")]
 pub mod sync;
 #[cfg(feature = "rt")]
-pub mod task;
+mod tasks;
 #[cfg(feature = "time")]
 pub mod time;
 
+/// futures' `io`: its traits, combinators and adapters; with the `io`
+/// feature, this crate's adapters between them and seam's handles too.
+pub mod io {
+    #![allow(rustdoc::redundant_explicit_links)]
+    #![cfg_attr(
+        feature = "io",
+        doc = "\n\nfutures-io, both ways.\n\n- [`Compat`](crate::io::Compat) makes a futures-io reader or writer a seam handle: it\n  performs `Read`, `Write`, `Flush`, `Seek` and (with `net`) `Shutdown`,\n  so seam's `io` helpers and any core bound on those operations work on\n  it. A test can hand a core a `futures::io::Cursor` this way.\n- [`AsyncReader`](crate::io::AsyncReader) and [`AsyncWriter`](crate::io::AsyncWriter) make a seam handle a futures-io\n  `AsyncRead` or `AsyncWrite`, for codecs, compression and other crates\n  written against futures-io. Each borrows the handle for as long as it\n  lives, inside the handle's scope.\n\n```\nuse futures::io::{AsyncReadExt, Cursor};\nuse seam_core::ops::io::read_to_end_async;\nuse seam_futures::io::{AsyncReader, Compat};\n\nfutures::executor::block_on(async {\n    // futures-io into seam...\n    let mut handle = Compat(Cursor::new(b\"round trip\".to_vec()));\n    // ...and back out.\n    let mut text = String::new();\n    AsyncReader::new(&mut handle).read_to_string(&mut text).await.unwrap();\n    assert_eq!(text, \"round trip\");\n});\n```"
+    )]
+    pub use futures::io::*;
+
+    #[cfg(feature = "io")]
+    pub use crate::io_adapters::*;
+}
+
+/// futures' `task`: wakers, contexts and the spawning traits; with the
+/// `rt` feature, this crate's `Executor` too.
+pub mod task {
+    #![allow(rustdoc::redundant_explicit_links)]
+    #![cfg_attr(
+        feature = "rt",
+        doc = "\n\nSpawning tasks on a futures-rs executor, and the [`JoinHandle`](crate::task::JoinHandle) and\n[`TaskSet`](crate::task::TaskSet) handles.\n\n[`Executor`](crate::task::Executor) wraps anything that implements `futures::task::Spawn`: a\n`futures::executor::ThreadPool`, a `LocalPool`'s spawner, or another\nruntime's adapter. Tasks are `Send + 'static` futures, as with\n`futures::task::SpawnExt::spawn`."
+    )]
+    pub use futures::task::*;
+
+    #[cfg(feature = "rt")]
+    pub use crate::tasks::*;
+}
+
 #[cfg(feature = "rt")]
-pub use task::Executor;
+pub use tasks::Executor;
+
+// futures' API, all of it pure: built without `executor` (whose
+// `ThreadPool` spawns threads; take `Spawn` through `Executor` instead),
+// futures has nothing here that reaches the system. `io`, `stream` and
+// `task` merge futures' modules with this crate's.
+pub use futures::{
+    AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite,
+    AsyncWriteExt, Future, FutureExt, Sink, SinkExt, Stream, StreamExt, TryFuture, TryFutureExt,
+    TryStream, TryStreamExt, channel, future, join, lock, never, pending, pin_mut, poll, prelude,
+    ready, select, select_biased, sink, stream_select, try_join,
+};

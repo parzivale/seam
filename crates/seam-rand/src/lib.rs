@@ -25,8 +25,8 @@
 //!
 //! # In tests
 //! ```
-//! use rand::RngExt;
-//! use rand::seq::SliceRandom;
+//! use seam_rand::RngExt;
+//! use seam_rand::seq::SliceRandom;
 //! use seam_core::Perform;
 //! use seam_core::ops::random::FillRandom;
 //!
@@ -47,14 +47,14 @@
 //! # In a program
 //!
 //! ```no_run
-//! use rand::RngExt;
+//! use seam_rand::RngExt;
 //! use seam_core::effects as fx;
 //! use seam_std::Std;
 //!
 //! let mut root = seam_core::root![Std<fx::FillRandom>];
 //! let roll: u8 = seam_rand::rng(&mut root).random_range(1..=6);
 //! // Or one generator, seeded once, for many draws.
-//! let mut fast: rand::rngs::StdRng = seam_rand::seeded(&mut root);
+//! let mut fast: seam_rand::rngs::StdRng = seam_rand::seeded(&mut root);
 //! let coin: bool = fast.random();
 //! println!("{roll} {coin}");
 //! ```
@@ -70,9 +70,16 @@
 #![forbid(unsafe_code)]
 #![no_std]
 
+/// rand's API, all of it pure: built without `thread_rng` and `sys_rng`,
+/// rand has nothing here that reads the system. Draw from [`rng`] or
+/// [`seeded`] instead of `rand::rng()`.
+pub use rand::{
+    CryptoRng, Fill, Rng, RngExt, SeedableRng, TryCryptoRng, TryRng, distr, prelude, rand_core,
+    rngs, seq,
+};
+
 use core::convert::Infallible;
 
-use rand::TryRng;
 use seam_core::Perform;
 use seam_core::ops::random::FillRandom;
 

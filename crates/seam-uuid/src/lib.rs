@@ -56,9 +56,14 @@
 //! `templates/clippy.toml` bans them.
 #![forbid(unsafe_code)]
 
+/// uuid's API, all of it pure: built without `std`, `rng` and `v4`, uuid
+/// has nothing here that reads the clock or randomness. Its time-based
+/// versions take a `timestamp::Timestamp`; [`new_v7`] gives one from
+/// seam's clock.
+pub use uuid::{Builder, Bytes, Error, NonNilUuid, Uuid, Variant, Version, fmt, timestamp, uuid};
+
 use seam_core::ops::random::FillRandom;
 use seam_core::ops::time::WallClock;
-use uuid::{Builder, Uuid};
 
 /// Milliseconds since the Unix epoch; 0 for a clock set before it.
 fn unix_millis(now: std::time::SystemTime) -> u64 {

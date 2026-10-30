@@ -1,11 +1,3 @@
-//! Spawning tasks on a futures-rs executor, and the [`JoinHandle`] and
-//! [`TaskSet`] handles.
-//!
-//! [`Executor`] wraps anything that implements `futures::task::Spawn`: a
-//! `futures::executor::ThreadPool`, a `LocalPool`'s spawner, or another
-//! runtime's adapter. Tasks are `Send + 'static` futures, as with
-//! `futures::task::SpawnExt::spawn`.
-
 use core::future::Future;
 use core::panic::AssertUnwindSafe;
 use std::boxed::Box;

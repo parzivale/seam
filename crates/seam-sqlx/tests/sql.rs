@@ -138,7 +138,7 @@ fn in_a_root() {
     seam_tokio::block_on(async {
         use seam_sqlx::effects as sql;
         let db = Sqlx::memory().await.unwrap();
-        let mut root = seam_core::root![Sqlx < sql::Execute, sql::Fetch, sql::Begin > ::clone(&db)];
+        let mut root = seam_core::root! {Sqlx<sql::Execute, sql::Fetch, sql::Begin>::clone(&db)};
         execute_async(&mut root, "CREATE TABLE k (v TEXT)", &[])
             .await
             .unwrap();

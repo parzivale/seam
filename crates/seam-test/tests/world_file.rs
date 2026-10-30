@@ -453,12 +453,10 @@ impl World for Mounts {
 #[cfg(all(feature = "fs", feature = "env", feature = "io-std"))]
 #[test]
 fn one_world_file_sets_up_and_checks_every_part() {
-    let mut root = seam_core::root![
-        Sim < fx::Var,
-        fx::View,
-        fx::OpenStdout > ::new(),
+    let mut root = seam_core::root! {
+        Sim<fx::Var, fx::View, fx::OpenStdout>::new(),
         Mounts<Bind>::default(),
-    ];
+    };
     seam_test::load_world::<(fx::Var, fx::View, fx::OpenStdout, Bind), _>(
         &mut root,
         r#"

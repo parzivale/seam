@@ -143,7 +143,8 @@ three_ways! {
 
     /// A time-ordered (version 7) UUID: the wall clock's milliseconds since
     /// the Unix epoch, then random bits. UUIDs made later sort later (those
-    /// made in the same millisecond, in no particular order).
+    /// made in the same millisecond, in no particular order: [`V7`] keeps
+    /// them in order).
     pub fn new_v7, new_v7_async, new_v7_send
     [C] (c: &mut C) -> Uuid
     where
@@ -163,5 +164,150 @@ three_ways! {
         let mut random = [0; 10];
         run!(c, FillRandom(&mut random));
         Builder::from_unix_timestamp_millis(millis, &random).into_uuid()
+    }
+}
+
+/// Makes version 7 UUIDs that sort in the order they were made, even
+/// within one millisecond, as uuid's own `Uuid::now_v7` does.
+///
+/// After the timestamp comes a 42-bit counter (RFC 9562, section 6.2,
+/// method 1): set to a random value with its top bit clear at each new
+/// millisecond, and incremented for each UUID within one. A clock that
+/// steps back keeps the last millisecond, so order holds; a counter that
+/// runs out moves on to the next millisecond. The last 32 bits are random.
+///
+/// It is plain state, so each generator orders its own UUIDs; share one
+/// (behind a lock, across threads) for one order.
+///
+/// ```
+/// use seam_test::Sim;
+///
+/// let mut sim = Sim::with_seed(1);
+/// let mut ids = seam_uuid::V7::new();
+/// let made: Vec<_> = (0..100).map(|_| ids.next(&mut sim)).collect();
+/// // The simulated clock stood still: one millisecond, still in order.
+/// assert!(made.windows(2).all(|w| w[0] < w[1]));
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct V7 {
+    /// The last UUID's millisecond and counter.
+    last: Option<(u64, u64)>,
+}
+
+/// The counter's width, in bits.
+const COUNTER_BITS: u32 = 42;
+
+impl V7 {
+    /// A generator that has made nothing yet.
+    pub const fn new() -> Self {
+        Self { last: None }
+    }
+
+    /// The next UUID, at `millis`, from 10 random bytes.
+    fn stamp(&mut self, millis: u64, random: [u8; 10]) -> Uuid {
+        let seed = u64::from_be_bytes([
+            0, 0, random[0], random[1], random[2], random[3], random[4], random[5],
+        ]) & ((1 << (COUNTER_BITS - 1)) - 1);
+        let (millis, counter) = match self.last {
+            Some((last, counter)) if millis <= last => {
+                if counter + 1 < 1 << COUNTER_BITS {
+                    (last, counter + 1)
+                } else {
+                    (last + 1, seed)
+                }
+            }
+            _ => (millis, seed),
+        };
+        self.last = Some((millis, counter));
+        let ms = millis.to_be_bytes();
+        let c = counter;
+        let bytes = [
+            ms[2],
+            ms[3],
+            ms[4],
+            ms[5],
+            ms[6],
+            ms[7],
+            0x70 | ((c >> 38) & 0x0f) as u8,
+            (c >> 30) as u8,
+            0x80 | ((c >> 24) & 0x3f) as u8,
+            (c >> 16) as u8,
+            (c >> 8) as u8,
+            c as u8,
+            random[6],
+            random[7],
+            random[8],
+            random[9],
+        ];
+        Builder::from_bytes(bytes).into_uuid()
+    }
+
+    /// The next UUID, by `c`'s wall clock and randomness.
+    pub fn next<C>(&mut self, c: &mut C) -> Uuid
+    where
+        C: seam_core::Inspect<WallClock> + for<'a> seam_core::Perform<FillRandom<'a>>,
+    {
+        let millis = unix_millis(c.inspect(WallClock));
+        let mut random = [0; 10];
+        c.perform(FillRandom(&mut random));
+        self.stamp(millis, random)
+    }
+
+    /// [`next`](Self::next), for async capabilities.
+    pub async fn next_async<C>(&mut self, c: &mut C) -> Uuid
+    where
+        C: seam_core::future::AsyncInspect<WallClock>
+            + for<'a> seam_core::future::AsyncPerform<FillRandom<'a>>,
+    {
+        let millis = unix_millis(c.inspect_async(WallClock).await);
+        let mut random = [0; 10];
+        c.perform_async(FillRandom(&mut random)).await;
+        self.stamp(millis, random)
+    }
+
+    /// [`next`](Self::next), for async capabilities, with a `Send` future:
+    /// for multithreaded runtimes.
+    pub async fn next_send<C>(&mut self, c: &mut C) -> Uuid
+    where
+        C: seam_core::future::SendInspect<WallClock>
+            + for<'a> seam_core::future::SendPerform<FillRandom<'a>>
+            + Send
+            + Sync,
+    {
+        let millis = unix_millis(c.inspect_send(WallClock).await);
+        let mut random = [0; 10];
+        c.perform_send(FillRandom(&mut random)).await;
+        self.stamp(millis, random)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_layout_is_a_v7_uuid() {
+        let mut ids = V7::new();
+        let id = ids.stamp(0x0123_4567_89ab, [0xff; 10]);
+        assert_eq!(id.get_version_num(), 7);
+        assert_eq!(id.get_variant(), uuid::Variant::RFC4122);
+        assert_eq!(&id.as_bytes()[..6], &[0x01, 0x23, 0x45, 0x67, 0x89, 0xab]);
+        // The seed has its top bit clear: room to count.
+        assert_eq!(ids.last, Some((0x0123_4567_89ab, (1 << 41) - 1)));
+    }
+
+    #[test]
+    fn order_holds_through_a_clock_stepping_back_and_a_full_counter() {
+        let mut ids = V7::new();
+        let a = ids.stamp(1000, [0; 10]);
+        let b = ids.stamp(999, [0; 10]);
+        assert!(a < b);
+        ids.last = Some((1000, (1 << COUNTER_BITS) - 1));
+        let c = ids.stamp(1000, [0; 10]);
+        assert!(b < c);
+        assert_eq!(ids.last.unwrap().0, 1001);
+        // A new millisecond starts a new count.
+        let d = ids.stamp(5000, [0; 10]);
+        assert!(c < d);
     }
 }

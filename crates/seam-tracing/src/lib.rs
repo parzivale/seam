@@ -129,6 +129,7 @@
 
 use core::fmt;
 use core::marker::PhantomData;
+use std::borrow::Cow;
 use std::string::{String, ToString};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::vec::Vec;
@@ -140,6 +141,7 @@ mod dynamic;
 #[doc(hidden)]
 pub mod __private {
     pub use seam_core::Perform;
+    pub use std::vec;
 }
 
 // tracing's pure types: levels and level filters.
@@ -285,8 +287,9 @@ pub struct Span<'a, S> {
     pub target: &'static str,
     /// Its name.
     pub name: &'static str,
-    /// Its structured fields.
-    pub fields: &'a [Field<'a>],
+    /// Its structured fields: borrowed, or owned (as [`span!`] makes
+    /// them, so a span can be held in a `let` before it is opened).
+    pub fields: Cow<'a, [Field<'a>]>,
     handle: PhantomData<fn() -> S>,
 }
 
@@ -297,15 +300,15 @@ impl<'a, S> Span<'a, S> {
             level,
             target,
             name,
-            fields: &[],
+            fields: Cow::Borrowed(&[]),
             handle: PhantomData,
         }
     }
 
-    /// With these structured fields.
+    /// With these structured fields: a slice, or a `Vec`.
     #[must_use]
-    pub const fn fields(mut self, fields: &'a [Field<'a>]) -> Self {
-        self.fields = fields;
+    pub fn fields(mut self, fields: impl Into<Cow<'a, [Field<'a>]>>) -> Self {
+        self.fields = fields.into();
         self
     }
 }
@@ -381,7 +384,7 @@ impl Perform<Opening<Span<'_, TracingSpan>>> for Tracing {
         Opening(op, _): Opening<Span<'_, TracingSpan>>,
     ) -> io::Result<TracingSpan> {
         Ok(TracingSpan(dynamic::span(
-            None, op.level, op.target, op.name, op.fields,
+            None, op.level, op.target, op.name, &op.fields,
         )))
     }
 }
@@ -396,7 +399,7 @@ impl Perform<Opening<Span<'_, TracingSpan>>> for TracingSpan {
             op.level,
             op.target,
             op.name,
-            op.fields,
+            &op.fields,
         )))
     }
 }
@@ -524,7 +527,7 @@ impl Perform<Log<'_>> for CapturedSpan {
 fn span_record(op: &Span<'_, CapturedSpan>) -> SpanRecord {
     SpanRecord {
         name: op.name.into(),
-        fields: captured_fields(op.fields),
+        fields: captured_fields(&op.fields),
     }
 }
 
@@ -737,6 +740,11 @@ macro_rules! __log {
 /// A [`Span`] at `level`, from the calling module, with any fields after
 /// its name, as tracing writes them: `span!(Level::INFO, "request", id = 7)`.
 /// Open it with `acquire`, and log on the handle it lends.
+///
+/// The span owns its list of fields, so it can be held in a `let` before
+/// it is opened. Numbers, flags and `&str`s are copied in; `%value` and
+/// `?value` borrow `value`, as `format_args!` does, so give them a
+/// variable rather than a temporary.
 #[macro_export]
 macro_rules! span {
     ($level:expr, $name:expr $(,)?) => {
@@ -760,7 +768,8 @@ macro_rules! __span {
         $crate::__span!($level, $name, [$($f)* (::core::stringify!($field), $crate::Value::from($v)),] $($rest)*)
     };
     ($level:expr, $name:expr, [$($f:tt)*] $(,)*) => {
-        $crate::Span::new($level, ::core::module_path!(), $name).fields(&[$($f)*])
+        $crate::Span::new($level, ::core::module_path!(), $name)
+            .fields($crate::__private::vec![$($f)*])
     };
 }
 

@@ -18,27 +18,25 @@ where
     C: for<'a> Provide<Span<'a, S>>,
     S: for<'a> Perform<Log<'a>>,
 {
-    c.acquire(
-        info_span!("import", batch = batch, rows = rows.len() as u64),
-        |_, span| {
-            let mut total = 0;
-            let mut skipped = 0u64;
-            for (line, row) in rows.iter().enumerate() {
-                match row
-                    .split_once('=')
-                    .map(|(k, v)| (k.trim(), v.trim().parse::<i64>()))
-                {
-                    Some((name, Ok(amount))) => total += amount_for(span, name, amount),
-                    _ => {
-                        skipped += 1;
-                        warn!(span, line = line as u64 + 1, row = %row, "skipping a bad row");
-                    }
+    let span = info_span!("import", batch = batch, rows = rows.len() as u64);
+    c.acquire(span, |_, span| {
+        let mut total = 0;
+        let mut skipped = 0u64;
+        for (line, row) in rows.iter().enumerate() {
+            match row
+                .split_once('=')
+                .map(|(k, v)| (k.trim(), v.trim().parse::<i64>()))
+            {
+                Some((name, Ok(amount))) => total += amount_for(span, name, amount),
+                _ => {
+                    skipped += 1;
+                    warn!(span, line = line as u64 + 1, row = %row, "skipping a bad row");
                 }
             }
-            info!(span, total = total, skipped = skipped, "imported");
-            seam::io::Result::Ok(total)
-        },
-    )
+        }
+        info!(span, total = total, skipped = skipped, "imported");
+        seam::io::Result::Ok(total)
+    })
     .expect("the span opens")
 }
 

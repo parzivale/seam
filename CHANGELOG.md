@@ -132,6 +132,23 @@ feature), makes the GPU effects:
 
 ### Fixes
 
+- `seam-uuid`: `V7`, a generator whose v7 UUIDs sort in the order they
+  were made, within one millisecond too (a 42-bit counter, RFC 9562's
+  method 1), as uuid's own `now_v7` does; `new_v7` stays random within a
+  millisecond, and says so.
+- `seam-tracing`: a span from `span!` (and `info_span!`, ...) owns its
+  fields, so it can be held in a `let` before it is opened. `Span::fields`
+  takes a slice or a `Vec`.
+- `seam-unix`: `SimUnix` performs `CreateDir` and `Open` through its
+  filesystem and gives what they create to the effective user, with the
+  mode the umask leaves, as Unix does; a user may then change its mode.
+- `seam-notify`: `Polling::comparing_contents` (and `compare_contents`)
+  compares files' contents too, as notify's `with_compare_contents` does,
+  so a rewrite that keeps the size within the clock's resolution is seen
+  (over a `Sim`, whose clock stands still, every same-size rewrite).
+- The `seam` feature `uuid` turns on the simulation's wall clock for
+  `test`.
+
 - `create_dir_all` works innermost first, as std's does, climbing only
   past missing directories: it no longer touches an ancestor that exists,
   so it works where the root cannot be seen (a WASI sandbox, a chroot).

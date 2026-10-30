@@ -97,14 +97,10 @@ where
 
 #[test]
 fn a_sync_root_with_a_simulated_world_and_an_own_part() {
-    let mut root = seam::root![
-        Sim < fx::Var,
-        fx::Now,
-        fx::Sleep,
-        fx::CreateAtomic > ::new(),
-        Memory < Get,
-        Put > ::default(),
-    ];
+    let mut root = seam::root! {
+        Sim<fx::Var, fx::Now, fx::Sleep, fx::CreateAtomic>::new(),
+        Memory<Get, Put>::default(),
+    };
     root.part_mut::<fx::Var>()
         .set_var("SEAM_ROOT_TEST_USER", "ada");
     assert_eq!(visit(&mut root), "hello, ada");
@@ -203,7 +199,7 @@ fn a_named_root() {
 /// Two roots in one function do not clash.
 #[test]
 fn roots_side_by_side() {
-    let a = seam::root![Memory < Get, Put > ::default()];
+    let a = seam::root! {Memory<Get, Put>::default()};
     let b = seam::root![Sim<fx::Now>::new(), Memory<Get>::default()];
     assert_eq!(a.inspect(Get("x".into())), None);
     assert_eq!(b.inspect(Now).since_epoch(), Duration::ZERO);
@@ -284,13 +280,10 @@ fn a_part_over_a_clone_of_the_sim() {
 /// A part listed with several effects serves them all from one value.
 #[test]
 fn one_value_serving_several_effects() {
-    let mut root = seam::root![
-        Sim < fx::Var,
-        fx::Now,
-        fx::Sleep > ::new(),
-        Memory < Get,
-        Put > ::default(),
-    ];
+    let mut root = seam::root! {
+        Sim<fx::Var, fx::Now, fx::Sleep>::new(),
+        Memory<Get, Put>::default(),
+    };
     root.part_mut::<fx::Var>()
         .set_var("SEAM_ROOT_TEST_USER", "ada");
     assert_eq!(visit(&mut root), "hello, ada");

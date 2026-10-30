@@ -1,7 +1,7 @@
 //! A TCP echo server on Tokio.
 //!
 //! ```text
-//! cargo run -p seam-rs --example echo_server --features tokio,std,rt,rt-multi-thread,net,env,io-std,test -- 127.0.0.1:7878
+//! cargo run -p seam-rs --example echo_server --features tokio,std,rt,rt-multi-thread,net,env,io-std,test,time -- 127.0.0.1:7878
 //! ```
 //!
 //! The server spawns a task per connection, through `SpawnWith`,

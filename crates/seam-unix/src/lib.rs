@@ -87,8 +87,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::vec::Vec;
 
 use seam_core::io;
-use seam_core::ops::fs::Metadata;
-use seam_core::{Effect, Inspect, Operation, Perform, Query};
+use seam_core::ops::fs::{CreateDir, Metadata, Open};
+use seam_core::{Closing, Effect, Inspect, Opening, Operation, Perform, Query};
 
 /// Flags for [`Mount`], as Linux's `MS_*`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -474,8 +474,15 @@ impl Default for State {
 /// It starts as root (all IDs 0), as process 1000 on host `sim`, with
 /// umask `0o022`. Permissions are checked as Unix does: only root mounts,
 /// unmounts or changes owners, and only root or a path's owner changes
-/// its mode (a path's owner is root until changed). Links live here, not
-/// in `C`'s filesystem.
+/// its mode. Links live here, not in `C`'s filesystem.
+///
+/// A path's owner is the user who made it, as on Unix, when it is made
+/// through `SimUnix`: it performs `CreateDir` and `Open` by passing them to
+/// `C`, and gives what they create the effective user and group, and the
+/// mode the umask leaves (`0o777` for a directory, `0o666` for a file).
+/// So route `fx::CreateDir` and `fx::Open<..>` to it in a root. Anything
+/// else (a `Sim`'s own files, or ones made around it) is root's until
+/// changed.
 ///
 /// Every clone is a handle to the same state.
 #[derive(Debug, Clone)]
@@ -727,6 +734,53 @@ impl<C> Perform<Kill> for SimUnix<C> {
 impl<C> Perform<SetUmask> for SimUnix<C> {
     fn perform(&mut self, op: SetUmask) -> u32 {
         core::mem::replace(&mut self.lock().umask, op.0 & 0o777)
+    }
+}
+
+impl<C> SimUnix<C> {
+    /// Gives `path`, just made, to the effective user, with `full` less
+    /// the umask.
+    fn made(&self, path: &Path, full: u32) {
+        let mut state = self.lock();
+        let owner = (state.ids.euid, state.ids.egid);
+        let mode = full & !state.umask;
+        state.owners.insert(path.to_path_buf(), owner);
+        state.modes.insert(path.to_path_buf(), mode);
+    }
+}
+
+impl<C> Perform<CreateDir<'_>> for SimUnix<C>
+where
+    C: for<'a> Perform<CreateDir<'a>>,
+{
+    fn perform(&mut self, op: CreateDir<'_>) -> io::Result<()> {
+        self.fs.perform(op)?;
+        self.made(op.path, 0o777);
+        Ok(())
+    }
+}
+
+impl<'a, M, F, C> Perform<Opening<Open<'a, M, F>>> for SimUnix<C>
+where
+    C: Perform<Opening<Open<'a, M, F>>> + for<'b> Inspect<Metadata<'b>>,
+{
+    fn perform(&mut self, op: Opening<Open<'a, M, F>>) -> io::Result<F> {
+        let path = op.0.path;
+        let existed = self.fs.inspect(Metadata::new(path)).is_ok();
+        let file = self.fs.perform(op)?;
+        if !existed {
+            self.made(path, 0o666);
+        }
+        Ok(file)
+    }
+}
+
+impl<'a, M, F, C> Perform<Closing<Open<'a, M, F>>> for SimUnix<C>
+where
+    C: Perform<Closing<Open<'a, M, F>>>,
+{
+    fn perform(&mut self, op: Closing<Open<'a, M, F>>) -> io::Result<()> {
+        self.fs.perform(op)
     }
 }
 

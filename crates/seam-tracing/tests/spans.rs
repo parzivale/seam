@@ -153,3 +153,34 @@ fn sent_to_tracing_with_fields_and_parents() {
     assert_eq!(seen.events[1].2, Some(2));
     assert_eq!(seen.events[2].3[1], ("attempts".into(), "3".into()));
 }
+
+/// A span made by the macro can be held before it is opened: it owns its
+/// fields.
+#[test]
+fn a_span_can_be_held_in_a_let() {
+    fn work<C, S>(c: &mut C, rows: &[u32])
+    where
+        C: for<'a> Provide<Span<'a, S>>,
+        S: for<'a> Perform<Log<'a>>,
+    {
+        // Plain values are copied in; `%` and `?` borrow, as
+        // `format_args!` does, so they take a variable.
+        let first = rows.first();
+        let span = info_span!("import", rows = rows.len() as u64, first = ?first);
+        c.acquire(span, |_, span| {
+            info!(span, "inside");
+            seam_core::io::Result::Ok(())
+        })
+        .unwrap();
+    }
+    let mut logs = Captured::new();
+    work(&mut logs, &[4, 5]);
+    let span = &logs.records()[0].spans[0];
+    assert_eq!(
+        span.fields,
+        [
+            ("rows".into(), "2".into()),
+            ("first".into(), "Some(4)".into())
+        ]
+    );
+}

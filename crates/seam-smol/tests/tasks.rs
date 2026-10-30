@@ -60,9 +60,13 @@ where
     .await
 }
 
+/// How long each job sleeps: long, so that overlapped and serial are far
+/// apart however loaded the machine is.
+const SLEEP: Duration = Duration::from_millis(400);
+
 /// The job gets its own copy of the root capability.
 async fn slow_square(mut smol: Smol, n: u64) -> u64 {
-    smol.perform_send(Sleep(Duration::from_millis(50))).await;
+    smol.perform_send(Sleep(SLEEP)).await;
     n * n
 }
 
@@ -77,12 +81,9 @@ fn tasks_run_concurrently() {
                 .await
                 .unwrap();
         assert_eq!(out, [1, 4, 9, 16, 25, 36, 49, 64]);
-        // Eight 50 ms sleeps, overlapped.
-        assert!(
-            start.elapsed() < Duration::from_millis(300),
-            "took {:?}",
-            start.elapsed()
-        );
+        // Eight sleeps: one after another would take 8 x SLEEP; overlapped,
+        // little more than one.
+        assert!(start.elapsed() < SLEEP * 4, "took {:?}", start.elapsed());
     })
 }
 

@@ -85,11 +85,10 @@ fn now_is_the_capabilitys_clock() {
     let mut sim = sim();
     sim.set_wall_clock(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000));
     sim.set_var("TZ", "Europe/Paris");
-    let root = seam_core::root![
+    let root = seam_core::root! {
         Sim<fx::WallClock>::clone(&sim),
-        TzDb < tz::TimeZoneFor,
-        tz::SystemTimeZone > ::new(sim.clone()),
-    ];
+        TzDb<tz::TimeZoneFor, tz::SystemTimeZone>::new(sim.clone()),
+    };
     assert_eq!(
         seam_jiff::Timestamp::now(&root).unwrap().as_second(),
         1_700_000_000

@@ -174,11 +174,10 @@ fn main() -> io::Result<()> {
     let path = Std.inspect(TempDir).join("seam-custom-ops.tsv");
     // The program's root: `Std` for the OS, the file store for the store's
     // effects. The store's handle types are inferred from `Std`.
-    let mut root = seam::root![
+    let mut root = seam::root! {
         Std<seam::effects::Var>,
-        FileStore < Get,
-        Put > ::new(Std, path),
-    ];
+        FileStore<Get, Put>::new(Std, path),
+    };
     let n = visit(&mut root, "home")?;
     // `main` is the edge, so it may print directly.
     println!(

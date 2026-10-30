@@ -146,13 +146,9 @@ fn links_ids_and_signals() {
 fn world_files() {
     use seam_unix::effects as ux;
     let sim = Sim::new();
-    let mut root = seam_core::root![
-        SimUnix < ux::Mount,
-        ux::Unmount,
-        ux::Ids,
-        ux::Hostname,
-        ux::Kill > ::new(sim)
-    ];
+    let mut root = seam_core::root! {
+        SimUnix<ux::Mount, ux::Unmount, ux::Ids, ux::Hostname, ux::Kill>::new(sim)
+    };
     seam_test::load_world::<(ux::Mount,), _>(
         &mut root,
         r#"unix {
@@ -178,10 +174,41 @@ fn world_files() {
     assert!(seam_test::check_world::<(ux::Mount,), _>(&root, r#"unix { signal 77 9 }"#).is_err());
 
     let text = seam_test::to_world::<(ux::Mount,), _>(&root);
-    let mut again = seam_core::root![SimUnix < ux::Mount, ux::Hostname > ::new(Sim::new())];
+    let mut again = seam_core::root! {SimUnix<ux::Mount, ux::Hostname>::new(Sim::new())};
     seam_test::load_world::<(ux::Mount,), _>(&mut again, &text).unwrap();
     assert_eq!(
         again.part::<ux::Mount>().mounts(),
         root.part::<ux::Mount>().mounts()
     );
+}
+
+/// What a user makes through `SimUnix` is theirs, with the umask's mode,
+/// so they may change its mode; what they did not make is root's.
+#[test]
+fn what_a_user_makes_is_theirs() {
+    use seam_core::ops::fs::{WriteOnly, create_dir_all, write_file};
+    use seam_unix::{SetUmask, effects as ux};
+
+    let mut sim = Sim::new();
+    sim.add_dir("/home").add_file("/etc/passwd", "root:x:0:0");
+    let mut unix = SimUnix::new(sim.clone());
+    unix.set_user(1000, 100);
+    let mut root = seam_core::root! {
+        Sim<seam_core::effects::Metadata>::clone(&sim),
+        SimUnix<seam_core::effects::CreateDir, seam_core::effects::Open<WriteOnly>, ux::Chmod, ux::SetUmask>::clone(&unix),
+    };
+    root.perform(SetUmask(0o027));
+    create_dir_all(&mut root, "/home/ada/notes").unwrap();
+    write_file(&mut root, "/home/ada/notes/todo.txt", "milk").unwrap();
+    assert_eq!(unix.owner("/home/ada/notes"), Some((1000, 100)));
+    assert_eq!(unix.mode("/home/ada/notes"), Some(0o750));
+    assert_eq!(unix.mode("/home/ada/notes/todo.txt"), Some(0o640));
+    root.perform(Chmod::new("/home/ada/notes/todo.txt", 0o600))
+        .unwrap();
+    // Rewriting a file keeps its owner and mode.
+    write_file(&mut root, "/home/ada/notes/todo.txt", "eggs").unwrap();
+    assert_eq!(unix.mode("/home/ada/notes/todo.txt"), Some(0o600));
+    // A file the user did not make stays root's.
+    let denied = root.perform(Chmod::new("/etc/passwd", 0o666)).unwrap_err();
+    assert_eq!(denied.kind(), ErrorKind::PermissionDenied);
 }

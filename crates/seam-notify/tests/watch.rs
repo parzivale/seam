@@ -184,3 +184,41 @@ fn a_watch_reports_only_its_kinds() -> io::Result<()> {
         },
     )
 }
+
+/// A rewrite that keeps the size, at the same (virtual) time: unseen by
+/// size and time, seen once contents are compared.
+#[test]
+fn comparing_contents_sees_a_same_size_rewrite() -> io::Result<()> {
+    fn rewrite<C, W>(root: &mut C) -> io::Result<Option<EventKind>>
+    where
+        C: for<'a> Provide<Watch<'a, W>>
+            + for<'a> Provide<seam_core::ops::fs::Open<'a, WriteOnly, seam_test::fs::File<WriteOnly>>>,
+        W: Perform<Timeout<NextEvent>>,
+    {
+        root.acquire(Watch::recursive("/w"), |root, watcher| {
+            write_file(root, "/w/a", "2")?;
+            match watcher.perform(Timeout::new(Duration::from_secs(5), NextEvent)) {
+                Ok(event) => Ok(Some(event.kind)),
+                Err(e) if e.kind() == ErrorKind::TimedOut => Ok(None),
+                Err(e) => Err(e),
+            }
+        })
+    }
+
+    let sim = sim();
+    let mut by_metadata = seam_core::root! {
+        Sim<fx::Open<WriteOnly>>::clone(&sim),
+        Polling<seam_notify::effects::Watch>::new(sim.clone()),
+    };
+    assert_eq!(rewrite(&mut by_metadata)?, None);
+
+    let mut by_contents = seam_core::root! {
+        Sim<fx::Open<WriteOnly>>::clone(&sim),
+        Polling<seam_notify::effects::Watch>::comparing_contents(sim.clone()),
+    };
+    assert_eq!(
+        rewrite(&mut by_contents)?,
+        Some(EventKind::Modify(ModifyKind::Data(DataChange::Any)))
+    );
+    Ok(())
+}

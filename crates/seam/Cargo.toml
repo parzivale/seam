@@ -63,7 +63,7 @@ smol = ["dep:seam-smol", "seam-sqlx?/smol"]
 # Wrappers of popular crates, each its own effects with a real handler
 # and one for tests. Each brings in the operation types it is built on.
 rand = ["dep:seam-rand", "random"]
-uuid = ["dep:seam-uuid", "random", "time", "std"]
+uuid = ["dep:seam-uuid", "random", "time", "std", "seam-test?/std"]
 dirs = ["dep:seam-dirs", "env", "fs"]
 tracing = ["dep:seam-tracing"]
 notify = ["dep:seam-notify", "seam-notify?/notify", "fs", "time"]
@@ -196,7 +196,7 @@ test = true
 
 [[example]]
 name = "echo_server"
-required-features = ["tokio", "std", "rt", "rt-multi-thread", "net", "env", "io-std", "test"]
+required-features = ["tokio", "std", "rt", "rt-multi-thread", "net", "env", "io-std", "test", "time"]
 test = true
 
 [[example]]

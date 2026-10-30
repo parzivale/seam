@@ -39,13 +39,10 @@ fn ash_with_tuned_settings_in_a_root() {
     };
     // Built in the root...
     let built = || -> Result<_, GpuError> {
-        Ok(seam::root![
+        Ok(seam::root! {
             Std<fx::Var>,
-            Ash < gpu::CreateBuffer,
-            gpu::Upload,
-            gpu::Download,
-            gpu::Submit > ::with(&options)?,
-        ])
+            Ash<gpu::CreateBuffer, gpu::Upload, gpu::Download, gpu::Submit>::with(&options)?,
+        })
     };
     let mut root = match built() {
         Ok(root) => root,
@@ -55,24 +52,18 @@ fn ash_with_tuned_settings_in_a_root() {
 
     // ...or built first and shared: every clone is the same device.
     let device = Ash::with(&options).unwrap();
-    let mut root = seam::root![
+    let mut root = seam::root! {
         Std<fx::Var>,
-        Ash < gpu::CreateBuffer,
-        gpu::Upload,
-        gpu::Download,
-        gpu::Submit > ::clone(&device),
-    ];
+        Ash<gpu::CreateBuffer, gpu::Upload, gpu::Download, gpu::Submit>::clone(&device),
+    };
     assert_eq!(round_trip::<_, Submission>(&mut root).unwrap(), [4, 5]);
 }
 
 #[test]
 fn the_same_core_on_the_simulated_gpu() {
-    let mut root = seam::root![
+    let mut root = seam::root! {
         Std<fx::Var>,
-        SimGpu < gpu::CreateBuffer,
-        gpu::Upload,
-        gpu::Download,
-        gpu::Submit > ::new(),
-    ];
+        SimGpu<gpu::CreateBuffer, gpu::Upload, gpu::Download, gpu::Submit>::new(),
+    };
     assert_eq!(round_trip::<_, SimSubmission>(&mut root).unwrap(), [4, 5]);
 }

@@ -27,7 +27,7 @@ fn a_core_runs_on_the_simulation_as_on_a_handler() {
 #[test]
 fn and_in_a_root_beside_other_parts() {
     let sim = Sim::new();
-    let mut root = seam_core::root![Sim < fx::Now, fx::Sleep > ::clone(&sim)];
+    let mut root = seam_core::root! {Sim<fx::Now, fx::Sleep>::clone(&sim)};
     assert_eq!(nap(&mut root, 7), Duration::from_secs(7));
     // Every clone is the same world.
     sim.check_world("clock now=7").unwrap();

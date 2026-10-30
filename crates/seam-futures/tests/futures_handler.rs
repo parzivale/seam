@@ -127,7 +127,7 @@ fn within_races_against_the_virtual_clock() {
 #[test]
 fn tasks_on_a_thread_pool() {
     let pool = ThreadPool::new().unwrap();
-    let mut root = seam_core::root![Executor < fx::Spawn, fx::SpawnSet > (pool)];
+    let mut root = seam_core::root! { Executor<fx::Spawn, fx::SpawnSet>(pool) };
     block_on(async {
         let doubled = root
             .acquire_async(

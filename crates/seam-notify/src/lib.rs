@@ -111,9 +111,11 @@ use std::path::{Path, PathBuf};
 use std::vec::Vec;
 
 use seam_core::io;
-use seam_core::ops::fs::{FileInfo, Metadata, NextEntry, ReadDir};
+use seam_core::ops::fs::{FileInfo, Metadata, NextEntry, ReadAt, ReadDir, View, read_file};
 use seam_core::ops::time::{Now, Sleep, Timeout, TimesOut};
-use seam_core::{Acquisition, Closing, Effect, Inspect, Opening, Operation, Perform, Provide};
+use seam_core::{
+    Acquisition, Closing, Effect, Inspect, Lend, Opening, Operation, Perform, Provide,
+};
 
 /// Watch `path` (and, if `recursive`, everything under it), lending a
 /// watcher of type `W` for the scope. Fails with `NotFound` if `path` does
@@ -215,14 +217,67 @@ pub use notify_types::event::{
 /// path's kind, size and modification time) every `interval`, sleeping in
 /// between through `C`.
 ///
+/// Size and modification time miss a rewrite that keeps the size within
+/// the clock's resolution, as notify's own poll watcher does by default
+/// (and a `Sim`'s clock does not move unless told to, so there they miss
+/// every same-size rewrite). [`compare_contents`](Self::compare_contents)
+/// compares each file's contents too, as notify's `with_compare_contents`
+/// does, so every change to a file is seen.
+///
 /// Over a `Sim` the sleeps are virtual and nothing else changes the files
 /// while one waits, so a `NextEvent` with nothing to report never returns:
 /// change files before waiting, or wait with a `Timeout`.
 #[derive(Debug, Clone)]
-pub struct Polling<C, D> {
+pub struct Polling<C, D, K = MetadataOnly> {
     fs: C,
     interval: Duration,
-    dir: PhantomData<fn() -> D>,
+    dir: PhantomData<fn() -> (D, K)>,
+}
+
+/// What [`Polling`] compares a file by: implemented by [`MetadataOnly`]
+/// (kind, size and modification time) and [`Contents`] (those, and the
+/// contents). Sealed.
+pub trait Compare<C>: sealed::Sealed {
+    /// A digest of `path`'s contents, if this compares them.
+    #[doc(hidden)]
+    fn digest(fs: &C, path: &Path) -> Option<u64>;
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for super::MetadataOnly {}
+    impl<F> Sealed for super::Contents<F> {}
+}
+
+/// Compare files by kind, size and modification time: [`Polling`]'s
+/// default.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MetadataOnly;
+
+impl<C> Compare<C> for MetadataOnly {
+    fn digest(_: &C, _: &Path) -> Option<u64> {
+        None
+    }
+}
+
+/// Compare files by their contents too, read through views of type `F`
+/// (`seam_test::fs::FileView` over a `Sim`, `seam_std::fs::FileView` over
+/// `Std`): [`Polling::compare_contents`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Contents<F>(PhantomData<fn() -> F>);
+
+impl<C, F> Compare<C> for Contents<F>
+where
+    C: for<'a> Lend<View<'a, F>>,
+    F: for<'a> Inspect<ReadAt<'a>>,
+{
+    fn digest(fs: &C, path: &Path) -> Option<u64> {
+        // FNV-1a: enough to tell one version of a file from the next.
+        let bytes = read_file(fs, path).ok()?;
+        Some(bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+            (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3)
+        }))
+    }
 }
 
 impl<C, D> Polling<C, D>
@@ -245,12 +300,58 @@ where
     }
 }
 
-/// What a scan saw of one path.
-type Seen = BTreeMap<PathBuf, FileInfo>;
+impl<C, D> Polling<C, D>
+where
+    C: for<'a> Provide<ReadDir<'a, D>> + for<'a> Inspect<Metadata<'a>>,
+    D: Perform<NextEntry>,
+{
+    /// Rescans through `fs` every second, comparing each file's contents
+    /// too: [`compare_contents`](Self::compare_contents). The view type is
+    /// inferred from `fs`.
+    ///
+    /// ```
+    /// use seam_notify::{Polling, effects as notify};
+    /// use seam_test::Sim;
+    ///
+    /// let sim = Sim::new();
+    /// let root = seam_core::root! {
+    ///     Polling<notify::Watch>::comparing_contents(sim.clone()),
+    /// };
+    /// # let _ = root;
+    /// ```
+    pub fn comparing_contents<F>(fs: C) -> Polling<C, D, Contents<F>>
+    where
+        C: for<'a> Lend<View<'a, F>>,
+        F: for<'a> Inspect<ReadAt<'a>>,
+    {
+        Self::new(fs).compare_contents()
+    }
+}
+
+impl<C, D, K> Polling<C, D, K> {
+    /// Compares each file's contents too, read through `C`'s views (of
+    /// type `F`, inferred), so a rewrite that keeps the size and time is
+    /// seen. Each rescan reads every watched file.
+    pub fn compare_contents<F>(self) -> Polling<C, D, Contents<F>>
+    where
+        C: for<'a> Lend<View<'a, F>>,
+        F: for<'a> Inspect<ReadAt<'a>>,
+    {
+        Polling {
+            fs: self.fs,
+            interval: self.interval,
+            dir: PhantomData,
+        }
+    }
+}
+
+/// What a scan saw of each path: its metadata, and a digest of its
+/// contents if they are compared.
+type Seen = BTreeMap<PathBuf, (FileInfo, Option<u64>)>;
 
 /// A watcher from [`Polling`].
 #[derive(Debug)]
-pub struct PollWatcher<C, D> {
+pub struct PollWatcher<C, D, K = MetadataOnly> {
     fs: C,
     root: PathBuf,
     recursive: bool,
@@ -258,18 +359,24 @@ pub struct PollWatcher<C, D> {
     interval: Duration,
     seen: Seen,
     pending: VecDeque<Event>,
-    dir: PhantomData<fn() -> D>,
+    dir: PhantomData<fn() -> (D, K)>,
 }
 
 /// Everything under `root` (and `root` itself), as `fs` sees it now.
-fn scan<C, D>(fs: &mut C, root: &Path, recursive: bool) -> io::Result<Seen>
+fn scan<C, D, K>(fs: &mut C, root: &Path, recursive: bool) -> io::Result<Seen>
 where
     C: for<'a> Provide<ReadDir<'a, D>> + for<'a> Inspect<Metadata<'a>>,
     D: Perform<NextEntry>,
+    K: Compare<C>,
 {
     let mut seen = Seen::new();
     let top = fs.inspect(Metadata::new(root))?;
-    seen.insert(root.to_path_buf(), top);
+    let digest = if top.is_dir() {
+        None
+    } else {
+        K::digest(fs, root)
+    };
+    seen.insert(root.to_path_buf(), (top, digest));
     if !top.is_dir() {
         return Ok(seen);
     }
@@ -295,7 +402,12 @@ where
             if info.is_dir() && recursive {
                 dirs.push(path.clone());
             }
-            seen.insert(path, info);
+            let digest = if info.is_dir() {
+                None
+            } else {
+                K::digest(fs, &path)
+            };
+            seen.insert(path, (info, digest));
         }
     }
     Ok(seen)
@@ -307,7 +419,7 @@ fn diff(old: &Seen, new: &Seen) -> Vec<Event> {
     let mut created = Vec::new();
     let mut modified = Vec::new();
     let mut removed = Vec::new();
-    for (path, info) in new {
+    for (path, (info, digest)) in new {
         match old.get(path) {
             None => {
                 let kind = if info.is_dir() {
@@ -317,8 +429,11 @@ fn diff(old: &Seen, new: &Seen) -> Vec<Event> {
                 };
                 created.push(Event::new(EventKind::Create(kind)).add_path(path.clone()));
             }
-            Some(before) if before != info && !info.is_dir() => {
-                let kind = if before.len != info.len || before.modified != info.modified {
+            Some((before, was)) if (before != info || was != digest) && !info.is_dir() => {
+                let kind = if before.len != info.len
+                    || before.modified != info.modified
+                    || was != digest
+                {
                     ModifyKind::Data(DataChange::Any)
                 } else {
                     ModifyKind::Metadata(MetadataKind::Any)
@@ -328,7 +443,7 @@ fn diff(old: &Seen, new: &Seen) -> Vec<Event> {
             Some(_) => {}
         }
     }
-    for (path, info) in old {
+    for (path, (info, _)) in old {
         if !new.contains_key(path) {
             let kind = if info.is_dir() {
                 RemoveKind::Folder
@@ -341,14 +456,15 @@ fn diff(old: &Seen, new: &Seen) -> Vec<Event> {
     created.into_iter().chain(modified).chain(removed).collect()
 }
 
-impl<C, D> PollWatcher<C, D>
+impl<C, D, K> PollWatcher<C, D, K>
 where
     C: for<'a> Provide<ReadDir<'a, D>> + for<'a> Inspect<Metadata<'a>>,
     D: Perform<NextEntry>,
+    K: Compare<C>,
 {
     /// Rescans, queueing what changed. Whether anything did.
     fn poll(&mut self) -> io::Result<bool> {
-        let now = match scan(&mut self.fs, &self.root, self.recursive) {
+        let now = match scan::<C, D, K>(&mut self.fs, &self.root, self.recursive) {
             Ok(now) => now,
             // The watched path itself is gone: everything under it was
             // removed.
@@ -367,17 +483,18 @@ where
     }
 }
 
-impl<'w, C, D> Perform<Opening<Watch<'w, PollWatcher<C, D>>>> for Polling<C, D>
+impl<'w, C, D, K> Perform<Opening<Watch<'w, PollWatcher<C, D, K>>>> for Polling<C, D, K>
 where
     C: for<'a> Provide<ReadDir<'a, D>> + for<'a> Inspect<Metadata<'a>> + Clone,
     D: Perform<NextEntry>,
+    K: Compare<C>,
 {
     fn perform(
         &mut self,
-        Opening(op, _): Opening<Watch<'w, PollWatcher<C, D>>>,
-    ) -> io::Result<PollWatcher<C, D>> {
+        Opening(op, _): Opening<Watch<'w, PollWatcher<C, D, K>>>,
+    ) -> io::Result<PollWatcher<C, D, K>> {
         let mut fs = self.fs.clone();
-        let seen = scan(&mut fs, op.path, op.recursive)?;
+        let seen = scan::<C, D, K>(&mut fs, op.path, op.recursive)?;
         Ok(PollWatcher {
             fs,
             root: op.path.to_path_buf(),
@@ -391,16 +508,17 @@ where
     }
 }
 
-impl<'w, C, D> Perform<Closing<Watch<'w, PollWatcher<C, D>>>> for Polling<C, D> {
-    fn perform(&mut self, _: Closing<Watch<'w, PollWatcher<C, D>>>) -> io::Result<()> {
+impl<'w, C, D, K> Perform<Closing<Watch<'w, PollWatcher<C, D, K>>>> for Polling<C, D, K> {
+    fn perform(&mut self, _: Closing<Watch<'w, PollWatcher<C, D, K>>>) -> io::Result<()> {
         Ok(())
     }
 }
 
-impl<C, D> Perform<NextEvent> for PollWatcher<C, D>
+impl<C, D, K> Perform<NextEvent> for PollWatcher<C, D, K>
 where
     C: for<'a> Provide<ReadDir<'a, D>> + for<'a> Inspect<Metadata<'a>> + Perform<Sleep>,
     D: Perform<NextEntry>,
+    K: Compare<C>,
 {
     fn perform(&mut self, _: NextEvent) -> io::Result<Event> {
         loop {
@@ -416,13 +534,14 @@ where
 
 /// Rescans until something changes or the clock of `C` passes the
 /// deadline.
-impl<C, D> Perform<Timeout<NextEvent>> for PollWatcher<C, D>
+impl<C, D, K> Perform<Timeout<NextEvent>> for PollWatcher<C, D, K>
 where
     C: for<'a> Provide<ReadDir<'a, D>>
         + for<'a> Inspect<Metadata<'a>>
         + Perform<Sleep>
         + Inspect<Now>,
     D: Perform<NextEntry>,
+    K: Compare<C>,
 {
     fn perform(&mut self, op: Timeout<NextEvent>) -> io::Result<Event> {
         let deadline = self.fs.inspect(Now) + op.after;
@@ -446,8 +565,8 @@ where
 }
 
 // The lifts let async cores use them too.
-impl<C, D> seam_core::Capability for Polling<C, D> {}
-impl<C, D> seam_core::Capability for PollWatcher<C, D> {}
+impl<C, D, K> seam_core::Capability for Polling<C, D, K> {}
+impl<C, D, K> seam_core::Capability for PollWatcher<C, D, K> {}
 
 #[cfg(feature = "notify")]
 pub use os::{Notify, NotifyWatcher};

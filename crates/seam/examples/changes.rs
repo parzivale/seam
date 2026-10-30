@@ -4,7 +4,8 @@
 //!
 //! The core watches through `Watch` and waits with `Timeout<NextEvent>`,
 //! so the program uses the OS's watcher while the tests use `Polling` over
-//! a simulation, where the quiet period passes in virtual time, at once.
+//! a simulation, comparing contents (so every write is seen, as the OS
+//! sees it), where the quiet period passes in virtual time, at once.
 //!
 //! ```text
 //! cargo run -p seam-rs --example changes --features std,test,notify
@@ -78,18 +79,17 @@ mod tests {
         let mut sim = Sim::new();
         sim.add_dir("/site").add_file("/site/index.html", "old");
         let mut root = seam::root![
-            Sim<fx::View, fx::Open<WriteOnly>, fx::Metadata>::clone(&sim),
-            Polling<seam::notify::effects::Watch>::new(sim.clone()),
+            Sim<fx::Open<WriteOnly>>::clone(&sim),
+            Polling<seam::notify::effects::Watch>::comparing_contents(sim.clone()),
         ];
         let seen = changes(
             &mut root,
             Path::new("/site"),
             Duration::from_secs(5),
             |root| {
-                // `Polling`, like notify's own poll watcher, sees a change
-                // by size or modification time, and the virtual clock has
-                // not moved: so this rewrite changes the size.
-                write_file(root, "/site/index.html", "new page")?;
+                // The same size, at the same virtual instant: only a
+                // comparison of contents sees it.
+                write_file(root, "/site/index.html", "new")?;
                 write_file(root, "/site/about.html", "hello")
             },
         )

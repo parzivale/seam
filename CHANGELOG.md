@@ -145,6 +145,13 @@ feature), makes the GPU effects:
   real handlers (compiled as a doctest) and its features. The README has
   a Handlers section: what each handler covers, and what each wrapper
   needs beside it in a root.
+- An example for every wrapper and handler crate in `crates/seam/examples`,
+  each a core with a `main` on the real handlers and tests on the
+  simulated ones: `checksums` (smol), `word_pipe` (futures),
+  `world_clock` (jiff), `dice` (rand), `ids` (uuid), `settings` (dirs),
+  `import_log` (tracing), `changes` (notify), `titles` (reqwest), `todo`
+  (sqlx), `shared_dir` (unix, over rustix) and `gpu_double` (ash, with a
+  Rust shader).
 - "Backend" is gone from the docs: seam has effects and handlers, and
   `Std`, `Tokio`, `Smol` and `Sim` are handlers like any other.
 

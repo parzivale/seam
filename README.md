@@ -529,10 +529,24 @@ tests that run its core in the simulation:
 | [`echo_server`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/echo_server.rs) | an async `Send` core on a root of Tokio and std that spawns a task per connection; its handler is tested on the in-memory network with no runtime |
 | [`custom_ops`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/custom_ops.rs) | defining your own operations and their kind; building a capability out of other capabilities; putting it in a root next to `Std`; atomic writes in a scope |
 | [`word_count`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/word_count.rs) | a worker pool on OS threads, tested on simulated threads under many schedules; a world file for its setup and expectations |
+| [`checksums`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/checksums.rs) | `seam::smol`: a task per file in a task set on smol; tested on the deterministic runtime under several schedules |
+| [`word_pipe`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/word_pipe.rs) | `seam::futures`: a two-stage pipeline in one task: futures' channels, `join!` and `within`, on smol's clock or virtual time |
+| [`world_clock`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/world_clock.rs) | `seam::jiff`: now in several zones, and a meeting time across daylight saving; a fixed clock and the bundled tz database in tests |
+| [`dice`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/dice.rs) | `seam::rand`: rand's API over seam's randomness; seeded, reproducible rolls |
+| [`ids`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/ids.rs) | `seam::uuid`: v7 and v5 UUIDs from seam's clock and randomness, known in advance in tests |
+| [`settings`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/settings.rs) | `seam::dirs`: per-platform config, cache and user directories, and settings loaded from there; a simulated home on each platform's rules |
+| [`import_log`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/import_log.rs) | `seam::tracing`: logs in spans with structured fields, printed by a subscriber; captured and checked in a world file in tests |
+| [`changes`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/changes.rs) | `seam::notify`: what a step changes in a directory, until it goes quiet; the OS watcher, or polling over a simulation in virtual time |
+| [`titles`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/titles.rs) | `seam::reqwest`: page statuses and titles over HTTP; `Scripted` routes in tests |
+| [`todo`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/todo.rs) | `seam::sqlx`: a to-do list in SQLite with typed rows (`TryFrom<&Row>`); a fresh in-memory database per test |
+| [`shared_dir`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/shared_dir.rs) | `seam::unix`: a group-shared directory: chmod, chown, symlinks, user IDs; rustix in the program, `SimUnix`'s permission checks in tests |
+| [`gpu_double`](https://github.com/parzivale/seam/blob/main/crates/seam/examples/gpu_double.rs) | `seam::ash`: a compute shader written in Rust (rust-gpu) on Vulkan, and the same function run by `SimGpu` in tests |
+
+Each example's header gives the features it needs; all of them at once:
 
 ```text
 cargo run  -p seam-rs --example guess --features full,std,tokio,rt,test
-cargo test -p seam-rs --examples --features full,std,tokio,rt,test
+cargo test -p seam-rs --examples --all-features
 ```
 
 ## Guides

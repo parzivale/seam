@@ -1,0 +1,95 @@
+//! Record IDs, as UUIDs from seam's randomness and clock (`seam::uuid`).
+//!
+//! The core stamps records with v7 UUIDs, which sort by the millisecond
+//! they were made in (within one, they are random), and v5 UUIDs for
+//! names, which are the same every time. The program uses the
+//! system's clock and randomness; the tests a simulation with a seed and a
+//! clock they set, so the IDs are known in advance.
+//!
+//! ```text
+//! cargo run -p seam-rs --example ids --features std,test,uuid
+//! ```
+
+use seam::ops::random::FillRandom;
+use seam::ops::time::WallClock;
+use seam::prelude::*;
+use seam::uuid::Uuid;
+
+/// A record, stamped when it was made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Record {
+    id: Uuid,
+    title: String,
+}
+
+/// Makes a record for each title: v7 IDs, so one made in a later
+/// millisecond sorts after.
+fn stamp<C>(c: &mut C, titles: &[&str]) -> Vec<Record>
+where
+    C: for<'a> Perform<FillRandom<'a>> + Inspect<WallClock>,
+{
+    titles
+        .iter()
+        .map(|t| Record {
+            id: seam::uuid::new_v7(c),
+            title: (*t).to_owned(),
+        })
+        .collect()
+}
+
+/// A stable ID for a tag name: v5, under a namespace of our own. Pure: it
+/// needs no capability at all.
+fn tag_id(name: &str) -> Uuid {
+    const TAGS: Uuid = seam::uuid::uuid!("6ba7b812-9dad-11d1-80b4-00c04fd430c8");
+    Uuid::new_v5(&TAGS, name.as_bytes())
+}
+
+/// The edge: the system's clock and randomness.
+fn main() {
+    use seam::effects as fx;
+    let mut root = seam::root![seam::stdlib::Std<fx::FillRandom, fx::WallClock>];
+    for record in stamp(&mut root, &["buy milk", "write examples", "ship 0.7"]) {
+        println!("{}  {}", record.id, record.title);
+    }
+    println!("tag `urgent` is {}", tag_id("urgent"));
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use seam::test::Sim;
+
+    use super::*;
+
+    fn sim_at(millis: u64) -> Sim {
+        let mut sim = Sim::with_seed(11);
+        sim.set_wall_clock(UNIX_EPOCH + Duration::from_millis(millis));
+        sim
+    }
+
+    #[test]
+    fn ids_are_v7_and_sort_by_time() {
+        let mut sim = sim_at(1_700_000_000_000);
+        let early = stamp(&mut sim, &["a"]);
+        sim.set_wall_clock(UNIX_EPOCH + Duration::from_millis(1_700_000_000_500));
+        let late = stamp(&mut sim, &["b"]);
+        assert_eq!(early[0].id.get_version_num(), 7);
+        assert!(early[0].id < late[0].id);
+    }
+
+    #[test]
+    fn a_seed_and_a_clock_fix_the_ids() {
+        let a = stamp(&mut sim_at(1_700_000_000_000), &["x", "y"]);
+        let b = stamp(&mut sim_at(1_700_000_000_000), &["x", "y"]);
+        assert_eq!(a, b);
+        assert_ne!(a[0].id, a[1].id);
+    }
+
+    #[test]
+    fn tag_ids_are_stable() {
+        assert_eq!(tag_id("urgent"), tag_id("urgent"));
+        assert_ne!(tag_id("urgent"), tag_id("later"));
+        assert_eq!(tag_id("urgent").get_version_num(), 5);
+    }
+}

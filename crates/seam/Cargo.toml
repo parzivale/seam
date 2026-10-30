@@ -32,6 +32,10 @@ seam-tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
+# For the examples: `import_log` prints through a subscriber, and
+# `gpu_double` runs a Rust shader on the GPU and in the simulation.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi"] }
+seam-ash-shaders = { path = "../seam-ash/shaders" }
 
 # `seam` is no_std by default: only the traits, `Push` and the no_std
 # operation types. std is pulled in when you enable a capability whose
@@ -108,6 +112,66 @@ full = ["fs", "net", "process", "env", "io-std", "signal", "time", "random", "rt
 # handler and do nothing unless `tokio` is also enabled.
 rt-multi-thread = ["rt", "seam-tokio?/rt-multi-thread"]
 test-util = ["seam-tokio?/test-util"]
+
+[[example]]
+name = "dice"
+required-features = ["std", "test", "rand", "env"]
+test = true
+
+[[example]]
+name = "ids"
+required-features = ["std", "test", "uuid"]
+test = true
+
+[[example]]
+name = "settings"
+required-features = ["std", "test", "dirs"]
+test = true
+
+[[example]]
+name = "world_clock"
+required-features = ["std", "test", "jiff-bundled"]
+test = true
+
+[[example]]
+name = "shared_dir"
+required-features = ["std", "test", "rustix", "env"]
+test = true
+
+[[example]]
+name = "import_log"
+required-features = ["std", "test", "tracing"]
+test = true
+
+[[example]]
+name = "todo"
+required-features = ["std", "test", "sqlx", "tokio", "rt"]
+test = true
+
+[[example]]
+name = "titles"
+required-features = ["std", "test", "reqwest", "tokio", "rt"]
+test = true
+
+[[example]]
+name = "changes"
+required-features = ["std", "test", "notify"]
+test = true
+
+[[example]]
+name = "checksums"
+required-features = ["std", "test", "smol", "fs", "rt"]
+test = true
+
+[[example]]
+name = "word_pipe"
+required-features = ["std", "test", "futures", "smol", "sync", "time", "rt"]
+test = true
+
+[[example]]
+name = "gpu_double"
+required-features = ["std", "test", "ash"]
+test = true
 
 [package.metadata.docs.rs]
 all-features = true

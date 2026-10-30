@@ -1,0 +1,15 @@
+// Triples `count` numbers in a buffer reached through its address.
+// Built with: glslangValidator -V --target-env vulkan1.3 address.comp -o address.spv
+#version 460
+#extension GL_EXT_buffer_reference : require
+
+layout(buffer_reference, std430) buffer Numbers { uint n[]; };
+layout(push_constant) uniform Push { Numbers numbers; uint count; } push;
+layout(local_size_x = 1) in;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i < push.count) {
+        push.numbers.n[i] *= 3u;
+    }
+}

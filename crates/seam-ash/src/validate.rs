@@ -42,6 +42,73 @@ pub(crate) fn sampler(l: &impl Lookup, id: u64) -> Result<crate::CreateSampler, 
     }
 }
 
+/// Queries `id`: their kind and which slots are written.
+pub(crate) fn queries(l: &impl Lookup, id: u64) -> Result<(crate::QueryKind, &[bool]), GpuError> {
+    match l.info(id) {
+        Some(ResInfo::Queries { kind, written }) => Ok((*kind, written)),
+        _ => Err(gone("queries", id)),
+    }
+}
+
+pub(crate) fn create_queries(op: &crate::CreateQueries) -> Result<(), GpuError> {
+    if op.count == 0 || op.count > 4096 {
+        return Err(invalid("queries come 1 to 4096 at a time"));
+    }
+    Ok(())
+}
+
+/// Slot `index` of queries `id`, of `kind`.
+pub(crate) fn query_slot(
+    l: &impl Lookup,
+    what: &str,
+    (id, index): (u64, u32),
+    kind: crate::QueryKind,
+) -> Result<(), GpuError> {
+    let (is, written) = queries(l, id)?;
+    if is != kind {
+        return Err(invalid(format!(
+            "{what}: these are {is:?} queries, not {kind:?}"
+        )));
+    }
+    if index as usize >= written.len() {
+        return Err(invalid(format!(
+            "{what}: slot {index} of {} queries",
+            written.len()
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn read_queries(l: &impl Lookup, op: &crate::ReadQueries<'_>) -> Result<(), GpuError> {
+    let (_, written) = queries(l, op.queries.raw())?;
+    let end = u64::from(op.first) + op.out.len() as u64;
+    if end > written.len() as u64 {
+        return Err(invalid(format!(
+            "read queries: slots {}..{end} of {}",
+            op.first,
+            written.len()
+        )));
+    }
+    let from = op.first as usize;
+    if let Some(i) = written[from..from + op.out.len()].iter().position(|w| !w) {
+        return Err(invalid(format!(
+            "read queries: slot {} was never written",
+            from + i
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn address(l: &impl Lookup, op: &crate::BufferAddress) -> Result<(), GpuError> {
+    let (_, usage) = buffer(l, op.0.raw())?;
+    if !usage.contains(BufferUsage::ADDRESS) {
+        return Err(invalid(
+            "address: the buffer was not created with BufferUsage::ADDRESS",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) struct ProgramInfo<'a> {
     pub label: &'a str,
     pub compute: bool,
@@ -755,6 +822,9 @@ pub(crate) fn draw(l: &impl Lookup, op: &Draw<'_>) -> Result<(), GpuError> {
         Some(_) => (0, 0),
         None => (u64::from(op.vertex_count), u64::from(op.instance_count)),
     };
+    if let Some(q) = op.occlusion {
+        query_slot(l, "draw", (q.0.raw(), q.1), crate::QueryKind::Occlusion)?;
+    }
     if let Some(ind) = op.indirect {
         let size = crate::Indirect::command_size(op.index.is_some());
         let step = ind.step(op.index.is_some());

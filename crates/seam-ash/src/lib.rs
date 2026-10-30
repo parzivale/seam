@@ -3,18 +3,26 @@
 //! A core sees the GPU as a few kinds of thing, and nothing else:
 //!
 //! - **Resources**, as scopes: [`CreateBuffer`], [`CreateImage`],
-//!   [`CreateSampler`] and [`CreateProgram`] lend a [`Buffer`], an
-//!   [`Image`], a [`Sampler`] or a [`Program`] (plain IDs, the same for
-//!   every handler) and destroy it when the scope closes.
+//!   [`CreateSampler`], [`CreateProgram`] and [`CreateQueries`] lend a
+//!   [`Buffer`], an [`Image`], a [`Sampler`], a [`Program`] or
+//!   [`Queries`] (plain IDs, the same for every handler) and destroy it
+//!   when the scope closes.
 //! - **Moving data**: [`Upload`], [`UploadImage`] and [`FillBuffer`] put
 //!   bytes in, [`Download`] and [`DownloadImage`] take them out (images by
 //!   [`ImageRegion`]), [`CopyBuffer`], [`CopyImage`] and [`BlitImage`]
 //!   move them on the GPU, and [`GenerateMips`] fills a mip chain.
 //! - **Running programs**: [`Dispatch`] runs a compute program, [`Draw`]
 //!   draws into an image, each with the resources it reads and writes
-//!   bound in order.
-//! - **Waiting**: [`Download`], [`DownloadImage`] and [`Finish`] wait for
-//!   the work before them; nothing else does.
+//!   bound in order (a binding may be an array:
+//!   [`CreateProgram::counts`]), and specialization constants
+//!   ([`CreateProgram::constants`]). [`DispatchIndirect`] and
+//!   [`Draw::indirect`] take their counts from a buffer; a shader reaches
+//!   a buffer through its [`BufferAddress`] too.
+//! - **Measuring**: [`WriteTimestamp`] and [`Draw::occlusion`] record into
+//!   [`Queries`], which [`ReadQueries`] reads; [`DeviceInfo`] reports the
+//!   device's [`GpuFeatures`] and [`Limits`], its subgroups included.
+//! - **Waiting**: [`Download`], [`DownloadImage`], [`ReadQueries`] and
+//!   [`Finish`] wait for the work before them; nothing else does.
 //! - **Submitting without waiting**: [`Submit`] is a scope that sends the
 //!   work so far to the GPU and lends a submission: [`IsDone`] says
 //!   whether it has finished, and closing the scope waits for it. So the
@@ -262,6 +270,9 @@ ids! {
     Program;
     /// How a program samples an image, lent by [`CreateSampler`].
     Sampler;
+    /// Slots for timestamps or occlusion counts, lent by
+    /// [`CreateQueries`].
+    Queries;
 }
 
 macro_rules! flags {
@@ -1285,6 +1296,77 @@ impl<'a> Dispatch<'a> {
     }
 }
 
+/// What a set of [`Queries`] records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QueryKind {
+    /// When the GPU got to a point in its work ([`WriteTimestamp`]), on a
+    /// device with [`GpuFeatures::TIMESTAMPS`].
+    Timestamp,
+    /// How many samples of a draw passed its depth and stencil tests
+    /// ([`Draw::occlusion`]): or, without
+    /// [`GpuFeatures::PRECISE_OCCLUSION`], only whether any did (a count
+    /// above 0).
+    Occlusion,
+}
+
+/// Create `count` query slots of one kind, lending them for a scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreateQueries {
+    /// What they record.
+    pub kind: QueryKind,
+    /// How many; at least 1.
+    pub count: u32,
+}
+
+impl CreateQueries {
+    /// `count` slots for `kind`.
+    pub const fn new(kind: QueryKind, count: u32) -> Self {
+        Self { kind, count }
+    }
+}
+
+/// Record in slot `index` of timestamp queries when the GPU has done
+/// everything performed before this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteTimestamp {
+    /// The queries.
+    pub queries: Queries,
+    /// The slot.
+    pub index: u32,
+}
+
+/// Wait for the work that wrote them, and read `out.len()` query slots
+/// from `first`: timestamps in nanoseconds (from a point of the device's
+/// own), occlusion counts in samples. Every slot read has been written.
+#[derive(Debug)]
+pub struct ReadQueries<'a> {
+    /// The queries.
+    pub queries: Queries,
+    /// The first slot.
+    pub first: u32,
+    /// Where the results go.
+    pub out: &'a mut [u64],
+}
+
+impl<'a> ReadQueries<'a> {
+    /// Reads slots from 0 into `out`.
+    pub fn new(queries: Queries, out: &'a mut [u64]) -> Self {
+        Self {
+            queries,
+            first: 0,
+            out,
+        }
+    }
+}
+
+/// A buffer's address on the GPU, made with [`BufferUsage::ADDRESS`]: for
+/// a shader to read and write it through (GLSL's `buffer_reference`,
+/// SPIR-V's physical storage buffers), given in a push constant or
+/// another buffer. A program may reach any such buffer this way, so
+/// every one is ordered against every dispatch and draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferAddress(pub Buffer);
+
 /// Run a compute program over as many workgroups as a buffer says: three
 /// `u32`s at `offset` (a multiple of 4) of a buffer made with
 /// [`BufferUsage::INDIRECT`], written there by an upload or a program.
@@ -1376,6 +1458,8 @@ pub struct Draw<'a> {
     /// Counts from a buffer, in place of `vertex_count`, `instance_count`,
     /// `first`, `base_vertex` and `first_instance`.
     pub indirect: Option<Indirect>,
+    /// An occlusion query slot to count the draw's passing samples in.
+    pub occlusion: Option<(Queries, u32)>,
     /// How many vertices, or indices.
     pub vertex_count: u32,
     /// How many instances.
@@ -1420,6 +1504,7 @@ impl<'a> Draw<'a> {
             vertex_buffers: [None; MAX_VERTEX_BUFFERS],
             index: None,
             indirect: None,
+            occlusion: None,
             vertex_count,
             instance_count: 1,
             first: 0,
@@ -1477,6 +1562,14 @@ impl<'a> Draw<'a> {
             offset: 0,
             format,
         });
+        self
+    }
+
+    /// Counts the samples that pass in slot `index` of occlusion
+    /// `queries`.
+    #[must_use]
+    pub const fn occlusion(mut self, queries: Queries, index: u32) -> Self {
+        self.occlusion = Some((queries, index));
         self
     }
 
@@ -1860,6 +1953,9 @@ outcomes! {
     BlitImage => Result<(), GpuError>;
     GenerateMips => Result<(), GpuError>;
     FillBuffer => Result<(), GpuError>;
+    WriteTimestamp => Result<(), GpuError>;
+    ReadQueries<'_> => Result<(), GpuError>;
+    BufferAddress => Result<u64, GpuError>;
     Dispatch<'_> => Result<(), GpuError>;
     DispatchIndirect<'_> => Result<(), GpuError>;
     Draw<'_> => Result<(), GpuError>;
@@ -1896,6 +1992,11 @@ impl<B> Effect for Import<B> {
     type Key = effects::Import;
 }
 
+impl Acquisition for CreateQueries {
+    type Resource = Queries;
+    type Error = GpuError;
+}
+
 impl Acquisition for CreateSampler {
     type Resource = Sampler;
     type Error = GpuError;
@@ -1919,6 +2020,7 @@ pub mod effects {
         CreateBuffer,
         CreateImage,
         CreateSampler,
+        CreateQueries,
         CreateProgram,
         Upload,
         UploadImage,
@@ -1927,6 +2029,9 @@ pub mod effects {
         BlitImage,
         GenerateMips,
         FillBuffer,
+        WriteTimestamp,
+        ReadQueries,
+        BufferAddress,
         Dispatch,
         DispatchIndirect,
         Draw,
@@ -1955,6 +2060,10 @@ keyed! {
     CreateBuffer => CreateBuffer;
     CreateImage => CreateImage;
     CreateSampler => CreateSampler;
+    CreateQueries => CreateQueries;
+    WriteTimestamp => WriteTimestamp;
+    ReadQueries<'_> => ReadQueries;
+    BufferAddress => BufferAddress;
     CreateProgram<'_> => CreateProgram;
     Upload<'_> => Upload;
     UploadImage<'_> => UploadImage;
@@ -2039,6 +2148,11 @@ pub(crate) enum ResInfo {
     },
     Image(CreateImage),
     Sampler(CreateSampler),
+    Queries {
+        kind: QueryKind,
+        /// Which slots have been written.
+        written: Vec<bool>,
+    },
     Program {
         label: String,
         compute: bool,

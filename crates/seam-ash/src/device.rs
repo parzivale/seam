@@ -47,6 +47,7 @@ use crate::{
     ProgramKind, ResInfo, Sampler, StencilFace, StencilOp, Step, SubgroupOps, Submit, Topology,
     Upload, UploadImage,
 };
+use crate::{Queries, QueryKind};
 
 /// How [`Ash::with`] sets Vulkan up.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,6 +231,7 @@ enum Kind {
         set_layout: vk::DescriptorSetLayout,
     },
     Sampler(vk::Sampler),
+    Queries(vk::QueryPool),
 }
 
 impl Kind {
@@ -493,6 +495,8 @@ struct Dev {
     ext: Extensions,
     /// The optional features turned on.
     features: Features,
+    /// Nanoseconds per timestamp tick, and the bits a timestamp has.
+    timestamps: (f64, u32),
     mem: vk::PhysicalDeviceMemoryProperties,
     pool: vk::CommandPool,
     next_id: u64,
@@ -1042,6 +1046,7 @@ impl Dev {
             family,
             ext,
             features,
+            timestamps: (f64::from(props.limits.timestamp_period), timestamp_bits),
             mem,
             pool,
             next_id: 0,
@@ -1111,13 +1116,29 @@ impl Dev {
         prefer: vk::MemoryPropertyFlags,
         need: vk::MemoryPropertyFlags,
     ) -> Result<vk::DeviceMemory, GpuError> {
+        self.alloc_with(reqs, prefer, need, false)
+    }
+
+    /// [`alloc`](Self::alloc), for a buffer with an address if `address`.
+    fn alloc_with(
+        &self,
+        reqs: vk::MemoryRequirements,
+        prefer: vk::MemoryPropertyFlags,
+        need: vk::MemoryPropertyFlags,
+        address: bool,
+    ) -> Result<vk::DeviceMemory, GpuError> {
         let index = self
             .memory_type(reqs.memory_type_bits, prefer)
             .or_else(|| self.memory_type(reqs.memory_type_bits, need))
             .ok_or_else(|| GpuError::Unsupported("no suitable memory type".into()))?;
-        let info = vk::MemoryAllocateInfo::default()
+        let mut flags =
+            vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
+        let mut info = vk::MemoryAllocateInfo::default()
             .allocation_size(reqs.size)
             .memory_type_index(index);
+        if address {
+            info = info.push_next(&mut flags);
+        }
         // SAFETY: a valid allocate info for this device.
         unsafe { self.device.allocate_memory(&info, None) }.map_err(vk_error)
     }
@@ -1138,7 +1159,8 @@ impl Dev {
         unsafe {
             let buffer = self.device.create_buffer(&info, None).map_err(vk_error)?;
             let reqs = self.device.get_buffer_memory_requirements(buffer);
-            let memory = match self.alloc(reqs, prefer, need) {
+            let address = usage.contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
+            let memory = match self.alloc_with(reqs, prefer, need, address) {
                 Ok(m) => m,
                 Err(e) => {
                     self.device.destroy_buffer(buffer, None);
@@ -1221,6 +1243,7 @@ fn destroy_kind(device: &ash::Device, kind: Kind) {
                 device.destroy_descriptor_set_layout(set_layout, None);
             }
             Kind::Sampler(sampler) => device.destroy_sampler(sampler, None),
+            Kind::Queries(pool) => device.destroy_query_pool(pool, None),
         }
     }
 }
@@ -1401,7 +1424,7 @@ impl Dev {
                         t.reads |= u.stage;
                     }
                 }
-                Kind::Program { .. } | Kind::Sampler(_) => {}
+                Kind::Program { .. } | Kind::Sampler(_) | Kind::Queries(_) => {}
             }
         }
         if !buffer_barriers.is_empty() || !image_barriers.is_empty() {
@@ -1585,41 +1608,51 @@ impl Dev {
             vk::PipelineStageFlags2::VERTEX_SHADER | vk::PipelineStageFlags2::FRAGMENT_SHADER
         };
         let rw = vk::AccessFlags2::SHADER_STORAGE_READ | vk::AccessFlags2::SHADER_STORAGE_WRITE;
-        bindings
-            .iter()
-            .filter_map(|b| match *b {
-                Bind::Uniform(x) => Some(Use {
-                    id: x.raw(),
-                    stage: shader,
-                    access: vk::AccessFlags2::UNIFORM_READ,
-                    write: false,
-                    layout: None,
-                }),
-                Bind::Storage(x) => Some(Use {
-                    id: x.raw(),
-                    stage: shader,
-                    access: rw,
-                    write: true,
-                    layout: None,
-                }),
-                Bind::Sampled(x, _) | Bind::Texture(x) => Some(Use {
-                    id: x.raw(),
-                    stage: shader,
-                    access: vk::AccessFlags2::SHADER_SAMPLED_READ,
-                    write: false,
-                    layout: Some(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-                }),
-                Bind::StorageImage(x) => Some(Use {
-                    id: x.raw(),
-                    stage: shader,
-                    access: rw,
-                    write: true,
-                    layout: Some(vk::ImageLayout::GENERAL),
-                }),
-                // A sampler is never written: nothing to order.
-                Bind::Sampler(_) => None,
-            })
-            .collect()
+        // A program may reach any buffer with an address.
+        let addressed = self.res.iter().filter_map(|(&id, r)| match r.info {
+            ResInfo::Buffer { usage, .. } if usage.contains(BufferUsage::ADDRESS) => Some(Use {
+                id,
+                stage: shader,
+                access: rw,
+                write: true,
+                layout: None,
+            }),
+            _ => None,
+        });
+        let mut uses: Vec<Use> = addressed.collect();
+        uses.extend(bindings.iter().filter_map(|b| match *b {
+            Bind::Uniform(x) => Some(Use {
+                id: x.raw(),
+                stage: shader,
+                access: vk::AccessFlags2::UNIFORM_READ,
+                write: false,
+                layout: None,
+            }),
+            Bind::Storage(x) => Some(Use {
+                id: x.raw(),
+                stage: shader,
+                access: rw,
+                write: true,
+                layout: None,
+            }),
+            Bind::Sampled(x, _) | Bind::Texture(x) => Some(Use {
+                id: x.raw(),
+                stage: shader,
+                access: vk::AccessFlags2::SHADER_SAMPLED_READ,
+                write: false,
+                layout: Some(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+            }),
+            Bind::StorageImage(x) => Some(Use {
+                id: x.raw(),
+                stage: shader,
+                access: rw,
+                write: true,
+                layout: Some(vk::ImageLayout::GENERAL),
+            }),
+            // A sampler is never written: nothing to order.
+            Bind::Sampler(_) => None,
+        }));
+        uses
     }
 
     /// Submits the batch, if any. Its sequence number and fence.
@@ -1727,10 +1760,19 @@ impl Dev {
             (BufferUsage::UNIFORM, vk::BufferUsageFlags::UNIFORM_BUFFER),
             (BufferUsage::STORAGE, vk::BufferUsageFlags::STORAGE_BUFFER),
             (BufferUsage::INDIRECT, vk::BufferUsageFlags::INDIRECT_BUFFER),
+            (
+                BufferUsage::ADDRESS,
+                vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            ),
         ] {
             if op.usage.contains(ours) {
                 usage |= theirs;
             }
+        }
+        if op.usage.contains(BufferUsage::ADDRESS) && !self.features.addresses {
+            return Err(GpuError::Unsupported(
+                "this device has no buffer addresses".into(),
+            ));
         }
         let (buffer, memory) = self.raw_buffer(
             op.size,
@@ -2635,6 +2677,10 @@ impl Dev {
         } else {
             Some(self.descriptor_set(op.program.raw(), set_layout, op.bindings)?)
         };
+        let occlusion = match op.occlusion {
+            Some((q, index)) => Some((self.use_queries(q.raw(), index)?, index)),
+            None => None,
+        };
         // The render area: the targets' size, at the level drawn into.
         let first = op
             .targets
@@ -2779,9 +2825,20 @@ impl Dev {
         // pipeline's formats; the set and push constants match its layout;
         // the buffers were validated.
         unsafe {
+            if let Some((pool, index)) = occlusion {
+                self.device.cmd_reset_query_pool(cmd, pool, index, 1);
+            }
             self.device.cmd_begin_rendering(cmd, &rendering);
             self.device
                 .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            if let Some((pool, index)) = occlusion {
+                let flags = if self.features.precise_occlusion {
+                    vk::QueryControlFlags::PRECISE
+                } else {
+                    vk::QueryControlFlags::empty()
+                };
+                self.device.cmd_begin_query(cmd, pool, index, flags);
+            }
             self.device.cmd_set_viewport(cmd, 0, &[viewport]);
             self.device.cmd_set_scissor(cmd, 0, &[scissor]);
             if stencil && self.program_has_stencil(op.program.raw()) {
@@ -2841,6 +2898,9 @@ impl Dev {
                         op.first_instance,
                     ),
                 }
+            }
+            if let Some((pool, index)) = occlusion {
+                self.device.cmd_end_query(cmd, pool, index);
             }
             self.device.cmd_end_rendering(cmd);
         }
@@ -3109,6 +3169,115 @@ impl Dev {
                 .cmd_fill_buffer(cmd, buffer, op.offset, op.size, op.value)
         };
         Ok(())
+    }
+
+    fn create_queries(&mut self, op: crate::CreateQueries) -> Result<Queries, GpuError> {
+        validate::create_queries(&op)?;
+        let query_type = match op.kind {
+            QueryKind::Timestamp if !self.features.timestamps => {
+                return Err(GpuError::Unsupported(
+                    "this device has no timestamps".into(),
+                ));
+            }
+            QueryKind::Timestamp => vk::QueryType::TIMESTAMP,
+            QueryKind::Occlusion => vk::QueryType::OCCLUSION,
+        };
+        self.retire();
+        let info = vk::QueryPoolCreateInfo::default()
+            .query_type(query_type)
+            .query_count(op.count);
+        // SAFETY: a valid create info.
+        let pool = unsafe { self.device.create_query_pool(&info, None) }.map_err(vk_error)?;
+        let id = self.add(
+            ResInfo::Queries {
+                kind: op.kind,
+                written: vec![false; op.count as usize],
+            },
+            Kind::Queries(pool),
+        );
+        Ok(Queries(id))
+    }
+
+    /// Queries `id`'s pool, used by this batch, slot `index` marked
+    /// written.
+    fn use_queries(&mut self, id: u64, index: u32) -> Result<vk::QueryPool, GpuError> {
+        let seq = self.batch()?.seq;
+        let res = self.res.get_mut(&id).expect("validated");
+        res.last_use = seq;
+        if let ResInfo::Queries { written, .. } = &mut res.info {
+            written[index as usize] = true;
+        }
+        let Kind::Queries(pool) = res.kind else {
+            unreachable!("validated as queries")
+        };
+        Ok(pool)
+    }
+
+    fn write_timestamp(&mut self, op: crate::WriteTimestamp) -> Result<(), GpuError> {
+        validate::query_slot(
+            &*self,
+            "timestamp",
+            (op.queries.raw(), op.index),
+            QueryKind::Timestamp,
+        )?;
+        self.retire();
+        let cmd = self.uses(&[])?;
+        let pool = self.use_queries(op.queries.raw(), op.index)?;
+        // SAFETY: a live pool, the slot in range, outside rendering.
+        unsafe {
+            self.device.cmd_reset_query_pool(cmd, pool, op.index, 1);
+            self.device.cmd_write_timestamp2(
+                cmd,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                pool,
+                op.index,
+            );
+        }
+        Ok(())
+    }
+
+    /// Reads finished queries: the work that wrote them is done.
+    fn read_queries(&mut self, op: &mut crate::ReadQueries<'_>) -> Result<(), GpuError> {
+        let (kind, _) = validate::queries(&*self, op.queries.raw())?;
+        let Kind::Queries(pool) = self.res[&op.queries.raw()].kind else {
+            unreachable!("validated as queries")
+        };
+        if op.out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: a live pool, every slot read written by finished work.
+        unsafe {
+            self.device.get_query_pool_results(
+                pool,
+                op.first,
+                op.out,
+                vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT,
+            )
+        }
+        .map_err(vk_error)?;
+        if kind == QueryKind::Timestamp {
+            let (period, bits) = self.timestamps;
+            let mask = if bits >= 64 {
+                u64::MAX
+            } else {
+                (1 << bits) - 1
+            };
+            for t in op.out.iter_mut() {
+                *t = ((*t & mask) as f64 * period) as u64;
+            }
+        }
+        Ok(())
+    }
+
+    fn address(&mut self, op: crate::BufferAddress) -> Result<u64, GpuError> {
+        validate::address(&*self, &op)?;
+        let Kind::Buffer { buffer, .. } = self.res[&op.0.raw()].kind else {
+            unreachable!()
+        };
+        let info = vk::BufferDeviceAddressInfo::default().buffer(buffer);
+        // SAFETY: a live buffer made with SHADER_DEVICE_ADDRESS, its memory
+        // allocated with DEVICE_ADDRESS.
+        Ok(unsafe { self.device.get_buffer_device_address(&info) })
     }
 
     /// Records a copy into a staging buffer and submits: the first half of
@@ -3537,6 +3706,10 @@ now! {
     [] BlitImage => Result<(), GpuError>, |dev, op| dev.blit(op);
     [] GenerateMips => Result<(), GpuError>, |dev, op| dev.generate_mips(op);
     [] FillBuffer => Result<(), GpuError>, |dev, op| dev.fill(op);
+    [] Opening<crate::CreateQueries> => Result<Queries, GpuError>, |dev, Opening(op, _)| dev.create_queries(op);
+    [] Closing<crate::CreateQueries> => Result<(), GpuError>, |dev, Closing(q, _)| { dev.destroy(q.raw()); Ok(()) };
+    [] crate::WriteTimestamp => Result<(), GpuError>, |dev, op| dev.write_timestamp(op);
+    [] crate::BufferAddress => Result<u64, GpuError>, |dev, op| dev.address(op);
     ['a] Dispatch<'a> => Result<(), GpuError>, |dev, op| dev.dispatch(op);
     ['a] DispatchIndirect<'a> => Result<(), GpuError>, |dev, op| dev.dispatch_indirect(op);
     ['a] Draw<'a> => Result<(), GpuError>, |dev, op| dev.draw(op);
@@ -3795,6 +3968,15 @@ impl Perform<DownloadImage<'_>> for Ash {
     }
 }
 
+/// Finishes the work, then reads.
+impl Perform<crate::ReadQueries<'_>> for Ash {
+    fn perform(&mut self, mut op: crate::ReadQueries<'_>) -> Result<(), GpuError> {
+        validate::read_queries(&*self.dev(), &op)?;
+        self.perform(Finish)?;
+        self.dev().read_queries(&mut op)
+    }
+}
+
 impl Perform<Finish> for Ash {
     fn perform(&mut self, _: Finish) -> Result<(), GpuError> {
         // Bound first: the lock is released before waiting.
@@ -3844,6 +4026,14 @@ macro_rules! waiting_async {
                 let progress = InProgress { ash: self, pending: Some(pending) };
                 self.wait(seq, fence).await?;
                 progress.finish(Some(op.out))
+            }
+        }
+
+        impl<'a> seam_core::future::$trait<crate::ReadQueries<'a>> for Ash {
+            async fn $method(&mut self, mut op: crate::ReadQueries<'a>) -> Result<(), GpuError> {
+                validate::read_queries(&*self.dev(), &op)?;
+                seam_core::future::$trait::$method(self, Finish).await?;
+                self.dev().read_queries(&mut op)
             }
         }
 

@@ -78,6 +78,16 @@ them turned up.
   `GpuFeatures::MULTI_DRAW_INDIRECT`) draws what a buffer's commands say,
   indexed or not, from a buffer made with `BufferUsage::INDIRECT`.
   `SimGpu` reads the same commands and runs its emulator once for each.
+- Queries: `CreateQueries` lends `Queries` of a `QueryKind`;
+  `WriteTimestamp` records when the GPU got there, `Draw::occlusion`
+  counts a draw's passing samples, and `ReadQueries` waits and reads them
+  (timestamps in nanoseconds). `SimGpu`'s timestamps count the operations
+  before them; its emulators say what passed (`Run::pass_samples`).
+- Buffer addresses: a buffer made with `BufferUsage::ADDRESS` has a
+  `BufferAddress` for shaders to reach it through (GLSL's
+  `buffer_reference`), on a device with `GpuFeatures::ADDRESSES`; every
+  such buffer is ordered against every dispatch and draw. `SimGpu`'s
+  emulators reach them with `Run::memory(address)`.
 - `DeviceInfo` reports a device's optional features (`GpuFeatures`) and
   its `Limits`: workgroup sizes and counts, workgroup memory, push
   constants, image sizes and layers, binding ranges, samples, and its

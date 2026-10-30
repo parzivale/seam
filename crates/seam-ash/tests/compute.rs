@@ -440,3 +440,167 @@ fn mistakes_fail_the_same_way_on_both() {
     assert_eq!(mistakes(&mut gpu, &compute, &draw), sim);
     clean(&gpu);
 }
+
+/// A draw, between two timestamps, counting its samples.
+fn measured<G>(gpu: &mut G, spirv: &[u32]) -> Result<([u64; 2], u64), GpuError>
+where
+    G: Provide<CreateImage>
+        + Provide<CreateQueries>
+        + for<'a> Provide<CreateProgram<'a>>
+        + Perform<WriteTimestamp>
+        + for<'a> Perform<ReadQueries<'a>>
+        + for<'a> Perform<Draw<'a>>,
+{
+    let pipeline = DrawPipeline::new(spirv, "vs", spirv, "fs", Format::Rgba8Unorm);
+    let program = CreateProgram::draw("fill", ProgramKind::Draw(pipeline), &[]);
+    let target = CreateImage::new(4, 4, Format::Rgba8Unorm, ImageUsage::TARGET);
+    gpu.acquire(program, |gpu, p| {
+        gpu.acquire(target, |gpu, t| {
+            gpu.acquire(CreateQueries::new(QueryKind::Timestamp, 2), |gpu, times| {
+                gpu.acquire(
+                    CreateQueries::new(QueryKind::Occlusion, 1),
+                    |gpu, samples| {
+                        let (times, samples) = (*times, *samples);
+                        gpu.perform(WriteTimestamp {
+                            queries: times,
+                            index: 0,
+                        })?;
+                        gpu.perform(Draw::new(*p, *t, 3).occlusion(samples, 0))?;
+                        gpu.perform(WriteTimestamp {
+                            queries: times,
+                            index: 1,
+                        })?;
+                        let (mut at, mut passed) = ([0; 2], [0]);
+                        gpu.perform(ReadQueries::new(times, &mut at))?;
+                        gpu.perform(ReadQueries::new(samples, &mut passed))?;
+                        Ok((at, passed[0]))
+                    },
+                )
+            })
+        })
+    })
+}
+
+#[test]
+fn queries_time_work_and_count_samples() {
+    let spirv = wgsl(FILL);
+    let mut sim = SimGpu::new();
+    sim.emulate("fill", |run| run.pass_samples(16));
+    let ([start, end], passed) = measured(&mut sim, &spirv).unwrap();
+    assert!(start < end, "{start} {end}");
+    assert_eq!(passed, 16);
+    let Some(mut gpu) = gpu() else { return };
+    let features = gpu.inspect(DeviceInfo).features;
+    if !features.contains(GpuFeatures::TIMESTAMPS) {
+        eprintln!("skipping: no timestamps here");
+        return;
+    }
+    let ([start, end], passed) = measured(&mut gpu, &spirv).unwrap();
+    assert!(start <= end, "{start} {end}");
+    if features.contains(GpuFeatures::PRECISE_OCCLUSION) {
+        assert_eq!(passed, 16);
+    } else {
+        assert!(passed > 0);
+    }
+    clean(&gpu);
+}
+
+fn tripled<G>(gpu: &mut G, spirv: &[u32]) -> Result<Vec<u32>, GpuError>
+where
+    G: Provide<CreateBuffer>
+        + for<'a> Provide<CreateProgram<'a>>
+        + Perform<BufferAddress>
+        + for<'a> Perform<Upload<'a>>
+        + for<'a> Perform<Dispatch<'a>>
+        + for<'a> Perform<Download<'a>>,
+{
+    let program = CreateProgram::compute("triple", spirv, "main", &[]).push_constants(16);
+    gpu.acquire(program, |gpu, p| {
+        gpu.acquire(CreateBuffer::new(16, BufferUsage::ADDRESS), |gpu, buf| {
+            gpu.perform(Upload::new(*buf, &u32_bytes(&[1, 2, 3, 4])))?;
+            let address = gpu.perform(BufferAddress(*buf))?;
+            let mut push = address.to_le_bytes().to_vec();
+            push.extend(u32_bytes(&[4, 0]));
+            gpu.perform(Dispatch::new(*p, &[], [4, 1, 1]).push(&push))?;
+            let mut out = vec![0; 16];
+            gpu.perform(Download::new(*buf, &mut out))?;
+            Ok(bytes_u32(&out))
+        })
+    })
+}
+
+#[test]
+fn shaders_reach_buffers_through_their_addresses() {
+    let spirv = bytes_u32(include_bytes!("shaders/address.spv"));
+    let mut sim = SimGpu::new();
+    sim.emulate("triple", |run| {
+        let push = run.push();
+        let address = u64::from_le_bytes(push[..8].try_into().unwrap());
+        let count = u32::from_le_bytes(push[8..12].try_into().unwrap()) as usize;
+        let memory = run.memory(address);
+        let tripled: Vec<u32> = bytes_u32(&memory[..count * 4])
+            .iter()
+            .map(|n| n * 3)
+            .collect();
+        memory[..count * 4].copy_from_slice(&u32_bytes(&tripled));
+    });
+    assert_eq!(tripled(&mut sim, &spirv).unwrap(), [3, 6, 9, 12]);
+    let Some(mut gpu) = gpu() else { return };
+    if !gpu
+        .inspect(DeviceInfo)
+        .features
+        .contains(GpuFeatures::ADDRESSES)
+    {
+        eprintln!("skipping: no buffer addresses here");
+        return;
+    }
+    assert_eq!(tripled(&mut gpu, &spirv).unwrap(), [3, 6, 9, 12]);
+    clean(&gpu);
+}
+
+fn query_mistakes<G>(gpu: &mut G) -> Vec<String>
+where
+    G: Provide<CreateBuffer>
+        + Provide<CreateQueries>
+        + Perform<WriteTimestamp>
+        + Perform<BufferAddress>
+        + for<'a> Perform<ReadQueries<'a>>,
+{
+    let mut errors = vec![
+        gpu.acquire(CreateQueries::new(QueryKind::Occlusion, 0), |_, _| {
+            Ok::<_, GpuError>(())
+        })
+        .unwrap_err()
+        .to_string(),
+    ];
+    let found: Result<Vec<String>, GpuError> =
+        gpu.acquire(CreateQueries::new(QueryKind::Occlusion, 2), |gpu, occ| {
+            gpu.acquire(CreateBuffer::new(4, BufferUsage::STORAGE), |gpu, buf| {
+                let (occ, buf) = (*occ, *buf);
+                let results = [
+                    gpu.perform(WriteTimestamp {
+                        queries: occ,
+                        index: 0,
+                    }),
+                    gpu.perform(ReadQueries::new(occ, &mut [0; 1])),
+                    gpu.perform(ReadQueries::new(occ, &mut [0; 3])),
+                    gpu.perform(BufferAddress(buf)).map(|_| ()),
+                ];
+                Ok(results
+                    .into_iter()
+                    .map(|r| r.unwrap_err().to_string())
+                    .collect())
+            })
+        });
+    errors.extend(found.unwrap());
+    errors
+}
+
+#[test]
+fn query_mistakes_fail_the_same_way_on_both() {
+    let sim = query_mistakes(&mut SimGpu::new());
+    assert_eq!(sim.len(), 5, "{sim:#?}");
+    let Some(mut gpu) = gpu() else { return };
+    assert_eq!(query_mistakes(&mut gpu), sim);
+    clean(&gpu);
+}

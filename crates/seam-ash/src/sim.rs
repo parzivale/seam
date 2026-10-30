@@ -10,12 +10,13 @@ use seam_core::{Closing, Inspect, Opening, Perform};
 
 use crate::validate::{self, Lookup};
 use crate::{
-    AddressMode, Bind, BlitImage, Buffer, Constant, CopyBuffer, CopyImage, CreateBuffer,
-    CreateImage, CreateProgram, CreateSampler, DepthLoad, DeviceInfo, Dispatch, DispatchIndirect,
-    Download, DownloadImage, Draw, DrawInfo, FillBuffer, Filter, Finish, Format, GenerateMips,
-    GpuError, GpuFeatures, GpuInfo, GpuKind, Image, ImageRegion, Import, IndexFormat, Indirect,
-    IsDone, Limits, Load, MAX_TARGETS, MAX_VERTEX_BUFFERS, Program, ProgramKind, Rect, ResInfo,
-    Sampler, Submit, Upload, UploadImage, Viewport,
+    AddressMode, Bind, BlitImage, Buffer, BufferAddress, BufferUsage, Constant, CopyBuffer,
+    CopyImage, CreateBuffer, CreateImage, CreateProgram, CreateQueries, CreateSampler, DepthLoad,
+    DeviceInfo, Dispatch, DispatchIndirect, Download, DownloadImage, Draw, DrawInfo, FillBuffer,
+    Filter, Finish, Format, GenerateMips, GpuError, GpuFeatures, GpuInfo, GpuKind, Image,
+    ImageRegion, Import, IndexFormat, Indirect, IsDone, Limits, Load, MAX_TARGETS,
+    MAX_VERTEX_BUFFERS, Program, ProgramKind, Queries, QueryKind, ReadQueries, Rect, ResInfo,
+    Sampler, Submit, Upload, UploadImage, Viewport, WriteTimestamp,
 };
 
 /// What [`SimGpu`] was asked to do, in order: for tests to assert on.
@@ -27,6 +28,10 @@ pub enum Recorded {
     CreateImage(Image),
     /// A sampler was created.
     CreateSampler(Sampler),
+    /// Queries were created.
+    CreateQueries(Queries),
+    /// A timestamp was written into a query slot.
+    WriteTimestamp(Queries, u32),
     /// An image was imported.
     Import(Image),
     /// A program was created, with its label.
@@ -95,6 +100,10 @@ pub enum Recorded {
 pub struct Run<'a> {
     label: &'a str,
     constants: Vec<Constant>,
+    /// Each buffer with an address: where it starts, and its slot.
+    addresses: Vec<(u64, usize)>,
+    /// What an occlusion query of the draw counts.
+    passed: u64,
     groups: [u32; 3],
     push: &'a [u8],
     /// For each binding, the slot holding its resource's bytes (`None`
@@ -236,6 +245,31 @@ impl Run<'_> {
     /// The program's label.
     pub fn label(&self) -> &str {
         self.label
+    }
+
+    /// The bytes of a buffer with an address (made with
+    /// [`BufferUsage::ADDRESS`]) from `address` on: what a shader reaches
+    /// through it.
+    ///
+    /// # Panics
+    ///
+    /// If `address` is in no such buffer.
+    pub fn memory(&mut self, address: u64) -> &mut [u8] {
+        let (base, slot) = self
+            .addresses
+            .iter()
+            .copied()
+            .find(|&(base, slot)| {
+                address >= base && address - base < self.slots[slot].data.len() as u64
+            })
+            .expect("seam-ash: the address is in no buffer");
+        &mut self.slots[slot].data[(address - base) as usize..]
+    }
+
+    /// For a draw with an occlusion query: how many samples passed, for
+    /// the query to count (0 unless this is called).
+    pub fn pass_samples(&mut self, samples: u64) {
+        self.passed = samples;
     }
 
     /// Specialization constant `id`'s bits, if the program set it.
@@ -693,9 +727,11 @@ impl State {
 
     /// Runs a program: takes the bound resources' bytes out, hands them to
     /// the emulator, puts them back.
-    fn run(&mut self, label: String, run_setup: RunSetup<'_>) {
+    /// Runs the program's emulator, if it has one: what it says passed an
+    /// occlusion test.
+    fn run(&mut self, label: String, run_setup: RunSetup<'_>) -> u64 {
         let Some(mut emulator) = self.emulators.remove(&label) else {
-            return;
+            return 0;
         };
         let mut slots: Vec<Slot> = Vec::new();
         let mut slot_of = |state: &mut State, id: u64| -> usize {
@@ -787,9 +823,23 @@ impl State {
                 scissor: d.scissor.unwrap_or(Rect::new(0, 0, size.0, size.1)),
             });
         }
+        let address_ids: Vec<u64> = self
+            .res
+            .iter()
+            .filter(|(_, e)| {
+                matches!(e.info, ResInfo::Buffer { usage, .. } if usage.contains(BufferUsage::ADDRESS))
+            })
+            .map(|(&id, _)| id)
+            .collect();
+        let addresses = address_ids
+            .into_iter()
+            .map(|id| (id << 32, slot_of(self, id)))
+            .collect();
         let mut run = Run {
             label: &label,
             constants: run_setup.constants,
+            addresses,
+            passed: 0,
             groups: run_setup.groups,
             push: run_setup.push,
             bound,
@@ -802,10 +852,12 @@ impl State {
             draw,
         };
         emulator(&mut run);
+        let passed = run.passed;
         for slot in run.slots {
             *self.data(slot.id) = slot.data;
         }
         self.emulators.insert(label, emulator);
+        passed
     }
 }
 
@@ -862,6 +914,76 @@ impl Perform<Opening<CreateSampler>> for SimGpu {
     }
 }
 
+impl Perform<Opening<CreateQueries>> for SimGpu {
+    fn perform(&mut self, Opening(op, _): Opening<CreateQueries>) -> Result<Queries, GpuError> {
+        validate::create_queries(&op)?;
+        let mut state = self.lock();
+        let info = ResInfo::Queries {
+            kind: op.kind,
+            written: std::vec![false; op.count as usize],
+        };
+        let id = state.add(info, op.count as usize * 8);
+        state.log.push(Recorded::CreateQueries(Queries(id)));
+        Ok(Queries(id))
+    }
+}
+
+impl State {
+    /// Writes `value` into slot `index` of queries `id`.
+    fn record_query(&mut self, id: u64, index: u32, value: u64) {
+        let entry = self.res.get_mut(&id).expect("validated");
+        if let ResInfo::Queries { written, .. } = &mut entry.info {
+            written[index as usize] = true;
+        }
+        let at = index as usize * 8;
+        entry.data[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+}
+
+/// A timestamp is the number of operations recorded before it, as
+/// nanoseconds: in order, and the same every run.
+impl Perform<WriteTimestamp> for SimGpu {
+    fn perform(&mut self, op: WriteTimestamp) -> Result<(), GpuError> {
+        let mut state = self.lock();
+        validate::query_slot(
+            &*state,
+            "timestamp",
+            (op.queries.raw(), op.index),
+            QueryKind::Timestamp,
+        )?;
+        let now = state.log.len() as u64;
+        state.record_query(op.queries.raw(), op.index, now);
+        state
+            .log
+            .push(Recorded::WriteTimestamp(op.queries, op.index));
+        Ok(())
+    }
+}
+
+impl Perform<ReadQueries<'_>> for SimGpu {
+    fn perform(&mut self, op: ReadQueries<'_>) -> Result<(), GpuError> {
+        let mut state = self.lock();
+        validate::read_queries(&*state, &op)?;
+        let at = op.first as usize * 8;
+        let data = state.data(op.queries.raw());
+        for (i, out) in op.out.iter_mut().enumerate() {
+            let b = at + i * 8;
+            *out = u64::from_le_bytes(data[b..b + 8].try_into().expect("eight bytes"));
+        }
+        Ok(())
+    }
+}
+
+/// A buffer's address is its ID, shifted up: what [`Run::memory`] finds it
+/// by.
+impl Perform<BufferAddress> for SimGpu {
+    fn perform(&mut self, op: BufferAddress) -> Result<u64, GpuError> {
+        let state = self.lock();
+        validate::address(&*state, &op)?;
+        Ok(op.0.raw() << 32)
+    }
+}
+
 impl Perform<Opening<CreateProgram<'_>>> for SimGpu {
     fn perform(&mut self, Opening(op, _): Opening<CreateProgram<'_>>) -> Result<Program, GpuError> {
         validate::create_program(&op)?;
@@ -902,6 +1024,7 @@ macro_rules! closing {
 }
 
 closing! {
+    CreateQueries => Queries;
     CreateBuffer => Buffer;
     CreateImage => Image;
     CreateSampler => Sampler;
@@ -1385,6 +1508,7 @@ impl Perform<Draw<'_>> for SimGpu {
                     .collect()
             }
         };
+        let mut passed = 0;
         for d in &draws {
             state.log.push(Recorded::Draw {
                 label: label.clone(),
@@ -1392,7 +1516,7 @@ impl Perform<Draw<'_>> for SimGpu {
                 vertex_count: d.vertex_count,
                 instance_count: d.instance_count,
             });
-            state.run(
+            passed += state.run(
                 label.clone(),
                 RunSetup {
                     constants: constants.clone(),
@@ -1402,6 +1526,9 @@ impl Perform<Draw<'_>> for SimGpu {
                     draw: Some(d),
                 },
             );
+        }
+        if let Some((q, index)) = op.occlusion {
+            state.record_query(q.raw(), index, passed);
         }
         // Multisampled targets are kept one sample per pixel: resolving
         // copies them.

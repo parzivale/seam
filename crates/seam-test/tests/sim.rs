@@ -709,3 +709,22 @@ fn setting_and_removing_variables() {
         ErrorKind::InvalidInput
     );
 }
+
+#[test]
+fn create_dir_all_climbs_only_past_what_is_missing() {
+    let mut sim = Sim::new();
+    create_dir_all(&mut sim, "/a/b").unwrap();
+    // Some of it there already, then all of it.
+    create_dir_all(&mut sim, "/a/b/c/d").unwrap();
+    create_dir_all(&mut sim, "/a/b/c/d").unwrap();
+    assert!(sim.inspect(Metadata::new("/a/b/c/d")).unwrap().is_dir());
+    write_file(&mut sim, "/a/file", b"x").unwrap();
+    assert_eq!(
+        kind(create_dir_all(&mut sim, "/a/file/e")),
+        ErrorKind::NotADirectory
+    );
+    assert_eq!(
+        kind(create_dir_all(&mut sim, "/a/file")),
+        ErrorKind::NotADirectory
+    );
+}

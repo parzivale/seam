@@ -712,11 +712,40 @@ three_ways! {
         }
     {
         let path = path.as_ref();
-        // Outermost first: each directory is created after its parent.
-        let ancestors: Vec<&Path> = path.ancestors().filter(|p| !p.as_os_str().is_empty()).collect();
-        for dir in ancestors.into_iter().rev() {
+        // Innermost first, climbing only past what is missing, as std
+        // does: an ancestor that exists is never touched, so this works
+        // where the root cannot be seen (a WASI sandbox, a chroot).
+        let mut missing: Vec<&Path> = Vec::new();
+        let mut dir = path;
+        loop {
+            match run!(c, CreateDir::new(dir)) {
+                Ok(()) => break,
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    if !ask!(c, Metadata::new(dir))?.is_dir() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::NotADirectory,
+                            "a path component is not a directory",
+                        ));
+                    }
+                    break;
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    match dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+                        Some(parent) => {
+                            missing.push(dir);
+                            dir = parent;
+                        }
+                        None => return Err(e),
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        // Then back down, each directory after its parent.
+        for dir in missing.into_iter().rev() {
             match run!(c, CreateDir::new(dir)) {
                 Ok(()) => {}
+                // Made meanwhile by someone else: fine if a directory.
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                     if !ask!(c, Metadata::new(dir))?.is_dir() {
                         return Err(io::Error::new(

@@ -117,6 +117,14 @@ feature), makes the GPU effects:
   `Ash`, clears applied, and programs run by CPU functions given per
   label, for testing a core's data flow without a GPU.
 
+### Fixes
+
+- `create_dir_all` works innermost first, as std's does, climbing only
+  past missing directories: it no longer touches an ancestor that exists,
+  so it works where the root cannot be seen (a WASI sandbox, a chroot).
+- `Std` reads files (`read_file`, views) on WASI, by a seek then a read;
+  it did positional reads only on Unix and Windows.
+
 ### Documentation
 
 - Every wrapper crate's docs list its handlers (sync or async, under which

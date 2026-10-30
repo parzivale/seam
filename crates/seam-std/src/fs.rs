@@ -231,13 +231,23 @@ fn open_view(path: &Path) -> io::Result<std::fs::File> {
 }
 
 /// Reads at `offset` without moving the cursor (Unix), or moving one no
-/// handle in seam uses (Windows).
+/// handle in seam uses (elsewhere: Windows, and WASI, whose positional
+/// read is not stable yet). Without threads a seek then a read is as good
+/// as one call; with them (`wasm32-wasip1-threads`) two readers sharing a
+/// view could race, so it is not offered there.
 fn read_at(file: &std::fs::File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
     #[cfg(unix)]
     return std::os::unix::fs::FileExt::read_at(file, buf, offset);
     #[cfg(windows)]
     return std::os::windows::fs::FileExt::seek_read(file, buf, offset);
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(all(not(any(unix, windows)), not(target_feature = "atomics")))]
+    {
+        use std::io::{Read, Seek};
+        let mut file = file;
+        file.seek(io::SeekFrom::Start(offset))?;
+        file.read(buf)
+    }
+    #[cfg(all(not(any(unix, windows)), target_feature = "atomics"))]
     return Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "no positional reads here",

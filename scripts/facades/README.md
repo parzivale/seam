@@ -1,4 +1,4 @@
-# jiff facade generator
+# Facade generators
 
 `seam-jiff` exposes jiff's whole API except what reaches the system: the
 clock (`Timestamp::now`, `Zoned::now`), the system time zone
@@ -14,11 +14,15 @@ The forwarding is generated from jiff's rustdoc JSON, so it covers every
 item and tracks jiff releases:
 
 ```sh
-scripts/jiff-facade/regenerate.sh
+scripts/facades/jiff.sh
 ```
 
 - `rd.py` reads rustdoc JSON; `closure.py` works out which types to wrap
   (those whose API hands out, or takes where no conversion can be added,
-  a wrapped type); `generate.py` writes the facade.
-- The effectful functions are listed at the top of `generate.py`. After a
+  a wrapped type); `jiff.py` writes the facade.
+- The effectful functions are listed at the top of `jiff.py`. After a
   jiff upgrade, check its changelog for new ones and list them.
+
+`reqwest.py` (run by `reqwest.sh`) writes seam-reqwest's `ClientBuilder`:
+reqwest's, every configuration method forwarded, its `build` giving a
+`Reqwest`.

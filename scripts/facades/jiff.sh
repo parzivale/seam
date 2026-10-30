@@ -20,7 +20,7 @@ jiff = { version = "=$version", default-features = false, features = ["std"] }
 [workspace]
 TOML
 (cd "$work" && RUSTC_BOOTSTRAP=1 cargo rustdoc -q -p jiff -- -Zunstable-options --output-format json)
-python3 "$here/generate.py" "$work/target/doc/jiff.json" > "$root/crates/seam-jiff/src/jiff_facade.rs"
+python3 "$here/jiff.py" "$work/target/doc/jiff.json" > "$root/crates/seam-jiff/src/jiff_facade.rs"
 rustfmt --edition 2024 "$root/crates/seam-jiff/src/jiff_facade.rs"
 rm -rf "$work"
 echo "regenerated from jiff $version"

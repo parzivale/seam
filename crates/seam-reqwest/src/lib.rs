@@ -363,7 +363,12 @@ impl seam_test::World for Scripted {
 }
 
 #[cfg(feature = "reqwest")]
-pub use real::Reqwest;
+pub use real::{ClientBuilder, Reqwest};
+
+// reqwest's configuration types, all pure. `Client`, `RequestBuilder` and
+// `Response` perform requests: those are `Fetch`, through `Reqwest`.
+#[cfg(feature = "reqwest")]
+pub use reqwest::{Error, IntoUrl, NoProxy, Proxy, Url, dns, redirect, retry, tls};
 
 #[cfg(feature = "reqwest")]
 mod real {
@@ -396,6 +401,13 @@ mod real {
             }
         }
 
+        /// A [`ClientBuilder`], to configure the client: timeouts,
+        /// proxies, TLS, redirects, default headers, and the rest of
+        /// reqwest's options.
+        pub fn builder() -> ClientBuilder {
+            ClientBuilder::new()
+        }
+
         /// Always runs requests on `runtime`, wherever they are awaited.
         #[must_use]
         pub fn on(mut self, runtime: tokio::runtime::Handle) -> Self {
@@ -424,6 +436,27 @@ mod real {
             }
         }
     }
+
+    /// reqwest's [`ClientBuilder`](reqwest::ClientBuilder): every option,
+    /// and [`build`](Self::build) gives a [`Reqwest`].
+    #[derive(Debug, Default)]
+    #[must_use]
+    pub struct ClientBuilder(reqwest::ClientBuilder);
+
+    impl ClientBuilder {
+        /// reqwest's defaults.
+        pub fn new() -> Self {
+            Self(reqwest::ClientBuilder::new())
+        }
+
+        /// The configured client, as a handler.
+        pub fn build(self) -> Result<Reqwest, reqwest::Error> {
+            self.0.build().map(Reqwest::with_client)
+        }
+    }
+
+    // Every option, forwarded: generated from reqwest's API.
+    mod builder;
 
     /// This crate's runtime, for requests awaited outside one.
     fn own_runtime() -> io::Result<tokio::runtime::Handle> {

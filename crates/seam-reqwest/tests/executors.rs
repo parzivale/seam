@@ -54,3 +54,35 @@ fn on_a_given_runtime() {
     let got = seam_smol::block_on(async { get_text_send(&mut http, &url).await });
     assert_eq!(got.unwrap(), "given");
 }
+
+#[test]
+fn a_configured_client() {
+    use std::time::Duration;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 2048];
+        let n = stream.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..n]).to_lowercase();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+            .unwrap();
+        request
+    });
+    let mut headers = seam_reqwest::http::HeaderMap::new();
+    headers.insert("x-app", "seam".parse().unwrap());
+    let mut http = Reqwest::builder()
+        .timeout(Duration::from_secs(5))
+        .default_headers(headers)
+        .user_agent("seam-test/1")
+        .no_proxy()
+        .build()
+        .unwrap();
+    let got = seam_smol::block_on(get_text_send(&mut http, &url)).unwrap();
+    assert_eq!(got, "ok");
+    let request = server.join().unwrap();
+    assert!(request.contains("x-app: seam"), "{request}");
+    assert!(request.contains("user-agent: seam-test/1"), "{request}");
+}

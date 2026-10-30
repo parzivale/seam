@@ -12,6 +12,12 @@
 //!   `Sim` it watches the simulated filesystem, on the virtual clock, so a
 //!   test drives a watcher by changing files.
 //!
+//! Events are notify's own ([`Event`], [`EventKind`] and its kinds), from
+//! every handler: creations and removals of files and folders, data and
+//! metadata changes, renames, and (asked for with [`Watch::kinds`]) access.
+//! A watch reports [`EventKindMask::CORE`] (all but access) unless told
+//! otherwise; [`Notify::with_config`] takes notify's [`Config`].
+//!
 //! | Handler | Feature | Sync | Async |
 //! |---|---|---|---|
 //! | [`Notify`] | `notify` (default) | blocks until an event | waits without blocking, under any executor: notify's own thread wakes the task |
@@ -29,7 +35,7 @@
 //! use seam_core::effects as fx;
 //! use seam_core::ops::fs::write_file;
 //! use seam_core::ops::time::Timeout;
-//! use seam_notify::{EventKind, NextEvent, Polling, Watch};
+//! use seam_notify::{CreateKind, EventKind, NextEvent, Polling, Watch};
 //! use seam_test::Sim;
 //!
 //! let mut sim = Sim::new();
@@ -41,7 +47,7 @@
 //! root.acquire(Watch::recursive("/config"), |root, watcher| {
 //!     write_file(root, "/config/app.toml", "debug = true")?;
 //!     let event = watcher.perform(NextEvent)?;
-//!     assert_eq!(event.kind, EventKind::Create);
+//!     assert_eq!(event.kind, EventKind::Create(CreateKind::File));
 //!     // Nothing else changes: give up after a minute of virtual time.
 //!     let quiet = watcher.perform(Timeout::new(Duration::from_secs(60), NextEvent));
 //!     assert_eq!(quiet.unwrap_err().kind(), seam_core::io::ErrorKind::TimedOut);
@@ -74,7 +80,7 @@
 //! }
 //!
 //! // Any executor: Tokio here; smol, or futures-rs', the same.
-//! let changed = seam_tokio::block_on(config_changed::<_, seam_notify::NotifyWatcher>(&mut Notify))?;
+//! let changed = seam_tokio::block_on(config_changed::<_, seam_notify::NotifyWatcher>(&mut Notify::new()))?;
 //! println!("{changed:?}");
 //! # Ok::<(), io::Error>(())
 //! ```
@@ -86,11 +92,13 @@
 //!
 //! | Feature | Default | Gives |
 //! |---|---|---|
-//! | `notify` | yes | [`Notify`]: the operating system's events, through the notify crate |
+//! | `notify` | yes | [`Notify`] and [`Config`]: the operating system's events, through the notify crate |
 //!
 #![cfg_attr(
     not(feature = "notify"),
-    doc = "[`Notify`]: https://docs.rs/seam-rs-notify/latest/seam_notify/struct.Notify.html"
+    doc = "[`Notify`]: https://docs.rs/seam-rs-notify/latest/seam_notify/struct.Notify.html\n\
+           [`Notify::with_config`]: https://docs.rs/seam-rs-notify/latest/seam_notify/struct.Notify.html#method.with_config\n\
+           [`Config`]: https://docs.rs/seam-rs-notify/latest/seam_notify/struct.Config.html"
 )]
 #![forbid(unsafe_code)]
 
@@ -114,6 +122,9 @@ pub struct Watch<'a, W> {
     /// Whether to watch the whole tree under a directory, or only its
     /// entries.
     pub recursive: bool,
+    /// Which kinds of event to report: [`EventKindMask::CORE`] (all but
+    /// access events, which are many) unless set.
+    pub kinds: EventKindMask,
     watcher: PhantomData<fn() -> W>,
 }
 
@@ -123,6 +134,7 @@ impl<'a, W> Watch<'a, W> {
         Self {
             path: path.as_ref(),
             recursive: true,
+            kinds: EventKindMask::CORE,
             watcher: PhantomData,
         }
     }
@@ -132,8 +144,17 @@ impl<'a, W> Watch<'a, W> {
         Self {
             path: path.as_ref(),
             recursive: false,
+            kinds: EventKindMask::CORE,
             watcher: PhantomData,
         }
+    }
+
+    /// Reports only these kinds of event: `EventKindMask::ALL` for access
+    /// events too.
+    #[must_use]
+    pub fn kinds(mut self, kinds: EventKindMask) -> Self {
+        self.kinds = kinds;
+        self
     }
 }
 
@@ -142,6 +163,7 @@ impl<W> core::fmt::Debug for Watch<'_, W> {
         f.debug_struct("Watch")
             .field("path", &self.path)
             .field("recursive", &self.recursive)
+            .field("kinds", &self.kinds)
             .finish()
     }
 }
@@ -180,28 +202,11 @@ impl TimesOut for NextEvent {
     }
 }
 
-/// What happened.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EventKind {
-    /// Something was created.
-    Create,
-    /// Something changed: its contents, size or metadata.
-    Modify,
-    /// Something was removed.
-    Remove,
-    /// Something else the platform reports (a rename seen from one side,
-    /// an event it cannot classify).
-    Other,
-}
-
-/// A change under a watched path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Event {
-    /// What happened.
-    pub kind: EventKind,
-    /// To which paths.
-    pub paths: Vec<PathBuf>,
-}
+// notify's events, as every handler reports them.
+pub use notify_types::event::{
+    AccessKind, AccessMode, CreateKind, DataChange, Event, EventAttributes, EventKind,
+    EventKindMask, Flag, MetadataKind, ModifyKind, RemoveKind, RenameMode,
+};
 
 /// Watches by rescanning: built over a capability `C` with a filesystem
 /// and a clock, it lends [`PollWatcher`]s that compare the tree (each
@@ -247,6 +252,7 @@ pub struct PollWatcher<C, D> {
     fs: C,
     root: PathBuf,
     recursive: bool,
+    kinds: EventKindMask,
     interval: Duration,
     seen: Seen,
     pending: VecDeque<Event>,
@@ -293,32 +299,44 @@ where
     Ok(seen)
 }
 
-/// The changes from `old` to `new`, as events: one per kind.
+/// The changes from `old` to `new`, as notify reports them: an event per
+/// path, created first, then modified, then removed.
 fn diff(old: &Seen, new: &Seen) -> Vec<Event> {
     let mut created = Vec::new();
     let mut modified = Vec::new();
     let mut removed = Vec::new();
     for (path, info) in new {
         match old.get(path) {
-            None => created.push(path.clone()),
-            Some(before) if before != info && !info.is_dir() => modified.push(path.clone()),
+            None => {
+                let kind = if info.is_dir() {
+                    CreateKind::Folder
+                } else {
+                    CreateKind::File
+                };
+                created.push(Event::new(EventKind::Create(kind)).add_path(path.clone()));
+            }
+            Some(before) if before != info && !info.is_dir() => {
+                let kind = if before.len != info.len || before.modified != info.modified {
+                    ModifyKind::Data(DataChange::Any)
+                } else {
+                    ModifyKind::Metadata(MetadataKind::Any)
+                };
+                modified.push(Event::new(EventKind::Modify(kind)).add_path(path.clone()));
+            }
             Some(_) => {}
         }
     }
-    for path in old.keys() {
+    for (path, info) in old {
         if !new.contains_key(path) {
-            removed.push(path.clone());
+            let kind = if info.is_dir() {
+                RemoveKind::Folder
+            } else {
+                RemoveKind::File
+            };
+            removed.push(Event::new(EventKind::Remove(kind)).add_path(path.clone()));
         }
     }
-    [
-        (EventKind::Create, created),
-        (EventKind::Modify, modified),
-        (EventKind::Remove, removed),
-    ]
-    .into_iter()
-    .filter(|(_, paths)| !paths.is_empty())
-    .map(|(kind, paths)| Event { kind, paths })
-    .collect()
+    created.into_iter().chain(modified).chain(removed).collect()
 }
 
 impl<C, D> PollWatcher<C, D>
@@ -335,7 +353,11 @@ where
             Err(e) if e.kind() == io::ErrorKind::NotFound => Seen::new(),
             Err(e) => return Err(e),
         };
-        let events = diff(&self.seen, &now);
+        let kinds = self.kinds;
+        let events: Vec<Event> = diff(&self.seen, &now)
+            .into_iter()
+            .filter(|e| kinds.matches(&e.kind))
+            .collect();
         self.seen = now;
         let changed = !events.is_empty();
         self.pending.extend(events);
@@ -358,6 +380,7 @@ where
             fs,
             root: op.path.to_path_buf(),
             recursive: op.recursive,
+            kinds: op.kinds,
             interval: self.interval,
             seen,
             pending: VecDeque::new(),
@@ -427,6 +450,10 @@ impl<C, D> seam_core::Capability for PollWatcher<C, D> {}
 #[cfg(feature = "notify")]
 pub use os::{Notify, NotifyWatcher};
 
+/// notify's configuration for [`Notify`].
+#[cfg(feature = "notify")]
+pub use notify::Config;
+
 #[cfg(feature = "notify")]
 mod os {
     use core::future::Future;
@@ -441,9 +468,25 @@ mod os {
     use super::*;
 
     /// Watches with the operating system's own file events, through
-    /// notify's recommended watcher.
+    /// notify's recommended watcher, configured by a [`Config`].
     #[derive(Debug, Default, Clone, Copy)]
-    pub struct Notify;
+    pub struct Notify {
+        config: Config,
+    }
+
+    impl Notify {
+        /// notify's defaults.
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        /// Watches with `config` (following symbolic links or not, and,
+        /// where the platform falls back to polling, how often and
+        /// whether by contents).
+        pub fn with_config(config: Config) -> Self {
+            Self { config }
+        }
+    }
 
     /// A watcher from [`Notify`]. Access events (a file opened or closed)
     /// are not reported.
@@ -456,6 +499,7 @@ mod os {
         // Kept alive for the scope: dropping it stops the events.
         _watcher: notify::RecommendedWatcher,
         shared: Arc<Shared>,
+        kinds: EventKindMask,
     }
 
     impl core::fmt::Debug for NotifyWatcher {
@@ -505,29 +549,12 @@ mod os {
         }
     }
 
-    fn event(e: notify::Event) -> Option<Event> {
-        let kind = match e.kind {
-            notify::EventKind::Create(_) => EventKind::Create,
-            notify::EventKind::Modify(_) => EventKind::Modify,
-            notify::EventKind::Remove(_) => EventKind::Remove,
-            notify::EventKind::Access(_) => return None,
-            notify::EventKind::Any | notify::EventKind::Other => EventKind::Other,
-        };
-        Some(Event {
-            kind,
-            paths: e.paths,
-        })
-    }
-
     /// The next reportable event queued, if any.
-    fn take(state: &mut State) -> Option<io::Result<Event>> {
+    fn take(state: &mut State, kinds: EventKindMask) -> Option<io::Result<Event>> {
         while let Some(received) = state.events.pop_front() {
             match received {
-                Ok(e) => {
-                    if let Some(e) = event(e) {
-                        return Some(Ok(e));
-                    }
-                }
+                Ok(e) if kinds.matches(&e.kind) => return Some(Ok(e)),
+                Ok(_) => {}
                 Err(e) => return Some(Err(error(e))),
             }
         }
@@ -539,7 +566,7 @@ mod os {
         fn next(&self, deadline: Option<Instant>) -> io::Result<Event> {
             let mut state = self.shared.lock();
             loop {
-                if let Some(e) = take(&mut state) {
+                if let Some(e) = take(&mut state, self.kinds) {
                     return e;
                 }
                 state = match deadline {
@@ -614,6 +641,7 @@ mod os {
     /// deadline. Dropping it gives up the wait.
     struct NextFuture<'w> {
         shared: &'w Shared,
+        kinds: EventKindMask,
         timed: bool,
     }
 
@@ -622,7 +650,7 @@ mod os {
 
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
             let mut state = self.shared.lock();
-            if let Some(e) = take(&mut state) {
+            if let Some(e) = take(&mut state, self.kinds) {
                 state.deadline = None;
                 return Poll::Ready(e);
             }
@@ -668,6 +696,7 @@ mod os {
             }
             NextFuture {
                 shared: &self.shared,
+                kinds: self.kinds,
                 timed: after.is_some(),
             }
             .await
@@ -681,15 +710,18 @@ mod os {
         ) -> io::Result<NotifyWatcher> {
             let shared = Arc::new(Shared::default());
             let sender = Arc::clone(&shared);
-            let mut watcher = notify::recommended_watcher(move |event| {
-                let mut state = sender.lock();
-                state.events.push_back(event);
-                if let Some(w) = state.waker.take() {
-                    w.wake();
-                }
-                drop(state);
-                sender.changed.notify_all();
-            })
+            let mut watcher = notify::RecommendedWatcher::new(
+                move |event| {
+                    let mut state = sender.lock();
+                    state.events.push_back(event);
+                    if let Some(w) = state.waker.take() {
+                        w.wake();
+                    }
+                    drop(state);
+                    sender.changed.notify_all();
+                },
+                self.config,
+            )
             .map_err(error)?;
             let mode = if op.recursive {
                 notify::RecursiveMode::Recursive
@@ -700,6 +732,7 @@ mod os {
             Ok(NotifyWatcher {
                 _watcher: watcher,
                 shared,
+                kinds: op.kinds,
             })
         }
     }

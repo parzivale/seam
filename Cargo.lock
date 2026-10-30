@@ -1966,6 +1966,7 @@ name = "seam-rs-notify"
 version = "0.6.0"
 dependencies = [
  "notify",
+ "notify-types",
  "seam-rs-core",
  "seam-rs-smol",
  "seam-rs-std",

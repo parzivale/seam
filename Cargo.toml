@@ -39,6 +39,7 @@ rand = { version = "0.10", default-features = false }
 uuid = { version = "1", default-features = false }
 tracing = { version = "0.1.40", default-features = false }
 notify = { version = "8", default-features = false }
+notify-types = "2.2"
 reqwest = { version = "0.13", default-features = false }
 http = { version = "1", default-features = false }
 sqlx = { version = "0.9", default-features = false }

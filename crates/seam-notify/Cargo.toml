@@ -11,6 +11,8 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+# notify's event types, for every handler (the simulated one too).
+notify-types = { workspace = true }
 seam-core = { workspace = true, features = ["std", "fs", "time"] }
 notify = { workspace = true, optional = true }
 

@@ -1,5 +1,132 @@
 # Changelog
 
+## 0.7.0
+
+The GPU over Vulkan, the wrapper crates working under every executor, and
+each wrapper exposing its library's whole API bar the effectful parts.
+
+### Breaking
+
+- `seam-jiff`: the helpers and the `TimeZoneFor` and `SystemTimeZone`
+  queries give the facade's types (`seam_jiff::Timestamp`, `Zoned`,
+  `tz::TimeZone`, ...) in place of jiff's. Each converts with `From`
+  (or `into_jiff`) where jiff's own is needed.
+- `seam-tracing`: `Log` gains `fields` (structured fields), and its
+  `target` is `&'static str`.
+- `seam-notify`: `Event` and `EventKind` are notify's own (from
+  notify-types), with its finer kinds; `Watch` gains `kinds`, a filter;
+  `Notify` holds a `notify::Config` (`Notify::new`, `with_config`).
+- `seam-reqwest`: `Reqwest` is no longer a tuple struct: build it with
+  `Reqwest::new`, `with_client`, `on` or `builder`.
+
+### Wrappers under every executor
+
+The wrappers work under every executor, not only Tokio's:
+
+- `Reqwest` runs under any executor: on the current Tokio runtime inside
+  one, and otherwise on a one-thread runtime of its own, started on first
+  use (`Reqwest::on` picks one; `Reqwest::with_client` takes a configured
+  client).
+- `Sqlx` runs on Tokio (feature `tokio`, default) or smol (feature `smol`;
+  the `seam` feature `smol` turns it on).
+- `Notify`'s async waits (`NextEvent`, `Timeout<NextEvent>`) do not block
+  the executor.
+
+The `seam` features `reqwest`, `sqlx` and `notify` bring in the real
+handlers (`Reqwest` with rustls, `Sqlx` with SQLite on Tokio, `Notify`),
+and `test` turns on the wrappers' world-file blocks.
+
+### The wrappers expose their libraries
+
+Each wrapper exposes its library's API, bar the effectful parts, so a
+core needs no direct dependency on the library:
+
+- `seam-jiff` mirrors jiff's whole API (`civil`, `tz`, `fmt`, spans,
+  rounding, ...) as newtypes and enums, generated from jiff's rustdoc
+  (`scripts/facades/`), with `From` both ways. The functions that read
+  the clock or the tz database take a capability instead:
+  `Timestamp::now(c)`, `Zoned::now(c)`, `TimeZone::get(c, name)`,
+  `TimeZone::system(c)`, `in_tz(c, name)`, `Zoned::parse(c, s)`,
+  `BrokenDownTime::to_zoned(c)`, and `DateTimeParser::parse_zoned(c, ..)`.
+- `seam-rand` re-exports rand's traits, `distr`, `seq`, `rngs` and
+  `prelude` (features `std_rng`, `chacha`); `seam-uuid` re-exports
+  `Uuid`, `Builder`, `fmt`, `timestamp` and `uuid!` (v1, v3, v5, v6, v7,
+  v8); `seam-futures` re-exports futures-rs' combinators, streams, sinks,
+  `io` and `task` items and macros.
+- `seam-reqwest`: `Reqwest::builder()`, every `reqwest::ClientBuilder`
+  setting, and reqwest's `Proxy`, `redirect`, `retry`, `tls`, `dns` and
+  `Url`.
+- `seam-dirs`: user directories (`UserDir`: audio, desktop, documents,
+  downloads, pictures, public, templates, videos, fonts), read
+  from `user-dirs.dirs` on Linux.
+- `seam-notify`: notify's own `Event` and `EventKind`, a `Watch` filter
+  (`kinds`), and `Notify::with_config`; `Polling` reports the same
+  kinds, per path.
+- `seam-tracing`: structured fields (`info!(c, user = %name, n = 3,
+  "...")`), and spans as a scope (`span!`, `info_span!`, ...), sent to
+  tracing with explicit parents, discarded, or captured for tests.
+- `seam-sqlx`: typed reads through std's `TryFrom`: `Row::try_get` and
+  `try_get_at` into integers, floats, `bool`, `String`, `Vec<u8>` and
+  `Option`s of them (and `Uuid` and `serde_json::Value` with features
+  `uuid` and `json`); tuples and a core's own `TryFrom<&Row>` types
+  through `fetch_all_as`, `fetch_one_as` and `fetch_optional_as`.
+
+### The GPU over Vulkan
+
+A new crate, `seam-ash` (`seam-rs-ash`, `seam::ash` with the `ash`
+feature), makes the GPU effects:
+
+- Scopes for resources: `CreateBuffer`, `CreateImage` and `CreateProgram`
+  (compute, or vertex and fragment drawing triangles), lending plain
+  `Buffer`, `Image` and `Program` IDs.
+- Operations: `Upload`, `UploadImage`, `CopyBuffer`, `Dispatch`, `Draw`
+  (with clears, vertex buffers, instances, bindings and push constants),
+  `Download`, `DownloadImage`, `Finish`, and the `DeviceInfo` query. Only
+  downloads and `Finish` wait.
+- `Submit`: a scope that sends the work so far without waiting, lending a
+  submission to inspect `IsDone` on; closing the scope is the wait.
+- `Import<B>`: an image from outside the handler, lent as an `Image`
+  without a CPU copy. The source is per platform: `drm::Dmabuf` (Linux
+  and the BSDs: a Wayland client's or GBM's buffer, by fd, fourcc and
+  modifier), `win32::SharedHandle` (Windows: a Direct3D 11 or 12 texture,
+  or Vulkan memory, by NT handle) and `metal::IoSurface` (Apple systems,
+  through MoltenVK). Opening waits for a dmabuf's writers (its implicit
+  fences, by `poll`); closing hands the memory back to its owner and
+  waits until the GPU is done with it, so a Wayland client's buffer can be
+  released once the scope has closed. `drm::DmabufFormats` lists the
+  format and modifier pairs a GPU imports, for linux-dmabuf feedback.
+  `Ash` imports a dmabuf as the image itself where the device has
+  `VK_EXT_image_drm_format_modifier`, and otherwise copies a linear one
+  into an image on the GPU; `SimGpu` reads fake dmabufs (memfds).
+  `Ash` also now finds portability implementations such as MoltenVK.
+- The handler tracks what each operation reads and writes and inserts the
+  barriers and image layout transitions; a core never mentions
+  synchronization. The tests run with the Khronos validation layer's
+  synchronization validation, which reports no hazards.
+- `Ash`: Vulkan 1.3 (dynamic rendering, synchronization2) through ash. One
+  implementation gives both forms: blocking (`Perform`) waits on the
+  calling thread, async (`AsyncPerform`, `SendPerform`) awaits a waiter
+  thread under any executor. A scope closed while the GPU still uses its
+  resource defers the destruction; a download cancelled mid-flight frees
+  its staging memory once the GPU is done with it. Programs compile
+  outside the device lock (on their own thread in the async form).
+  `AshOptions` sets how long waits spin before sleeping (`spin`, 20 µs by
+  default; spinning removes most of the async form's wake-up latency) and
+  the waiter thread's stack size.
+- `SimGpu`: buffers and images as bytes in memory, the same checks as
+  `Ash`, clears applied, and programs run by CPU functions given per
+  label, for testing a core's data flow without a GPU.
+
+### Documentation
+
+- Every wrapper crate's docs list its handlers (sync or async, under which
+  executors), what else a root needs for it, a program using it beside
+  real handlers (compiled as a doctest) and its features. The README has
+  a Handlers section: what each handler covers, and what each wrapper
+  needs beside it in a root.
+- "Backend" is gone from the docs: seam has effects and handlers, and
+  `Std`, `Tokio`, `Smol` and `Sim` are handlers like any other.
+
 ## 0.6.0
 
 Split handles, a helper for most everyday tasks, and backends and
@@ -123,100 +250,6 @@ bans each library's own direct calls.
 Each is on the latest release of its library: uuid 1.29, sqlx 0.9,
 reqwest 0.13 (rustls by default), nix 0.31, rustix 1.1.
 
-They work under every executor, not only Tokio's:
-
-- `Reqwest` runs under any executor: on the current Tokio runtime inside
-  one, and otherwise on a one-thread runtime of its own, started on first
-  use (`Reqwest::on` picks one; `Reqwest::with_client` takes a configured
-  client).
-- `Sqlx` runs on Tokio (feature `tokio`, default) or smol (feature `smol`;
-  the `seam` feature `smol` turns it on).
-- `Notify`'s async waits (`NextEvent`, `Timeout<NextEvent>`) do not block
-  the executor.
-
-The `seam` features `reqwest`, `sqlx` and `notify` bring in the real
-handlers (`Reqwest` with rustls, `Sqlx` with SQLite on Tokio, `Notify`),
-and `test` turns on the wrappers' world-file blocks.
-
-Each wrapper also exposes its library's API, bar the effectful parts, so
-a core needs no direct dependency on the library:
-
-- `seam-jiff` mirrors jiff's whole API (`civil`, `tz`, `fmt`, spans,
-  rounding, ...) as newtypes and enums, generated from jiff's rustdoc
-  (`scripts/facades/`), with `From` both ways. The functions that read
-  the clock or the tz database take a capability instead:
-  `Timestamp::now(c)`, `Zoned::now(c)`, `TimeZone::get(c, name)`,
-  `TimeZone::system(c)`, `in_tz(c, name)`, `Zoned::parse(c, s)`,
-  `BrokenDownTime::to_zoned(c)`, and `DateTimeParser::parse_zoned(c, ..)`.
-- `seam-rand` re-exports rand's traits, `distr`, `seq`, `rngs` and
-  `prelude` (features `std_rng`, `chacha`); `seam-uuid` re-exports
-  `Uuid`, `Builder`, `fmt`, `timestamp` and `uuid!` (v1, v3, v5, v6, v7,
-  v8); `seam-futures` re-exports futures-rs' combinators, streams, sinks,
-  `io` and `task` items and macros.
-- `seam-reqwest`: `Reqwest::builder()`, every `reqwest::ClientBuilder`
-  setting, and reqwest's `Proxy`, `redirect`, `retry`, `tls`, `dns` and
-  `Url`.
-- `seam-dirs`: user directories (`UserDir`: audio, desktop, documents,
-  downloads, pictures, public, templates, videos, fonts), read
-  from `user-dirs.dirs` on Linux.
-- `seam-notify`: notify's own `Event` and `EventKind`, a `Watch` filter
-  (`kinds`), and `Notify::with_config`; `Polling` reports the same
-  kinds, per path.
-- `seam-tracing`: structured fields (`info!(c, user = %name, n = 3,
-  "...")`), and spans as a scope (`span!`, `info_span!`, ...), sent to
-  tracing with explicit parents, discarded, or captured for tests.
-- `seam-sqlx`: typed reads through std's `TryFrom`: `Row::try_get` and
-  `try_get_at` into integers, floats, `bool`, `String`, `Vec<u8>` and
-  `Option`s of them (and `Uuid` and `serde_json::Value` with features
-  `uuid` and `json`); tuples and a core's own `TryFrom<&Row>` types
-  through `fetch_all_as`, `fetch_one_as` and `fetch_optional_as`.
-
-### The GPU over Vulkan
-
-A new crate, `seam-ash` (`seam-rs-ash`, `seam::ash` with the `ash`
-feature), makes the GPU effects:
-
-- Scopes for resources: `CreateBuffer`, `CreateImage` and `CreateProgram`
-  (compute, or vertex and fragment drawing triangles), lending plain
-  `Buffer`, `Image` and `Program` IDs.
-- Operations: `Upload`, `UploadImage`, `CopyBuffer`, `Dispatch`, `Draw`
-  (with clears, vertex buffers, instances, bindings and push constants),
-  `Download`, `DownloadImage`, `Finish`, and the `DeviceInfo` query. Only
-  downloads and `Finish` wait.
-- `Submit`: a scope that sends the work so far without waiting, lending a
-  submission to inspect `IsDone` on; closing the scope is the wait.
-- `Import<B>`: an image from outside the handler, lent as an `Image`
-  without a CPU copy. The source is per platform: `drm::Dmabuf` (Linux
-  and the BSDs: a Wayland client's or GBM's buffer, by fd, fourcc and
-  modifier), `win32::SharedHandle` (Windows: a Direct3D 11 or 12 texture,
-  or Vulkan memory, by NT handle) and `metal::IoSurface` (Apple systems,
-  through MoltenVK). Opening waits for a dmabuf's writers (its implicit
-  fences, by `poll`); closing hands the memory back to its owner and
-  waits until the GPU is done with it, so a Wayland client's buffer can be
-  released once the scope has closed. `drm::DmabufFormats` lists the
-  format and modifier pairs a GPU imports, for linux-dmabuf feedback.
-  `Ash` imports a dmabuf as the image itself where the device has
-  `VK_EXT_image_drm_format_modifier`, and otherwise copies a linear one
-  into an image on the GPU; `SimGpu` reads fake dmabufs (memfds).
-  `Ash` also now finds portability implementations such as MoltenVK.
-- The handler tracks what each operation reads and writes and inserts the
-  barriers and image layout transitions; a core never mentions
-  synchronization. The tests run with the Khronos validation layer's
-  synchronization validation, which reports no hazards.
-- `Ash`: Vulkan 1.3 (dynamic rendering, synchronization2) through ash. One
-  implementation gives both forms: blocking (`Perform`) waits on the
-  calling thread, async (`AsyncPerform`, `SendPerform`) awaits a waiter
-  thread under any executor. A scope closed while the GPU still uses its
-  resource defers the destruction; a download cancelled mid-flight frees
-  its staging memory once the GPU is done with it. Programs compile
-  outside the device lock (on their own thread in the async form).
-  `AshOptions` sets how long waits spin before sleeping (`spin`, 20 µs by
-  default; spinning removes most of the async form's wake-up latency) and
-  the waiter thread's stack size.
-- `SimGpu`: buffers and images as bytes in memory, the same checks as
-  `Ash`, clears applied, and programs run by CPU functions given per
-  label, for testing a core's data flow without a GPU.
-
 ### Simulation
 
 - `Sim::to_world` and `seam::test::to_world::<(K, ..), _>(&root)`
@@ -239,11 +272,6 @@ among others, and every dependency is on its newest release.
 - A `docs` feature adds `seam::_docs`: what seam is, usage guides, the
   world-file format and implementation notes. Off by default, so it costs
   nothing to build; docs.rs builds it.
-- Every wrapper crate's docs list its handlers (sync or async, under which
-  executors), what else a root needs for it, a program using it beside
-  real handlers (compiled as a doctest) and its features. The README has
-  a Handlers section: what each handler covers, and what each wrapper
-  needs beside it in a root.
 
 ## 0.5.0
 

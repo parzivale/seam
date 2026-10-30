@@ -13,10 +13,10 @@ depends on the groups alone.
 
 ```toml
 [dependencies]
-seam = { package = "seam-rs", version = "0.6", features = ["env", "io-std", "std"] }
+seam = { package = "seam-rs", version = "0.7", features = ["env", "io-std", "std"] }
 
 [dev-dependencies]
-seam = { package = "seam-rs", version = "0.6", features = ["test"] }
+seam = { package = "seam-rs", version = "0.7", features = ["test"] }
 ```
 
 ## A core

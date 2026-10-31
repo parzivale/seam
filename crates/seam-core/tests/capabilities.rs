@@ -6,8 +6,8 @@ use std::sync::Mutex;
 
 use seam_core::future::{AsyncPerform, SendPerform, block_on};
 use seam_core::{
-    Acquisition, AsyncProvide, Closing, Inspect, Lend, Opening, Operation, Perform, Provide, Push,
-    Query, Rejected, SendProvide, SendScope,
+    Acquisition, AsyncProvide, Closing, Inspect, Lend, Opening, Operation, Perform, Provide, Query,
+    SendProvide, SendScope,
 };
 
 struct Get;
@@ -431,37 +431,6 @@ fn async_acquire_is_send() {
     let mut p = Leases::default();
     block_on(assert_send(generic(&mut p))).unwrap();
     assert_eq!(p.log, ["opened", "closed"]);
-}
-
-/// A sink that caps how many items the core may emit.
-struct Capped {
-    items: Vec<u32>,
-    cap: usize,
-}
-
-impl Perform<Push<u32>> for Capped {
-    fn perform(&mut self, op: Push<u32>) -> Result<(), Rejected<u32>> {
-        if self.items.len() == self.cap {
-            return Err(Rejected(op.0));
-        }
-        self.items.push(op.0);
-        Ok(())
-    }
-}
-
-#[test]
-fn push_sink_caps_output() {
-    fn squares<S: Perform<Push<u32>>>(n: u32, sink: &mut S) -> Result<(), Rejected<u32>> {
-        (0..n).try_for_each(|i| sink.perform(Push(i * i)))
-    }
-
-    let mut sink = Capped {
-        items: Vec::new(),
-        cap: 3,
-    };
-    assert_eq!(squares(3, &mut sink), Ok(()));
-    assert_eq!(sink.items, [0, 1, 4]);
-    assert_eq!(squares(1, &mut sink), Err(Rejected(0)));
 }
 
 /// Checked at compile time: a generic core bounded on `SendProvide` gets a

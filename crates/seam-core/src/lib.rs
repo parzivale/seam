@@ -85,7 +85,6 @@
 //!   use inside a scope that commits on success and rolls back on error,
 //!   panic or cancellation.
 //! - [`io`]: seam's own I/O error, the same with or without std.
-//! - [`Push`]: a sink operation for counting or capping what a core emits.
 //! - [`prelude`]: all the traits in one import.
 //!
 //! # Features
@@ -114,7 +113,7 @@ pub mod io;
 mod operation;
 pub mod ops;
 pub mod prelude;
-mod push;
+mod rejected;
 pub mod root;
 mod three_ways;
 
@@ -124,5 +123,5 @@ pub use acquire::{
 };
 pub use capability::{Capability, Inspect, Perform};
 pub use operation::{Operation, Query};
-pub use push::{Push, Rejected};
+pub use rejected::Rejected;
 pub use root::{Effect, Pick, Root, effects};

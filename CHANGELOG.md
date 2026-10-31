@@ -23,6 +23,9 @@ them turned up.
   `CreateSampler::new(Filter::Linear)`.
 - `seam-tracing`: `Span::fields` is a `Cow<[Field]>`, and
   `Span::fields(..)` takes a slice or a `Vec` (it is no longer `const`).
+- `seam-core`: `Push` is gone. It was a program's own sink, not an effect
+  of the outside world; a core that emits items defines its own operation.
+  `Rejected` stays, for `SpawnInto`.
 
 ### The GPU
 

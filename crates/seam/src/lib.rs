@@ -208,8 +208,8 @@
 //!
 //! # Features
 //!
-//! `seam` is `no_std` with no default features: you get the traits, the
-//! prelude and [`Push`].
+//! `seam` is `no_std` with no default features: you get the traits and the
+//! prelude.
 //!
 //! Features come in two independent kinds. **Capability groups** choose
 //! which of [`ops`]' operations exist. **Crates** bring in a module of the
@@ -275,8 +275,7 @@ pub use seam_core::*;
 /// The capability traits ([`Inspect`], [`Perform`] and their async and
 /// `Send` forms), [`Operation`] and [`Query`] for defining operations,
 /// [`Provide`] and [`Lend`] (and their async forms, and [`SendScope`]) for
-/// resources,
-/// [`Push`], and
+/// resources, and
 /// [`block_on`](crate::future::block_on). Operation types and handlers are
 /// imported separately, so that a module's imports also show what it can
 /// do.

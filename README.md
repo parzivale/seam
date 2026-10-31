@@ -105,7 +105,7 @@ where
 
 ## Features
 
-`seam` has no default features: you get the traits and `Push`, with no std.
+`seam` has no default features: you get the traits, with no std.
 
 Features come in two independent kinds. Capability groups choose which
 operations exist; handler crates bring in the handlers that perform them.

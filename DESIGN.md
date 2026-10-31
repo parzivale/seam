@@ -125,9 +125,6 @@ Acquisitions are generic over the handler's handle type (`Open<'a, M, F>`), sinc
 each handler has its own. Bounds name the handle as a type parameter and
 inference fills it in.
 
-`Push<T>` (outcome `Result<(), Rejected<T>>`) lets tests count or cap the
-items a core emits, to check that output scales with input size.
-
 ## Primitives and helpers
 
 Everything that can be built from the primitives is, in seam-core, as plain

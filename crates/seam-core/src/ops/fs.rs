@@ -15,6 +15,15 @@
 //! only for readable modes and `Write` only for writable ones, so a core
 //! bounded on `Open<'a, ReadOnly, F>` cannot write, and its bounds say so.
 //!
+//! # `View` or `Open`?
+//!
+//! Both read a file. Use [`View`] to read a regular file without changing
+//! anything: it reads at offsets, moves no cursor, and is lent, so a core
+//! that only reads needs `&C`. Use [`Open`] in [`ReadOnly`] mode for a file
+//! that is consumed as it is read (a FIFO, a device), which `View` refuses,
+//! and for reading a file as a stream with the [`io`](super::io) helpers.
+//! Anything that writes uses `Open`.
+//!
 //! Whole-file and whole-tree work is built on those, as plain functions,
 //! each in three forms (sync, `_async`, `_send`): [`read_file`],
 //! [`read_to_string`], [`read_lines`], [`write_file`], [`append_file`],

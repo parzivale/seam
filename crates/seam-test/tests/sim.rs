@@ -32,7 +32,7 @@ use seam_core::ops::net::{
     Accept, LocalAddr, PeerAddr, RecvFrom, ResolveInto, SendTo, Shutdown, TcpBind, TcpConnect,
     UdpBind,
 };
-use seam_core::ops::process::{Exit, Output, RunCommand};
+use seam_core::ops::process::{Output, RunCommand};
 use seam_core::ops::signal::CtrlC;
 
 use seam_core::ops::fs::{ReadAt, View};
@@ -40,7 +40,7 @@ use seam_core::ops::time::{Now, Sleep, WallClock};
 use seam_core::{AsyncProvide, Inspect, Lend, Perform, Provide};
 use seam_test::fs::File;
 use seam_test::net::{TcpListener, TcpStream, UdpSocket};
-use seam_test::{Sim, catch_exit};
+use seam_test::Sim;
 
 /// Edits a file in place through one handle: every file handle operation.
 /// Generic, so it runs on any handler.
@@ -330,10 +330,11 @@ fn udp_in_memory() -> io::Result<()> {
     })
 }
 
-/// A core: a tiny shell that runs the commands it reads until `exit`.
-fn shell<C, I, O>(c: &mut C) -> io::Result<()>
+/// A core: a tiny shell that runs the commands it reads until `exit`, and
+/// returns the exit code for `main` to exit with.
+fn shell<C, I, O>(c: &mut C) -> io::Result<i32>
 where
-    C: Provide<OpenStdin<I>> + Provide<OpenStdout<O>> + Perform<RunCommand> + Perform<Exit>,
+    C: Provide<OpenStdin<I>> + Provide<OpenStdout<O>> + Perform<RunCommand>,
     I: for<'a> Perform<Read<'a>>,
     O: for<'a> Perform<Write<'a>>,
 {
@@ -345,8 +346,7 @@ where
             let mut words = line.split_whitespace();
             match words.next() {
                 Some("exit") => {
-                    let code = words.next().map_or(Ok(0), str::parse).unwrap_or(2);
-                    c.perform(Exit(code));
+                    return Ok(words.next().map_or(Ok(0), str::parse).unwrap_or(2));
                 }
                 Some(program) => {
                     let mut cmd = Command::new(program);
@@ -359,7 +359,7 @@ where
                 None => {}
             }
         }
-        Ok(())
+        Ok(0)
     })
 }
 
@@ -379,7 +379,7 @@ fn scripted_processes_stdio_and_exit() {
             })
         });
 
-    assert_eq!(catch_exit(|| shell(&mut sim)).map(drop), Err(3));
+    assert_eq!(shell(&mut sim).unwrap(), 3);
     assert_eq!(
         String::from_utf8(sim.take_stdout()).unwrap(),
         "hi there\nnope: no handler scripted for this program\n"

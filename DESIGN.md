@@ -63,10 +63,11 @@ feature, so a core written against them runs on any handler. They are
   the environment too, so it can serve the environment's effects in a root. It is the
   only `unsafe` in seam: the workspace denies `unsafe_code`, every crate
   but seam-std forbids it, and seam-std allows it on those items alone.
-- `process`: `RunCommand`, `Exit` (outcome `Infallible`), and `SpawnChild`,
-  an acquisition lending a running child to a scope: written to and read
-  like a stream (stdin and stdout), with `ReadErr`, `CloseStdin`, `Wait`,
-  `Kill` and `ChildId`
+- `process`: `RunCommand`, and `SpawnChild`, an acquisition lending a
+  running child to a scope: written to and read like a stream (stdin and
+  stdout), with `ReadErr`, `CloseStdin`, `Wait`, `Kill` and `ChildId`.
+  Ending the program's own process is control flow, not an effect: a core
+  returns, and `main` exits with what it returned.
 - `random`: `FillRandom` (no_std)
 - `stdio`: acquisitions `OpenStdin<H>`, `OpenStdout<H>` and `OpenStderr<H>`,
   lending handles that `Read`, or `Write` and `Flush`
@@ -254,8 +255,6 @@ group with no real effects other than allocation:
   so far, and later input is refused. Children inherit nothing until they
   run; their inherited output is printed then, at spawn or when the scope
   closes.
-  `Exit` unwinds with an `Exited` payload, without running the panic hook;
-  `catch_exit` turns it back into a code.
 - **signal**: `raise_ctrl_c` queues a Ctrl-C for `CtrlC` to consume.
 
 Used directly, nothing blocks: operations that would wait on a real system

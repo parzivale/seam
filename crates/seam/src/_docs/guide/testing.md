@@ -70,16 +70,15 @@ epoch, its current directory is `/`, and its filesystem holds `/` and
 - **Environment and stdio.** Configured variables, arguments and
   directories; scripted stdin, captured stdout and stderr.
 - **Processes.** Commands are answered by scripted handlers and logged; a
-  command with no handler fails with `NotFound`. `Exit` unwinds instead of
-  ending the test, and `catch_exit` turns it back into a code.
+  command with no handler fails with `NotFound`.
 - **Signals.** `raise_ctrl_c` queues a Ctrl-C for `CtrlC` to take.
 
 ```rust
 # #[cfg(all(feature = "test", feature = "process"))] {
 use std::process::Command;
 use seam::prelude::*;
-use seam::ops::process::{Exit, Output, RunCommand};
-use seam::test::{Sim, catch_exit};
+use seam::ops::process::{Output, RunCommand};
+use seam::test::Sim;
 
 let mut sim = Sim::new();
 sim.on_command("git", |_cmd| {
@@ -88,8 +87,6 @@ sim.on_command("git", |_cmd| {
 let out = sim.perform(RunCommand(Command::new("git"))).unwrap();
 assert_eq!(out.stdout, b"clean\n");
 assert_eq!(sim.invocations()[0].program, "git");
-
-assert_eq!(catch_exit(|| match sim.perform(Exit(3)) {}), Err(3));
 # }
 ```
 

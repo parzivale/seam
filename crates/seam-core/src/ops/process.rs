@@ -1,9 +1,11 @@
-//! Child processes and exiting.
+//! Child processes.
 //!
 //! Building a `std::process::Command` is pure; running it is the effect.
 //! [`RunCommand`] runs one to completion. [`SpawnChild`] starts one and
-//! lends it to a scope, to talk to while it runs. [`Exit`]'s outcome is
-//! `Infallible`, so the compiler knows it never returns.
+//! lends it to a scope, to talk to while it runs.
+//!
+//! Ending the program's own process is not an effect but control flow: a
+//! core returns, and `main` turns what it returned into an exit code.
 //!
 //! # Talking to a child
 //!
@@ -55,27 +57,9 @@
 //!     })
 //! }
 //! ```
-//!
-//! ```
-//! use seam_core::io;
-//! use std::process::Command;
-//! use seam_core::Perform;
-//! use seam_core::ops::process::{Exit, RunCommand};
-//!
-//! /// The current git commit, or exit with status 2.
-//! fn head<C: Perform<RunCommand> + Perform<Exit>>(c: &mut C) -> String {
-//!     let mut cmd = Command::new("git");
-//!     cmd.args(["rev-parse", "HEAD"]);
-//!     match c.perform(RunCommand(cmd)) {
-//!         Ok(out) if out.success() => String::from_utf8_lossy(&out.stdout).trim().to_owned(),
-//!         _ => match c.perform(Exit(2)) {},
-//!     }
-//! }
-//! ```
 
 use crate::io;
 use crate::three_ways::three_ways;
-use core::convert::Infallible;
 use core::marker::PhantomData;
 use std::process::Command;
 use std::string::String;
@@ -84,10 +68,6 @@ use std::vec::Vec;
 /// Run a command to completion and collect its [`Output`].
 #[derive(Debug)]
 pub struct RunCommand(pub Command);
-
-/// End the current process with an exit code. Never returns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Exit(pub i32);
 
 /// What a finished command produced.
 ///
@@ -277,7 +257,6 @@ pub struct ReadErr<'a>(pub &'a mut [u8]);
 
 operations! {
     RunCommand => io::Result<Output>;
-    Exit => Infallible;
     Wait => io::Result<ExitStatus>;
     Kill => io::Result<()>;
     #[query] ChildId => Option<u32>;
@@ -292,7 +271,6 @@ impl<C> crate::Acquisition for SpawnChild<C> {
 
 crate::root::keys!(
     [] RunCommand => RunCommand,
-    [] Exit => Exit,
     [C] SpawnChild<C> => SpawnChild,
 );
 

@@ -1,6 +1,5 @@
-//! Running commands, child processes, and exiting.
+//! Running commands, and child processes.
 
-use std::convert::Infallible;
 use std::io::{Read as _, Write as _};
 use std::process::{
     ChildStderr as RawStderr, ChildStdin as RawStdin, ChildStdout as RawStdout, Stdio,
@@ -8,7 +7,7 @@ use std::process::{
 
 use seam_core::ops::io::{Flush, Read, Write};
 use seam_core::ops::process::{
-    ChildId, ChildPipes, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, RunCommand,
+    ChildId, ChildPipes, CloseStdin, ExitStatus, Kill, Output, Pipe, ReadErr, RunCommand,
     SpawnChild, SplitChild, Wait,
 };
 use seam_core::{Closing, Inspect, Opening, Perform};
@@ -22,12 +21,6 @@ impl Perform<RunCommand> for Std {
             stdout: o.stdout,
             stderr: o.stderr,
         }))
-    }
-}
-
-impl Perform<Exit> for Std {
-    fn perform(&mut self, op: Exit) -> Infallible {
-        std::process::exit(op.0)
     }
 }
 

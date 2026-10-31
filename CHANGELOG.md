@@ -26,6 +26,9 @@ them turned up.
 - `seam-core`: `Push` is gone. It was a program's own sink, not an effect
   of the outside world; a core that emits items defines its own operation.
   `Rejected` stays, for `SpawnInto`.
+- `Exit` is gone, with `seam-test`'s `Exited` and `catch_exit`. Ending the
+  process is control flow, which seam leaves to `Result` and return values:
+  a core returns its exit code, and `main` exits with it.
 
 ### The GPU
 

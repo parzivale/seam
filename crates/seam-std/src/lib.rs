@@ -116,7 +116,7 @@
 //!
 //! Nothing stops an async core on a runtime from using `Std`, and that is
 //! fine for operations that never wait: `Now`, `WallClock`, `Var`, `Args`,
-//! `CurrentDir`, `TempDir`, `SetVar`, `RemoveVar`, `FillRandom` and `Exit`.
+//! `CurrentDir`, `TempDir`, `SetVar`, `RemoveVar` and `FillRandom`.
 //! Everything else (files, sockets, processes, stdio, sleeping, channels,
 //! threads, DNS) blocks the runtime's thread for as long as it takes, which
 //! stalls every task on that thread. Under a runtime, take those from

@@ -16,7 +16,7 @@
 //! | `Files` | `fs` | `Metadata`, `CreateDir`, `RemoveFile`, `RemoveDir`, `Rename`, `CopyFile`, `Open`, `CreateAtomic`, `View`, `ReadDir` |
 //! | `Net` | `net` | `ResolveInto`, `TcpBind`, `TcpConnect`, `UdpBind` |
 //! | `Stdio` | `stdio` | `OpenStdin`, `OpenStdout`, `OpenStderr` |
-//! | `Processes` | `process` | `RunCommand`, `SpawnChild`, `Exit` |
+//! | `Processes` | `process` | `RunCommand`, `SpawnChild` |
 //! | `Signals` | `signal` | `CtrlC` |
 //! | `Tasks` | `parallelism` | `AvailableParallelism` |
 //!

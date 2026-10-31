@@ -1,12 +1,11 @@
-//! Running commands, child processes, and exiting.
+//! Running commands, and child processes.
 
-use std::convert::Infallible;
 use std::io;
 use std::process::Stdio;
 
 use seam_core::ops::io::{Flush, Read, Write};
 use seam_core::ops::process::{
-    ChildId, ChildPipes, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, RunCommand,
+    ChildId, ChildPipes, CloseStdin, ExitStatus, Kill, Output, Pipe, ReadErr, RunCommand,
     SpawnChild, SplitChild, Wait,
 };
 use seam_core::{Closing, Inspect, Opening, Perform};
@@ -19,12 +18,6 @@ async_op!(perform [] Tokio, RunCommand, |_s, op| {
     let o = tokio::process::Command::from(op.0).output().await?;
     seam_core::io::Result::Ok(Output { code: o.status.code(), stdout: o.stdout, stderr: o.stderr })
 });
-
-impl Perform<Exit> for Tokio {
-    fn perform(&mut self, op: Exit) -> Infallible {
-        std::process::exit(op.0)
-    }
-}
 
 /// A running child process, acquired with [`SpawnChild`]. Writing goes to
 /// its standard input and reading comes from its standard output;

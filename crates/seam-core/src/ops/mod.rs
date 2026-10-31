@@ -21,7 +21,7 @@
 //! | `fs` | `fs` | yes | `Open<'a, M, F>`, `CreateAtomic`, `ReadDir`, `Metadata`, `Stat`, `SetLen`, `CreateDir`, `RemoveDir`, ... | `read_file`, `write_file`, `create_dir_all`, `sweep_atomic` |
 //! | `net` | `net` | no | `TcpConnect<S>`, `TcpBind<L>`, `Accept<S>`, `ResolveInto`, ... | `resolve` (alloc) |
 //! | `env` | `env` | yes | `Var`, `SetVar`, `Args`, `CurrentDir`, ... | |
-//! | `process` | `process` | yes | `RunCommand`, `SpawnChild`, `Wait`, `ReadErr`, `Exit`, ... | `read_err_to_end` |
+//! | `process` | `process` | yes | `RunCommand`, `SpawnChild`, `Wait`, `ReadErr`, ... | `read_err_to_end` |
 //! | `stdio` | `io-std` | no | `OpenStdin`, `OpenStdout`, `OpenStderr` | `print`, `eprint` |
 //! | `signal` | `signal` | no | `CtrlC` | |
 //! | `sync` | `sync` | no | `Channel`, `SendMsg`, `RecvMsg`, `Share`, `Load`, `Update` | `try_send`, `try_recv`, `store` |

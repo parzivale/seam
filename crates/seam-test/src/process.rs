@@ -1,4 +1,4 @@
-//! Scripted commands, child processes, and exiting.
+//! Scripted commands, and child processes.
 //!
 //! Commands are scripted per program with [`Sim::on_command`](crate::Sim::on_command) (or
 //! [`Sim::on_command_with_stdin`](crate::Sim::on_command_with_stdin)): a handler sees the command, and the
@@ -18,7 +18,6 @@
 use seam_core::io::{self, ErrorKind};
 use std::boxed::Box;
 use std::collections::VecDeque;
-use std::convert::Infallible;
 use std::ffi::OsString;
 use std::format;
 use std::process::Command;
@@ -28,7 +27,7 @@ use std::vec::Vec;
 
 use seam_core::ops::io::{Flush, Read, Write};
 use seam_core::ops::process::{
-    ChildId, ChildPipes, CloseStdin, Exit, ExitStatus, Kill, Output, Pipe, ReadErr, RunCommand,
+    ChildId, ChildPipes, CloseStdin, ExitStatus, Kill, Output, Pipe, ReadErr, RunCommand,
     SpawnChild, SplitChild, Wait,
 };
 use seam_core::{Closing, Inspect, Opening, Perform};
@@ -122,11 +121,6 @@ impl PartialEq for Invocation {
 }
 
 impl Eq for Invocation {}
-
-/// The panic payload a simulated [`Exit`] unwinds with. Use [`catch_exit`]
-/// to turn it back into an exit code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Exited(pub i32);
 
 impl Sim {
     /// Scripts what running `program` does. The handler sees the full
@@ -687,14 +681,6 @@ impl seam_core::Capability for ChildStdin {}
 impl seam_core::Capability for ChildStdout {}
 impl seam_core::Capability for ChildStderr {}
 
-/// Unwinds with [`Exited`] instead of ending the process. The panic hook is
-/// not run, so nothing is printed.
-impl Perform<Exit> for Sim {
-    fn perform(&mut self, op: Exit) -> Infallible {
-        std::panic::resume_unwind(Box::new(Exited(op.0)))
-    }
-}
-
 /// One `command PROGRAM [ARGS..] exit=N stdout=".." stderr=".."` line.
 fn command(node: &Node) -> world_file::Result<(OsString, Option<Vec<OsString>>, Output)> {
     node.no_children()?;
@@ -876,15 +862,4 @@ impl World for Processes {
         }
         Ok(())
     }
-}
-
-/// Runs `f`, catching a simulated [`Exit`] as `Err(code)`. Other panics
-/// carry on unwinding.
-pub fn catch_exit<R>(f: impl FnOnce() -> R) -> Result<R, i32> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|payload| {
-        match payload.downcast::<Exited>() {
-            Ok(exited) => exited.0,
-            Err(other) => std::panic::resume_unwind(other),
-        }
-    })
 }

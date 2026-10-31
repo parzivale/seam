@@ -73,7 +73,7 @@
 //! | env | `set_var`, `remove_var`, `set_args`, `set_current_dir` | inspect `Var` |
 //! | net | `add_host` | bind and connect sockets |
 //! | io-std | `feed_stdin` | `stdout`, `stderr`, `take_stdout` |
-//! | process | `on_command` | `invocations`, `catch_exit` |
+//! | process | `on_command` | `invocations` |
 //! | signal | `raise_ctrl_c` | |
 //!
 //! Each row needs its feature. The same setup can be written as a world
@@ -198,7 +198,7 @@ mod timeouts;
 pub mod world_file;
 
 #[cfg(feature = "process")]
-pub use process::{Exited, Invocation, catch_exit};
+pub use process::Invocation;
 #[cfg(feature = "std")]
 pub use sim::{Sim, World};
 #[cfg(feature = "std")]

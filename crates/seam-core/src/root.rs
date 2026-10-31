@@ -137,7 +137,7 @@ pub mod effects {
     keys!("env": Var => env::Var, SetVar => env::SetVar, RemoveVar => env::RemoveVar, Args => env::Args, CurrentDir => env::CurrentDir, TempDir => env::TempDir);
     keys!("fs": Metadata => fs::Metadata, CreateDir => fs::CreateDir, RemoveFile => fs::RemoveFile, RemoveDir => fs::RemoveDir, Rename => fs::Rename, CopyFile => fs::CopyFile, CreateAtomic => fs::CreateAtomic, View => fs::View, ReadDir => fs::ReadDir);
     keys!("net": ResolveInto => net::ResolveInto, TcpConnect => net::TcpConnect, TcpBind => net::TcpBind, UdpBind => net::UdpBind);
-    keys!("process": RunCommand => process::RunCommand, SpawnChild => process::SpawnChild, Exit => process::Exit);
+    keys!("process": RunCommand => process::RunCommand, SpawnChild => process::SpawnChild);
     keys!("random": FillRandom => random::FillRandom);
     keys!("signal": CtrlC => signal::CtrlC);
     keys!("io-std": OpenStdin => stdio::OpenStdin, OpenStdout => stdio::OpenStdout, OpenStderr => stdio::OpenStderr);

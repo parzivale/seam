@@ -1914,7 +1914,7 @@ dependencies = [
 
 [[package]]
 name = "seam-rs"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "seam-ash-shaders",
  "seam-rs-ash",
@@ -1941,7 +1941,7 @@ dependencies = [
 
 [[package]]
 name = "seam-rs-ash"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ash",
  "naga",
@@ -1955,11 +1955,11 @@ dependencies = [
 
 [[package]]
 name = "seam-rs-core"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "seam-rs-dirs"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "seam-rs-core",
  "seam-rs-std",
@@ -1968,7 +1968,7 @@ dependencies = [
 
 [[package]]
 name = "seam-rs-futures"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "futures",
  "seam-rs-core",
@@ -1980,7 +1980,7 @@ dependencies = [
 
 [[package]]
 name = "seam-rs-jiff"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "jiff",
  "jiff-tzdb",
@@ -1993,7 +1993,7 @@ dependencies = [
 
 [[package]]
 name = "seam-rs-nix"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "nix",
  "seam-rs-core",
@@ -2004,7 +2004,7 @@ dependencies = [
 
 [[package]]
 name = "seam-rs-notify"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "notify",
  "notify-types",
@@ -2018,7 +2018,7 @@ dependencies = [
 
 [[package]]
 name = "seam-rs-rand"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "rand",
  "seam-rs-core",
@@ -2028,7 +2028,7 @@ dependencies = [
 
 [[package]]
 name = "seam-rs-reqwest"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "futures",
  "http",
@@ -2042,7 +2042,7 @@ dependencies = [
 
 [[package]]
 name = "seam-rs-rustix"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "rustix",
  "seam-rs-core",
@@ -2052,7 +2052,7 @@ dependencies = [
 
 [[package]]
 name = "seam-rs-smol"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-signal",
  "futures",
@@ -2063,7 +2063,7 @@ dependencies = [
 
 [[package]]
 name = "seam-rs-sqlx"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "seam-rs-core",
  "seam-rs-smol",
@@ -2076,21 +2076,21 @@ dependencies = [
 
 [[package]]
 name = "seam-rs-std"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "seam-rs-core",
 ]
 
 [[package]]
 name = "seam-rs-test"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "seam-rs-core",
 ]
 
 [[package]]
 name = "seam-rs-tokio"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "seam-rs-core",
  "seam-rs-std",
@@ -2099,7 +2099,7 @@ dependencies = [
 
 [[package]]
 name = "seam-rs-tracing"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "seam-rs-core",
  "seam-rs-test",
@@ -2109,7 +2109,7 @@ dependencies = [
 
 [[package]]
 name = "seam-rs-unix"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "seam-rs-core",
  "seam-rs-test",
@@ -2117,7 +2117,7 @@ dependencies = [
 
 [[package]]
 name = "seam-rs-uuid"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "seam-rs-core",
  "seam-rs-std",

@@ -16,10 +16,10 @@
 //!
 //! ```toml
 //! [dependencies]
-//! seam = { package = "seam-rs", version = "0.7", features = ["fs", "io-std", "std"] }
+//! seam = { package = "seam-rs", version = "0.8", features = ["fs", "io-std", "std"] }
 //!
 //! [dev-dependencies]
-//! seam = { package = "seam-rs", version = "0.7", features = ["test"] }
+//! seam = { package = "seam-rs", version = "0.8", features = ["test"] }
 //! ```
 //!
 //! ```
@@ -248,15 +248,15 @@
 //! ```toml
 //! # The library holding the core: operations only.
 //! [dependencies]
-//! seam = { package = "seam-rs", version = "0.7", features = ["fs", "time"] }
+//! seam = { package = "seam-rs", version = "0.8", features = ["fs", "time"] }
 //!
 //! # The binary: also picks the real handlers...
 //! [dependencies]
-//! seam = { package = "seam-rs", version = "0.7", features = ["fs", "time", "std"] }
+//! seam = { package = "seam-rs", version = "0.8", features = ["fs", "time", "std"] }
 //!
 //! # ...and its tests pick the simulation.
 //! [dev-dependencies]
-//! seam = { package = "seam-rs", version = "0.7", features = ["test"] }
+//! seam = { package = "seam-rs", version = "0.8", features = ["test"] }
 //! ```
 #![forbid(unsafe_code)]
 #![no_std]

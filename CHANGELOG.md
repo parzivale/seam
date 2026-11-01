@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
 
 Samplers, rendering state and images of every shape for the GPU, shaders
 written in Rust, an example for every crate, and fixes for what writing
-them turned up.
+them turned up. `Push` and `Exit` are gone, and a guide says what seam
+costs over the std calls it stands for.
 
 ### Breaking
 
@@ -146,6 +147,12 @@ them turned up.
 - Every handler crate's docs have an example of its handlers in a root
   (`seam-std`, `seam-tokio`, `seam-smol`, `seam-test`, `seam-reqwest`,
   `seam-sqlx` and `seam-unix` had none), each a doctest.
+- A costs guide (`_docs::guide::costs`): what seam does that the std call
+  it stands for would not, from the sync on closing a written file to the
+  size of `seam::io::Error` and the layer a root's plain async forms add.
+  The items themselves say so too, and `seam-core/tests/sizes.rs` keeps
+  the quoted sizes true.
+- The `fs` docs say when to read a file with `View`, and when with `Open`.
 
 ### Examples
 

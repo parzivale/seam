@@ -268,6 +268,10 @@ pub struct OpenOptions {
 /// A primitive, because that cleanup must run when the scope panics or is
 /// cancelled, in `Drop`, where a core cannot perform effects.
 ///
+/// Durability costs more than a plain write: seam's handlers create the
+/// temporary file, sync it, rename it, and then open and sync the
+/// directory, so that the rename survives a power cut.
+///
 /// Temporary files are named `.<name>.seam-<suffix>.tmp`. If the process is
 /// killed outright, one can be left behind; [`sweep_atomic`] removes them.
 ///
@@ -319,6 +323,10 @@ impl<'a, F> CreateAtomic<'a, F> {
 /// `io::ErrorKind::InvalidInput` for anything else that is not a regular
 /// file: a FIFO or a device can block, or lose what is read, so open those
 /// with [`Open`], in a scope that is not a query.
+///
+/// That check is not free: seam's handlers look the path up, open it, and
+/// look at the open file again (in case the path was replaced in between),
+/// three calls where a plain open is one.
 ///
 /// ```
 /// use seam_core::io;
@@ -622,7 +630,8 @@ fn not_utf8() -> io::Error {
 three_ways! {
     /// Reads the whole regular file at `path`, through a [`View`], from
     /// shared access. For a FIFO or a device, open it with [`Open`] and use
-    /// `io::read_to_end`.
+    /// `io::read_to_end`. Opening the view checks that the file is regular,
+    /// which costs two lookups on top of the open (see [`View`]).
     pub fn read_file, read_file_async, read_file_send
     [C, F] (c: &C, path: &(impl AsRef<Path> + ?Sized)) -> io::Result<Vec<u8>>
     where
@@ -818,7 +827,10 @@ three_ways! {
         }
     }
 
-    /// Adds `contents` to the end of `path`, creating it if needed.
+    /// Adds `contents` to the end of `path`, creating it if needed. The file
+    /// is synced when it is closed, as every file opened for writing is, so
+    /// each call waits for the disk; a core appending many records keeps one
+    /// scope open and writes them all in it.
     pub fn append_file, append_file_async, append_file_send
     [C, F] (
         c: &mut C,
@@ -847,7 +859,8 @@ three_ways! {
 
     /// Replaces `path` with `contents` all at once, through a
     /// [`CreateAtomic`]: until it succeeds, readers see the old file, and if
-    /// it fails, the old file is left as it was.
+    /// it fails, the old file is left as it was. It syncs both the file and
+    /// its directory (see [`CreateAtomic`]).
     pub fn write_file_atomic, write_file_atomic_async, write_file_atomic_send
     [C, F] (
         c: &mut C,

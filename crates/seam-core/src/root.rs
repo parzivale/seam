@@ -187,6 +187,13 @@ pub trait Pick<A> {
 
 /// A capability built from parts: forwards each operation to the part
 /// listed for its effect. See the [module docs](mod@crate::root).
+///
+/// Forwarding is free for the sync and `Send` forms, which hand back the
+/// part's own result or future. The plain async forms (`AsyncInspect`,
+/// `AsyncPerform`) wrap the part's future in one of their own, so that a
+/// part does not have to be `'static`; a core awaiting through them has a
+/// future 16 bytes larger (on 64-bit targets) than one given the part
+/// itself.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Root<A>(A);
 
@@ -276,6 +283,9 @@ where
 
 // The `Send` forms hand back the part's own future, which is `Send`; that
 // needs the part to outlive the borrow, so parts behind them are `'static`.
+// The plain async forms above wrap the part's future in their own instead,
+// which costs a layer (16 bytes on a core's future, on 64-bit targets) but
+// lets a part borrow.
 
 impl<A, Q> SendInspect<Q> for Root<A>
 where

@@ -117,6 +117,11 @@ impl fmt::Display for ErrorKind {
 
 /// An I/O error: a kind and a static message, and with std, the
 /// `std::io::Error` it came from.
+///
+/// It is larger than std's: 32 bytes on 64-bit targets, where
+/// `std::io::Error` is 8, so an `io::Result<usize>` (what every `Read` and
+/// `Write` returns) is 32 bytes where std's is 16. The message is what
+/// makes an error readable without std; the size is the price.
 pub struct Error {
     kind: ErrorKind,
     message: &'static str,

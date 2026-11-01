@@ -11,6 +11,7 @@
 //! 5. [`your_own_effects`]: effects of a program's own, their real and
 //!    simulated handlers, and world-file blocks for them.
 //! 6. [`testing`]: the simulated world in detail.
+//! 7. [`costs`]: what seam does that the std call it stands for would not.
 
 #[doc = include_str!("getting_started.md")]
 pub mod getting_started {}
@@ -29,3 +30,6 @@ pub mod your_own_effects {}
 
 #[doc = include_str!("testing.md")]
 pub mod testing {}
+
+#[doc = include_str!("costs.md")]
+pub mod costs {}

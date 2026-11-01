@@ -693,6 +693,11 @@ Not implemented yet:
   that reads files). It needs a per-handler `Instant<O>` marker for the
   operations that never wait, and checks after monomorphization; users
   would run it with `cargo dylint`.
+- **Roots are wiring, not grants.** A core's bounds are the audit; a root
+  is the one value that builds and wires the program's world. The docs
+  still call a root a precise grant (**Roots** above, and `root.rs`'s
+  module docs and `compile_fail` example) and should say this instead,
+  leading with a named root and its constructors.
 - **Polish.** An optional run-time message on `io::Error` behind `alloc`;
   `Sim::list_dir` for tests; buffer-filling forms of the std-only
   primitives that still return owned data (`Args`, `Var`, `NextEntry`).
